@@ -89,7 +89,7 @@ fun DashboardScreen(
                 Spacer(Modifier.size(5.dp))
                 Text(tr("newReport"))
             }
-            Button(onClick = {}, modifier = Modifier.weight(1f)) {
+            Button(onClick = { onReports?.invoke() }, modifier = Modifier.weight(1f), enabled = onReports != null) {
                 Icon(Icons.Filled.Report, null, Modifier.size(18.dp))
                 Spacer(Modifier.size(5.dp))
                 Text(tr("incidentReports"))
