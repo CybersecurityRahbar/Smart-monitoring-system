@@ -27,6 +27,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.smarttraffic.app.core.AppLanguage
+import com.smarttraffic.app.core.AppSettings
 import com.smarttraffic.app.core.DeviceSettings
 import com.smarttraffic.app.core.VideoDisplayMode
 import com.smarttraffic.app.core.network.MjpegStreamClient
@@ -50,25 +52,25 @@ fun LiveCameraScreen(paddingValues: PaddingValues) {
     fun startStream() {
         streamJob?.cancel()
         streamState = StreamState.CONNECTING
-        streamMessage = tr("streamConnecting")
+        streamMessage = liveText("Connecting to stream…", "جارٍ الاتصال بالبث…")
         streamJob = scope.launch {
             try {
                 client.collect(DeviceSettings.streamUrl()) { bitmap ->
                     withContext(Dispatchers.Main.immediate) {
                         frame = bitmap
                         streamState = StreamState.LIVE
-                        streamMessage = tr("streamLive")
+                        streamMessage = liveText("LIVE • ESP32-CAM", "مباشر • ESP32-CAM")
                     }
                 }
                 if (streamState == StreamState.LIVE) {
                     streamState = StreamState.DISCONNECTED
-                    streamMessage = tr("streamEnded")
+                    streamMessage = liveText("Stream ended", "انتهى البث")
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
                 streamState = StreamState.ERROR
-                streamMessage = "${tr("streamError")}: ${error.message ?: "network error"}"
+                streamMessage = "${liveText("Stream error", "خطأ في البث")}: ${error.message ?: liveText("network error", "خطأ في الشبكة") }"
             }
         }
     }
@@ -95,10 +97,10 @@ fun LiveCameraScreen(paddingValues: PaddingValues) {
         )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = { startStream() }, modifier = Modifier.weight(1f), enabled = streamState != StreamState.CONNECTING) {
-                Text(if (streamState == StreamState.LIVE) tr("reconnect") else tr("connectStream"))
+                Text(if (streamState == StreamState.LIVE) liveText("Reconnect", "إعادة الاتصال") else liveText("Connect stream", "اتصال بالبث"))
             }
             OutlinedButton(onClick = { streamJob?.cancel(); streamState = StreamState.DISCONNECTED }, modifier = Modifier.weight(1f)) {
-                Text(tr("disconnect"))
+                Text(liveText("Disconnect", "قطع الاتصال"))
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -113,3 +115,6 @@ fun LiveCameraScreen(paddingValues: PaddingValues) {
 }
 
 private enum class StreamState { IDLE, CONNECTING, LIVE, DISCONNECTED, ERROR }
+
+private fun liveText(en: String, ar: String): String =
+    if (AppSettings.language == AppLanguage.ARABIC) ar else en
