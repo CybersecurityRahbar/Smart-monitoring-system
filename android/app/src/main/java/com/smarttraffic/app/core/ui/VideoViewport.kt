@@ -1,10 +1,10 @@
 package com.smarttraffic.app.core.ui
 
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,7 +30,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.smarttraffic.app.MainActivity
-import com.smarttraffic.app.core.AppSettings
 import com.smarttraffic.app.core.VideoDisplayMode
 import com.smarttraffic.app.core.tr
 
@@ -44,62 +43,51 @@ fun VideoViewport(
 ) {
     val context = LocalContext.current
     val height = when (mode) {
-        VideoDisplayMode.FULLSCREEN -> null
-        VideoDisplayMode.STANDARD -> 300.dp
-        VideoDisplayMode.COMPACT -> 190.dp
+        VideoDisplayMode.FULLSCREEN -> 460.dp
+        VideoDisplayMode.STANDARD -> 280.dp
+        VideoDisplayMode.COMPACT -> 180.dp
     }
 
     Card(
-        modifier = modifier.then(if (height != null) Modifier.height(height) else Modifier),
+        modifier = modifier.fillMaxWidth().height(height),
         shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
     ) {
         Box(Modifier.fillMaxSize()) {
             Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black)
-                    .clip(RoundedCornerShape(24.dp)),
+                Modifier.fillMaxSize().clip(RoundedCornerShape(24.dp)).background(Color.Black),
                 contentAlignment = Alignment.Center,
             ) {
                 ColumnPlaceholder(title)
             }
 
             Surface(
-                modifier = Modifier.align(Alignment.TopCenter).padding(10.dp),
+                modifier = Modifier.align(Alignment.TopCenter).padding(9.dp),
                 shape = RoundedCornerShape(15.dp),
-                color = Color.Black.copy(alpha = 0.68f),
+                color = Color.Black.copy(alpha = 0.76f),
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 5.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    ViewModeChip(tr("fullscreen"), mode == VideoDisplayMode.FULLSCREEN) {
-                        onModeChange(VideoDisplayMode.FULLSCREEN)
-                    }
-                    ViewModeChip(tr("standard"), mode == VideoDisplayMode.STANDARD) {
-                        onModeChange(VideoDisplayMode.STANDARD)
-                    }
-                    ViewModeChip(tr("compact"), mode == VideoDisplayMode.COMPACT) {
-                        onModeChange(VideoDisplayMode.COMPACT)
-                    }
+                    ViewModeChip(tr("full"), mode == VideoDisplayMode.FULLSCREEN) { onModeChange(VideoDisplayMode.FULLSCREEN) }
+                    ViewModeChip(tr("standard"), mode == VideoDisplayMode.STANDARD) { onModeChange(VideoDisplayMode.STANDARD) }
+                    ViewModeChip(tr("compact"), mode == VideoDisplayMode.COMPACT) { onModeChange(VideoDisplayMode.COMPACT) }
                     if (showPipAction) {
                         AssistChip(
-                            onClick = {
-                                (context as? MainActivity)?.enterVideoPictureInPicture()
-                            },
+                            onClick = { (context as? MainActivity)?.enterVideoPictureInPicture() },
                             leadingIcon = { Icon(Icons.Filled.PictureInPictureAlt, null) },
-                            label = { Text("PiP") },
+                            label = { Text(tr("pip"), maxLines = 1) },
                         )
                     }
                 }
             }
 
             Surface(
-                modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+                modifier = Modifier.align(Alignment.BottomStart).padding(11.dp),
                 shape = RoundedCornerShape(14.dp),
-                color = Color.Black.copy(alpha = 0.72f),
+                color = Color.Black.copy(alpha = 0.74f),
             ) {
                 Row(
                     Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
@@ -107,7 +95,7 @@ fun VideoViewport(
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     Icon(Icons.Filled.Tune, null, tint = MaterialTheme.colorScheme.primary)
-                    Text("ESP32-CAM • local feed", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                    Text(tr("localFeed"), color = Color.White, style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
@@ -127,19 +115,16 @@ private fun ViewModeChip(label: String, selected: Boolean, onClick: () -> Unit) 
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Icon(Icons.Filled.Fullscreen, null, modifier = Modifier.height(14.dp), tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else Color.White)
-            Text(label, style = MaterialTheme.typography.labelSmall, color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else Color.White)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else Color.White, maxLines = 1)
         }
     }
 }
 
 @Composable
 private fun ColumnPlaceholder(title: String) {
-    androidx.compose.foundation.layout.Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text("LIVE", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(tr("live"), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
         Text(title, color = Color.White, style = MaterialTheme.typography.titleLarge)
-        Text("Video pipeline ready • stream endpoint not connected yet", color = Color(0xFFB4BFC3), style = MaterialTheme.typography.bodySmall)
+        Text(tr("streamNotConnected"), color = Color(0xFFB4BFC3), style = MaterialTheme.typography.bodySmall)
     }
 }
