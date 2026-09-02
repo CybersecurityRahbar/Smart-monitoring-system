@@ -1,11 +1,11 @@
 package com.smarttraffic.app.domain.analysis
 
-/** Replaceable perception backend; implementations may use TFLite/ONNX/NNAPI/Native C++. */
+/** Replaceable perception backend; implementations may use LiteRT/ONNX/NNAPI/Native C++. */
 interface ObjectDetector {
     suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection>
 }
 
-/** Replaceable multi-object tracker; BoT-SORT/ByteTrack/OC-SORT/Deep OC-SORT can plug in here. */
+/** Replaceable multi-object tracker; modern tracker implementations plug in here. */
 interface MultiObjectTracker {
     fun update(detections: List<Detection>, frameIndex: Long, timestampMs: Long): List<Track>
     fun reset()
@@ -22,23 +22,31 @@ interface PlateRecognizer {
 
 interface AnalysisEngine {
     suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult
+
+    /** Executes the real frame pipeline over a transport-independent source. */
+    suspend fun analyze(source: FrameSource, config: AnalysisConfig): AnalysisResult
 }
 
 /**
- * Pipeline coordinator. Concrete ML adapters are intentionally injected later so
- * geometry, speed and validation code remains testable without a model runtime.
+ * Shared analysis coordinator. Model runtimes are injected; geometry and speed
+ * remain deterministic and testable independently of the chosen ML backend.
  */
 class ModularAnalysisEngine(
     private val detector: ObjectDetector,
     private val tracker: MultiObjectTracker,
     private val keypoints: VehicleKeypointEstimator? = null,
     private val plateRecognizer: PlateRecognizer? = null,
-    private val projector: HomographyProjector? = null,
-    private val speedEstimator: RobustSpeedEstimator = RobustSpeedEstimator(),
 ) : AnalysisEngine {
+    private val runner = AnalysisPipelineRunner(
+        detector = detector,
+        tracker = tracker,
+        keypointEstimator = keypoints,
+        plateRecognizer = plateRecognizer,
+    )
 
-    override suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult {
-        tracker.reset()
-        return AnalysisResult(source = source)
-    }
+    override suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult =
+        AnalysisResult(source = source)
+
+    override suspend fun analyze(source: FrameSource, config: AnalysisConfig): AnalysisResult =
+        runner.run(source, config)
 }
