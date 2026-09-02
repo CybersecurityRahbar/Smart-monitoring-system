@@ -4,21 +4,22 @@ import com.smarttraffic.app.domain.analysis.Detection
 import com.smarttraffic.app.domain.analysis.MultiObjectTracker
 import com.smarttraffic.app.domain.analysis.Track
 import com.smarttraffic.app.domain.analysis.TrackObservation
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * ByteTrack-style Android baseline with deterministic two-stage association.
+ * ByteTrack-inspired Android tracker with the important production ingredients:
+ * Kalman motion prediction, global linear assignment, two-stage high/low score
+ * association, class-aware gating, confirmation and explicit lost-track handling.
  *
- * The implementation intentionally exposes only confirmed, currently observed tracks
- * to the analysis pipeline. Low-confidence detections are used in the second matching
- * stage so occlusion recovery is not disabled by the report confidence threshold.
+ * It is intentionally named ByteTrack (not claimed as the official reference
+ * implementation); exact benchmark equivalence must be established against MOT data.
  */
 class ByteTrack(
     private val highThreshold: Float = 0.50f,
     private val lowThreshold: Float = 0.10f,
     private val matchIouThreshold: Float = 0.30f,
+    private val lowMatchIouThreshold: Float = 0.20f,
     private val maxLostFrames: Int = 30,
 ) : MultiObjectTracker {
     private val tracks = LinkedHashMap<Long, InternalTrack>()
@@ -27,6 +28,7 @@ class ByteTrack(
     init {
         require(lowThreshold >= 0f && highThreshold <= 1f && lowThreshold < highThreshold)
         require(matchIouThreshold in 0f..1f)
+        require(lowMatchIouThreshold in 0f..1f)
         require(maxLostFrames >= 1)
     }
 
@@ -47,22 +49,27 @@ class ByteTrack(
             .filter { it.value.confidence in lowThreshold..<highThreshold }
             .sortedByDescending { it.value.confidence }
 
-        tracks.values.forEach { it.prepareForFrame(frameIndex, timestampMs) }
+        tracks.values.forEach { it.predictTo(frameIndex, timestampMs) }
         val matchedDetectionIndices = HashSet<Int>()
 
-        associate(tracks.values.toList(), high).forEach { match ->
+        associate(tracks.values.toList(), high, matchIouThreshold).forEach { match ->
             match.track.update(match.detection.value, frameIndex, timestampMs)
             matchedDetectionIndices += match.detection.index
         }
 
-        // ByteTrack's second association recovers tracked objects using lower-score boxes.
-        associate(tracks.values.filter { !it.matched && it.hits > 0 }, low).forEach { match ->
+        // Second association: unmatched previously existing tracks with lower-score detections.
+        associate(
+            tracks.values.filter { !it.matched && it.hits > 0 },
+            low,
+            lowMatchIouThreshold,
+        ).forEach { match ->
             match.track.update(match.detection.value, frameIndex, timestampMs)
             matchedDetectionIndices += match.detection.index
         }
 
         tracks.values.forEach { if (!it.matched) it.markLost() }
 
+        // A new identity is created only from an unmatched high-confidence observation.
         high.forEach { indexed ->
             if (indexed.index in matchedDetectionIndices) return@forEach
             val track = InternalTrack(nextId++, indexed.value, frameIndex, timestampMs)
@@ -74,8 +81,13 @@ class ByteTrack(
         val iterator = tracks.iterator()
         while (iterator.hasNext()) {
             val track = iterator.next().value
-            if (track.lostFrames > maxLostFrames) iterator.remove()
-            else track.matched = false
+            // Single-frame false positives are discarded immediately unless confirmed
+            // by the next frame. Confirmed tracks may survive temporary occlusion.
+            if ((track.hits == 1 && track.lostFrames > 0) || track.lostFrames > maxLostFrames) {
+                iterator.remove()
+            } else {
+                track.matched = false
+            }
         }
 
         return tracks.values
@@ -86,35 +98,33 @@ class ByteTrack(
     private fun associate(
         trackList: List<InternalTrack>,
         detections: List<IndexedValue<Detection>>,
+        minimumIou: Float,
     ): List<Match> {
         if (trackList.isEmpty() || detections.isEmpty()) return emptyList()
-        val candidates = ArrayList<Match>()
-        for (track in trackList) {
-            for (detection in detections) {
-                if (track.lastDetection.classId != detection.value.classId) continue
-                val overlap = iou(track.predicted, detection.value)
-                if (overlap >= matchIouThreshold) candidates += Match(track, detection, overlap)
-            }
-        }
-        candidates.sortWith(
-            compareByDescending<Match> { it.iou }
-                .thenByDescending { it.detection.value.confidence }
-                .thenBy { it.track.id }
-                .thenBy { it.detection.index },
-        )
 
-        val usedTracks = HashSet<Long>()
-        val usedDetections = HashSet<Int>()
-        val matches = ArrayList<Match>()
-        for (candidate in candidates) {
-            if (!usedTracks.add(candidate.track.id)) continue
-            if (!usedDetections.add(candidate.detection.index)) {
-                usedTracks.remove(candidate.track.id)
-                continue
+        val invalidCost = 1_000_000.0
+        val costs = Array(trackList.size) { row ->
+            DoubleArray(detections.size) { column ->
+                val track = trackList[row]
+                val detection = detections[column].value
+                if (track.lastDetection.classId != detection.classId) {
+                    invalidCost
+                } else {
+                    val overlap = iou(track.predicted, detection)
+                    if (overlap < minimumIou) invalidCost else 1.0 - overlap
+                }
             }
-            matches += candidate
         }
-        return matches
+
+        return LinearAssignment.solve(costs).mapNotNull { (row, column) ->
+            if (row !in trackList.indices || column !in detections.indices) return@mapNotNull null
+            val track = trackList[row]
+            val detection = detections[column]
+            if (track.lastDetection.classId != detection.value.classId) return@mapNotNull null
+            val overlap = iou(track.predicted, detection.value)
+            if (overlap < minimumIou) return@mapNotNull null
+            Match(track, detection, overlap)
+        }
     }
 
     private data class Match(
@@ -130,11 +140,8 @@ class ByteTrack(
         initialTimestampMs: Long,
     ) {
         var lastDetection = initial
-        var predicted = Box(initial)
-        var vx = 0.0f
-        var vy = 0.0f
-        var vw = 0.0f
-        var vh = 0.0f
+        var predicted = ByteTrackBox(initial)
+        private val filter = KalmanBoxPredictor(predicted)
         var hits = 0
         var lostFrames = 0
         var matched = false
@@ -143,33 +150,22 @@ class ByteTrack(
         var lastFrameIndex = initialFrameIndex
         var lastTimestampMs = initialTimestampMs
 
-        fun prepareForFrame(frameIndex: Long, timestampMs: Long) {
+        fun predictTo(frameIndex: Long, timestampMs: Long) {
             matched = false
             val dtMs = timestampMs - lastTimestampMs
-            if (dtMs > 0L) {
-                val dt = dtMs / 1000.0f
-                predicted = predicted.translated(vx * dt, vy * dt, vw * dt, vh * dt)
+            predicted = if (dtMs > 0L) {
+                filter.predict(dtMs / 1000.0)
+            } else {
+                filter.box()
             }
         }
 
         fun update(detection: Detection, frameIndex: Long, timestampMs: Long) {
-            val previous = Box(lastDetection)
-            val current = Box(detection)
-            val dtMs = timestampMs - lastTimestampMs
-            if (dtMs > 0L) {
-                val dt = dtMs / 1000.0f
-                val measuredVx = (current.centerX - previous.centerX) / dt
-                val measuredVy = (current.centerY - previous.centerY) / dt
-                val measuredVw = (current.width - previous.width) / dt
-                val measuredVh = (current.height - previous.height) / dt
-                vx = 0.70f * measuredVx + 0.30f * vx
-                vy = 0.70f * measuredVy + 0.30f * vy
-                vw = 0.50f * measuredVw + 0.50f * vw
-                vh = 0.50f * measuredVh + 0.50f * vh
-            }
             if (lostFrames > 0) everOccluded = true
+            val current = ByteTrackBox(detection)
+            filter.update(current)
             lastDetection = detection
-            predicted = current
+            predicted = filter.box()
             hits += 1
             lostFrames = 0
             matched = true
@@ -186,45 +182,14 @@ class ByteTrack(
         fun toDomainTrack(frameIndex: Long, timestampMs: Long): Track = Track(
             id = id,
             className = lastDetection.className,
-            observations = listOf(
-                TrackObservation(frameIndex, timestampMs, lastDetection),
-            ),
+            observations = listOf(TrackObservation(frameIndex, timestampMs, lastDetection)),
             trackConfidence = confidenceEma.coerceIn(0f, 1f),
             wasOccluded = everOccluded,
         )
     }
 }
 
-private data class Box(
-    val left: Float,
-    val top: Float,
-    val right: Float,
-    val bottom: Float,
-) {
-    constructor(detection: Detection) : this(
-        detection.left, detection.top, detection.right, detection.bottom,
-    )
-
-    val width: Float get() = max(0f, right - left)
-    val height: Float get() = max(0f, bottom - top)
-    val centerX: Float get() = (left + right) * 0.5f
-    val centerY: Float get() = (top + bottom) * 0.5f
-
-    fun translated(dx: Float, dy: Float, dw: Float, dh: Float): Box {
-        val newWidth = max(1f, width + dw)
-        val newHeight = max(1f, height + dh)
-        val centerX = centerX + dx
-        val centerY = centerY + dy
-        return Box(
-            centerX - newWidth * 0.5f,
-            centerY - newHeight * 0.5f,
-            centerX + newWidth * 0.5f,
-            centerY + newHeight * 0.5f,
-        )
-    }
-}
-
-private fun iou(a: Box, b: Detection): Float {
+private fun iou(a: ByteTrackBox, b: Detection): Float {
     val left = max(a.left, b.left)
     val top = max(a.top, b.top)
     val right = min(a.right, b.right)
