@@ -44,49 +44,31 @@ fun AppNavHost() {
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
             NavigationBar {
-                val primary = listOf(
-                    AppDestination.Dashboard,
-                    AppDestination.Radar,
-                    AppDestination.Live,
-                    AppDestination.Alerts,
-                    AppDestination.More,
-                )
+                val primary = listOf(AppDestination.Dashboard, AppDestination.Radar, AppDestination.Live, AppDestination.Alerts, AppDestination.More)
                 primary.forEach { item ->
                     NavigationBarItem(
                         selected = destination == item,
                         onClick = { destination = item },
                         icon = {
                             Icon(
-                                imageVector = when (item) {
+                                when (item) {
                                     AppDestination.Dashboard -> Icons.Filled.Dashboard
                                     AppDestination.Radar -> Icons.Filled.Speed
                                     AppDestination.Live -> Icons.Filled.Videocam
                                     AppDestination.Alerts -> Icons.Filled.Notifications
-                                    AppDestination.More -> Icons.Filled.MoreHoriz
                                     else -> Icons.Filled.MoreHoriz
                                 },
-                                contentDescription = item.name,
+                                contentDescription = null,
                             )
                         },
-                        label = {
-                            Text(
-                                when (item) {
-                                    AppDestination.Dashboard -> tr("dashboard")
-                                    AppDestination.Radar -> tr("radar")
-                                    AppDestination.Live -> tr("live")
-                                    AppDestination.Alerts -> tr("alerts")
-                                    AppDestination.More -> tr("more")
-                                    else -> item.name
-                                },
-                            )
-                        },
+                        label = { Text(destinationLabel(item)) },
                     )
                 }
             }
         },
     ) { paddingValues ->
         when (destination) {
-            AppDestination.Dashboard -> DashboardScreen(paddingValues)
+            AppDestination.Dashboard -> DashboardScreen(paddingValues, onReports = { destination = AppDestination.Reports })
             AppDestination.Radar -> IntelligentRadarScreen(paddingValues)
             AppDestination.Live -> LiveCameraScreen(paddingValues)
             AppDestination.Alerts -> AlertsScreen(paddingValues)
@@ -109,4 +91,13 @@ fun AppNavHost() {
             AppDestination.Settings -> SettingsScreen(paddingValues)
         }
     }
+}
+
+private fun destinationLabel(destination: AppDestination): String = when (destination) {
+    AppDestination.Dashboard -> tr("dashboard")
+    AppDestination.Radar -> tr("radar")
+    AppDestination.Live -> tr("live")
+    AppDestination.Alerts -> tr("alerts")
+    AppDestination.More -> tr("more")
+    else -> destination.name
 }
