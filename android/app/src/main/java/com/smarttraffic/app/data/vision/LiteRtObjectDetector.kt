@@ -131,8 +131,8 @@ class LiteRtObjectDetector(
     }
 }
 
-/** CPU-side RGB NCHW letterboxing. This is intentionally isolated so it can
- * later be replaced by the C++ preprocessing path without changing the model adapter. */
+/** CPU-side RGB NCHW letterboxing. This can later be replaced by the C++
+ * preprocessing path without changing the detector contract. */
 internal object LetterboxPreprocessor {
     data class Result(
         val chwRgb: FloatArray,
@@ -152,7 +152,15 @@ internal object LetterboxPreprocessor {
 
         val pixels = IntArray(size * size)
         java.util.Arrays.fill(pixels, 0xFF727272.toInt())
-        scaled.getPixels(pixels, padX.toInt(), size, scaledWidth, scaledHeight)
+        scaled.getPixels(
+            pixels,
+            padY.toInt() * size + padX.toInt(),
+            size,
+            0,
+            0,
+            scaledWidth,
+            scaledHeight,
+        )
 
         val plane = size * size
         val chw = FloatArray(plane * 3)
