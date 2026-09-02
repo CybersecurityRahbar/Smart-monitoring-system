@@ -2,6 +2,7 @@ package com.smarttraffic.app.navigation
 
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DevicesOther
@@ -20,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.smarttraffic.app.features.alerts.AlertsScreen
+import com.smarttraffic.app.features.analysis.LocalAnalysisScreen
 import com.smarttraffic.app.features.dashboard.DashboardScreen
 import com.smarttraffic.app.features.devices.DevicesScreen
 import com.smarttraffic.app.features.live.LiveCameraScreen
@@ -30,6 +32,7 @@ private enum class TopLevelDestination(val label: String) {
     Dashboard("Dashboard"),
     Radar("Radar"),
     Live("Live"),
+    Analysis("Lab"),
     Devices("Devices"),
     Alerts("Alerts"),
     Settings("Settings"),
@@ -53,6 +56,7 @@ fun AppNavHost() {
                                     TopLevelDestination.Dashboard -> Icons.Filled.Dashboard
                                     TopLevelDestination.Radar -> Icons.Filled.Speed
                                     TopLevelDestination.Live -> Icons.Filled.CameraAlt
+                                    TopLevelDestination.Analysis -> Icons.Filled.Analytics
                                     TopLevelDestination.Devices -> Icons.Filled.DevicesOther
                                     TopLevelDestination.Alerts -> Icons.Filled.Notifications
                                     TopLevelDestination.Settings -> Icons.Filled.Settings
@@ -70,6 +74,7 @@ fun AppNavHost() {
             TopLevelDestination.Dashboard -> DashboardScreen(paddingValues)
             TopLevelDestination.Radar -> IntelligentRadarScreen(paddingValues)
             TopLevelDestination.Live -> LiveCameraScreen(paddingValues)
+            TopLevelDestination.Analysis -> LocalAnalysisScreen(paddingValues)
             TopLevelDestination.Devices -> DevicesScreen(paddingValues)
             TopLevelDestination.Alerts -> AlertsScreen(paddingValues)
             TopLevelDestination.Settings -> SettingsScreen(paddingValues)
