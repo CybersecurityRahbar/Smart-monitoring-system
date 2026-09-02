@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import com.smarttraffic.app.core.AppLanguage
 import com.smarttraffic.app.core.AppSettings
+import com.smarttraffic.app.core.DeviceSettings
 import com.smarttraffic.app.ui.theme.SmartTrafficTheme
 
 class MainActivity : ComponentActivity() {
@@ -22,6 +23,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppSettings.load(applicationContext)
+        DeviceSettings.load(applicationContext)
         setContent {
             val direction = if (AppSettings.language == AppLanguage.ARABIC) {
                 LayoutDirection.Rtl
