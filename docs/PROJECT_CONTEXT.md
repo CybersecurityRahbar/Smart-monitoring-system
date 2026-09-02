@@ -9,346 +9,305 @@
 - GitHub repository: `CybersecurityRahbar/Smart-monitoring-system`
 - Working system name: **Smart Traffic Monitoring System**
 - Android product/app name: **Smart Traffic**
-- Repository name is intentionally broad (`Smart-monitoring-system`) and the traffic-specific system name is used inside the project.
-- Project type: low-cost university prototype, intended to evolve toward an intelligent traffic/vehicle monitoring system.
+- Project type: low-cost university prototype intended to evolve toward an intelligent traffic/vehicle monitoring system.
 - It is a prototype, not a legally certified traffic enforcement device.
-- No Map Widget should be introduced unless the user explicitly requests it.
+- No Map Widget unless explicitly requested by the user.
 
 ## 2. Main objective
 
-Build a modular system that can:
-- capture vehicle images/video;
+Build a modular central Android command system that can:
+- receive camera/video;
 - detect vehicles and other configured objects;
 - track objects continuously;
-- estimate vehicle speed from camera/video when possible, without mandatory physical sensors;
-- detect license plates;
-- OCR license plates;
+- estimate vehicle speed from video when possible, without mandatory physical sensors;
+- detect license plates and OCR them;
 - associate speed/time/image/plate into vehicle records;
-- execute configurable traffic/monitoring rules;
+- execute configurable monitoring/traffic rules;
 - manage a watchlist/report list;
-- show live camera, radar/analytics overlays and events in Android;
-- control ESP32-CAM devices from Android;
-- support local video/image analysis without a physical camera;
-- later support multiple cameras and different communication methods.
+- show live camera and intelligent-radar analytics in Android;
+- control ESP32-CAM devices;
+- analyze local media from the phone without physical hardware;
+- later scale to multiple cameras and alternative transports.
 
-## 3. Current hardware starting point
+## 3. Hardware starting point
 
 Start with:
 - ESP32-CAM + OV2640
-- The exact physical board must be verified from a photo before wiring/code is finalized.
-- ESP32-CAM is responsible initially for camera capture, Wi-Fi communication, simple events, and later sensors.
-- Heavy computer vision/AI is intended to run on Android rather than on the ESP32-CAM.
+- Verify exact physical board from a photo before final wiring/firmware.
+- ESP32-CAM initially handles capture, Wi-Fi, simple events and later sensors.
+- Heavy vision/AI remains primarily on Android.
 
 Longer-term optional upgrade:
-- ESP32-S3-CAM N16R8 + OV2640, 16MB Flash + 8MB PSRAM, if a verified board becomes available.
+- ESP32-S3-CAM N16R8 + OV2640, 16MB Flash + 8MB PSRAM, if verified available.
 
-## 4. First development milestone
+## 4. First hardware milestone
 
-**Version 0.1:**
+**v0.1:**
 `ESP32-CAM + OV2640 → local Wi-Fi → Android → live stream`
 
-No Internet, radio, sensors, OCR, or AI are required in the first hardware milestone.
+No Internet, radio, sensors, OCR or AI are required for this first hardware milestone.
 
-The simplest initial communication model is ESP32-CAM acting as a local Wi-Fi access point and the Android phone connecting directly to it. A router-based local Wi-Fi mode can be added later.
+## 5. Communication
 
-## 5. Communication design
-
-Initial local architecture:
-
+Initial:
 ```text
-OV2640 → ESP32-CAM → Wi-Fi → Android App
+OV2640 → ESP32-CAM → local Wi-Fi → Android
 ```
 
-Proposed application-level endpoints/streams:
-- `/stream` — live MJPEG/HTTP stream for the first prototype.
-- `/capture` — capture a still image.
-- `/status` — camera/device status.
+Proposed first endpoints:
+- `/stream` — MJPEG/HTTP live stream.
+- `/capture` — still image.
+- `/status` — device status.
 
-Later, small telemetry/events can use HTTP or WebSocket. Internet mode can be added later through a backend/cloud service. Radio can be added later as a replaceable communication/backhaul layer.
+Later:
+- HTTP/WebSocket for control/events/telemetry.
+- Backend/cloud for remote Internet mode.
+- Radio modem/gateway as a replaceable future transport layer.
 
-## 6. Android is the central command center
+## 6. Android = central command center
 
-The Android app is not just a viewer. It is the main operator console and visual face of the system. It should be able to control and configure all supported device capabilities through a stable device abstraction.
+The Android app is the main operator console and visual face of the system. It must control and configure every supported ESP32 capability through a capability-aware device abstraction and must never be tied to one hard-coded IP/port.
 
-Required screen/feature families:
+### Core screen families
 
-### A. Dashboard / Monitoring Center
-- current date/time;
-- online/offline state;
+1. **Dashboard / Monitoring Center**
+- date/time;
+- current system state;
 - vehicle/object counts;
-- average/current speed metrics;
+- current/average speed;
 - speeding count;
-- watchlist matches;
-- alerts and warnings;
-- device health and future electrical/power telemetry;
+- watchlist hits;
+- alerts/warnings;
+- device health;
+- future voltage/current/power telemetry;
 - quick actions.
 
-### B. Live Camera
-- live video;
-- stream diagnostics;
+2. **Live Camera**
+- live stream;
 - capture;
-- supported camera controls;
-- connection status.
+- camera controls;
+- connection diagnostics;
+- device status.
 
-### C. Live Intelligent Radar / Analytics
-This is a separate major feature from the basic live camera view.
+3. **Intelligent Radar / Live Analytics**
+A separate analytics workspace over live or selected media.
 
-The user wants an advanced real-time "smart radar" visualization that overlays the video and automatically:
-- detects vehicles and configurable moving objects;
-- assigns object/vehicle IDs;
-- tracks objects across frames;
-- displays trajectories/trails;
-- estimates motion/speed when the scene is calibrated enough;
-- allows filtering by speed range or object class;
-- can focus on objects moving at a configured speed or threshold;
-- exposes configurable tracking/analytics parameters;
-- evolves over time as more algorithms are added.
+Required direction:
+- automatic vehicle/object detection;
+- persistent IDs;
+- tracking and trajectory trails;
+- speed/direction when measurable;
+- confidence;
+- filters by object class and speed range;
+- focus on objects moving at configured speeds;
+- expandable algorithm controls.
 
 Conceptual pipeline:
-
 ```text
-Live Video
-   ↓
-Frame Acquisition
-   ↓
-Object Detection
-   ↓
-Multi-Object Tracking
-   ↓
-Trajectory / Motion Estimation
-   ↓
-Camera + Road Calibration
-   ↓
-Ground-Plane Projection
-   ↓
-Speed Estimation
-   ↓
-Filtering / Confidence
-   ↓
-Radar Overlay + Events
+Video
+ ↓
+Detection
+ ↓
+Multi-object tracking
+ ↓
+Motion/trajectory
+ ↓
+Camera + road calibration
+ ↓
+Ground-plane projection
+ ↓
+Speed estimation
+ ↓
+Filtering + confidence
+ ↓
+Radar overlay + events
 ```
 
-The UI should allow the operator to change tracking filters, including a rule such as "show/follow only objects between X and Y km/h". Tracking and speed should remain distinct concepts: an object can be tracked even when its speed estimate is unavailable or low-confidence.
+4. **Local Analysis / Test Lab**
+A dedicated hardware-free engineering laboratory.
+- pick video/image from device storage;
+- run analysis on local media;
+- inspect detections/tracks/trajectory/speed;
+- apply calibration where required;
+- view results and analysis metadata;
+- later compare algorithm versions on fixed test media.
 
-### D. Local Analysis / Test Lab
-A dedicated testing screen is required even before physical ESP32 hardware is available.
+Important principle: live ESP32 frames and local files must enter the same abstract analysis pipeline.
 
-The user can:
-- choose a video from the Android device storage/gallery;
-- optionally choose an image sequence/image;
-- run the same analysis pipeline used for live video where practical;
-- detect and track vehicles/objects;
-- estimate speed from video when calibration permits;
-- visualize boxes, IDs, trajectories and speed;
-- obtain an analysis report/results summary;
-- compare algorithm changes on fixed test media.
+5. **Images / Evidence**
+- captures;
+- evidence;
+- vehicle records;
+- plate/OCR;
+- speed/time/metadata.
 
-This screen is intended as an engineering/research laboratory, not only a media player.
-
-Important design principle: the core analysis engine should be separable from the camera transport so local files can enter the pipeline exactly as live camera frames do.
-
-### E. Images / Evidence
-- captured images;
-- event evidence;
-- vehicle record;
-- plate/OCR result;
-- speed/time;
-- metadata.
-
-### F. ESP32-CAM Device Control
-- capture image on demand;
+6. **ESP32-CAM Device Control**
+- capture on demand;
 - supported camera parameters;
-- device status;
-- safe restart/shutdown where firmware/hardware supports it;
-- device commands must be capability-aware rather than hard-coded.
+- status;
+- safe restart/shutdown/reset where supported;
+- capability-aware commands.
 
-### G. Device Connection / Connectivity
+7. **Connectivity**
 - add/select devices;
 - editable host/IP;
-- editable port(s);
-- endpoint/path configuration where needed;
+- editable ports;
+- endpoint settings;
 - connection test;
-- timeouts/retry/reconnect;
+- timeout/retry/reconnect;
 - device identity/profile;
-- local Wi-Fi configuration helpers;
-- no single hard-coded device address.
+- no hard-coded single address.
 
-### H. Traffic Rules / Policies
+8. **Traffic Rules / Policies**
 - speed limits;
 - capture thresholds;
 - alarm thresholds;
 - object classes;
 - direction/zone rules when supported;
-- configurable violation actions;
-- enable/disable and priority/severity.
+- violation actions;
+- priority/severity;
+- enable/disable.
 
-### I. Watchlist / Reports
-The user can enter reports such as a vehicle plate `1/52863`.
+9. **Watchlist / Reports**
+Example reported plate: `1/52863`.
+A match can trigger configurable actions such as capture, event creation, operator alert, evidence preservation and reporting of plate/speed/time/metadata.
+Plate format must remain configurable and normalized carefully.
 
-A watchlist match should be able to trigger configurable actions, for example:
-- immediate capture;
-- create event;
-- alert operator;
-- preserve evidence;
-- report plate/OCR confidence;
-- include timestamp, speed and available vehicle metadata.
-
-The system must not assume a single fixed plate format; plate matching should be configurable and normalized carefully.
-
-### J. Alerts / Notifications
+10. **Alerts / Notifications**
 - speeding;
 - watchlist hits;
-- device online/offline;
+- device offline/online;
 - camera faults;
 - storage warnings;
-- power/voltage warnings when telemetry exists;
+- power warnings when telemetry exists;
 - analysis failures;
-- system health.
+- system faults.
 
-### K. System Settings
-- traffic rules;
-- device fleet;
-- camera calibration;
-- analysis configuration;
+11. **System Settings**
+- rules;
+- devices;
+- calibration;
+- analysis;
 - storage/retention;
-- event policy.
+- event policies.
 
-### L. Application Settings
+12. **Application Settings**
 - theme;
 - notifications;
 - language;
 - accessibility;
 - display;
-- application behavior.
+- app behavior.
 
 ## 7. UI/design direction
 
-The application is the face of the system and must have a premium, advanced control-center feel.
+The application is the face of the system and must feel like a premium professional control center.
 
 Requirements:
-- sophisticated dark-first visual direction as the starting point;
-- strong information hierarchy;
-- data-rich monitoring surfaces without clutter;
-- polished cards, indicators, badges and charts;
-- high-quality typography, spacing, iconography and motion;
-- adaptive/responsive layouts;
+- dark-first, high-contrast technical aesthetic;
+- sophisticated cards/panels and live indicators;
+- strong numeric hierarchy for operational metrics;
+- coherent typography, spacing and iconography;
+- restrained accent colors with warning/error colors reserved for states;
+- meaningful motion for state/transition feedback;
+- adaptive layouts;
 - reusable design-system components;
-- live analytics overlays must remain readable over video;
-- settings can be extensive but should be organized into clear groups.
+- radar overlays readable over video;
+- complex configuration grouped into hubs/nested screens.
 
-The bottom navigation should contain only the most important top-level destinations. Complex areas such as rules, watchlist, connectivity, diagnostics and app/system settings should generally live behind the relevant hub screens or nested navigation rather than overflowing the bottom bar.
+The bottom navigation should eventually remain compact. During the foundation phase a few high-value sections may be exposed directly; later we can consolidate less-frequent areas behind hubs or a More/Settings area.
+
+A detailed visual direction is recorded in `docs/UI_VISION.md`.
 
 ## 8. Camera-only speed estimation
 
-The preferred research direction is to estimate speed from video without mandatory sensors.
-
-Target pipeline:
-
+Preferred research path:
 ```text
 Video frames
-  ↓
-Vehicle detection
-  ↓
+ ↓
+Vehicle/object detection
+ ↓
 Multi-object tracking
-  ↓
-Vehicle ground/contact point estimation
-  ↓
+ ↓
+Ground/contact point estimation
+ ↓
 Camera + road calibration
-  ↓
-Perspective / homography mapping
-  ↓
+ ↓
+Perspective/homography mapping
+ ↓
 Image coordinates → ground coordinates (meters)
-  ↓
+ ↓
 Position over time
-  ↓
+ ↓
 Velocity estimation
-  ↓
-Filtering / regression
-  ↓
+ ↓
+Filtering/regression/outlier rejection
+ ↓
 Speed + confidence/error
 ```
 
-Key constraint: raw pixel displacement is not a physical speed measurement. The scene needs a defensible mapping from image coordinates to real-world geometry. The project must validate accuracy against a known reference before making strong accuracy claims.
+Raw pixel displacement alone is not a physical speed measurement. Accuracy must be validated against known references before strong claims are made.
 
-Potential algorithm components:
-- camera intrinsics/extrinsics calibration;
-- road-plane modeling;
+Potential components:
+- intrinsic/extrinsic camera calibration;
+- road-plane model;
 - homography/projective geometry;
-- object detection;
+- detection;
 - multi-object tracking;
 - optical flow/features where useful;
-- robust trajectory fitting;
-- Kalman filtering/smoothing;
+- trajectory fitting;
+- Kalman smoothing;
+- robust regression;
 - outlier rejection;
 - confidence/error estimation.
 
-## 9. Intelligent radar concept
+Physical sensor timing can later act as a reference or sensor-fusion input rather than the primary method.
 
-"Radar" in the UI/project refers to a software computer-vision analytics layer, not a claim that the ESP32-CAM is a physical radar sensor.
+## 9. Intelligent radar model
 
-The radar UI should present:
-- live scene;
-- tracked-object markers;
-- object IDs;
-- velocity/speed where available;
-- trajectory trails;
+"Radar" is a software computer-vision analytics layer, not a claim that ESP32-CAM itself is a radar sensor.
+
+The operator should eventually see:
+- scene/video;
+- object boxes/markers;
+- IDs;
+- trails;
 - direction;
+- speed when measurable;
 - confidence;
-- configurable target filters;
-- events and violations.
+- selected-target state;
+- events/violations.
 
-Example configurable tracking filter:
-
+Filters should support general predicates such as:
 ```text
-Target class: Vehicle
-Minimum speed: 80 km/h
-Maximum speed: 160 km/h
-Action: track + highlight + event
+class
+speed range
+confidence
+zone
+ direction
+watchlist state
 ```
+with AND/OR composition rather than a hard-coded speed-only mode.
 
-The engine should support a general predicate model so this can later become combinations of speed, class, zone, direction, confidence and watchlist state rather than a hard-coded "speed filter".
+## 10. Sensors retained for reference
 
-## 10. Sensor discussion retained for reference
+If physical timing sensors are needed later:
+- prefer proper through-beam photoelectric/IR sensors over cheap robot obstacle sensors for multi-meter experiments;
+- discussed example: OMRON E3Z-T61 (through-beam IR, 15 m reference), with E3Z-T62 as a longer-range variant;
+- industrial sensor outputs require appropriate interface/voltage protection before ESP32 GPIO;
+- no sensors are required for v0.1.
 
-If physical sensors are later needed for a prototype reference:
-- Prefer proper through-beam photoelectric/IR sensors over cheap short-range robot obstacle sensors for multi-meter timing experiments.
-- Example discussed: OMRON E3Z-T61 (through-beam IR, 15 m sensing distance) as an industrial reference; E3Z-T62 was also discussed as a longer-range variant.
-- Such industrial outputs must not be connected directly to an ESP32 GPIO without proper voltage/interface protection.
-- No sensor purchase is required for v0.1.
+## 11. Software/language direction
 
-## 11. Networking discussion retained for future
+- **Kotlin** — Android UI/application/domain orchestration.
+- **Jetpack Compose** — Android UI.
+- **C++** — performance-sensitive vision/math through Android NDK/JNI when needed.
+- **Python** — research, dataset preparation, prototyping, evaluation and benchmarking.
+- **C/C++** — ESP32 firmware.
 
-### Local mode
-```text
-ESP32-CAM → Wi-Fi → Android
-```
+The analysis interface must be independent of transport so live camera, local files and future sources can share the same engine API.
 
-### Internet mode (future)
-```text
-ESP32-CAM → Wi-Fi/4G router → Internet → Backend → Android
-```
-
-For scalable remote operation, the camera should maintain a device/session connection to a backend rather than exposing a raw local IP directly to the phone.
-
-### Radio mode (future)
-```text
-ESP32-CAM → Radio modem → Radio gateway/backhaul → Server → Android
-```
-
-Radio is a future replaceable transport layer, not part of v0.1.
-
-## 12. Software/language direction
-
-The project uses a multi-language architecture with clear boundaries:
-- **Kotlin** for Android application/UI and app-level logic.
-- **Jetpack Compose** for UI.
-- **C++** for performance-sensitive native computer-vision/math through Android NDK/JNI when needed.
-- **Python** for research, dataset preparation, algorithm prototyping, evaluation and benchmarking.
-- **C/C++** for ESP32 firmware.
-
-The analysis API should be defined independently of UI so the same engine can receive frames from live camera input or local files.
-
-## 13. Repository structure target
+## 12. Repository structure
 
 ```text
 Smart-monitoring-system/
@@ -363,123 +322,85 @@ Smart-monitoring-system/
 │   ├── PROJECT_CONTEXT.md
 │   ├── ARCHITECTURE.md
 │   ├── UI_SPEC.md
+│   ├── UI_VISION.md
 │   ├── AI_RADAR_ARCHITECTURE.md
 │   ├── LOCAL_ANALYSIS_LAB.md
 │   └── ANDROID_CI.md
 └── README.md
 ```
 
-## 14. Continuous Integration / APK requirement
+## 13. CI/CD and APK
 
-GitHub Actions is part of the project, not an optional afterthought.
+GitHub Actions is a permanent project requirement.
 
-The Android CI workflow should:
-- run on pushes and pull requests;
-- use JDK 17;
-- provision the required Gradle version;
-- build a debug APK;
-- run unit tests;
-- upload the APK as a workflow artifact;
-- upload test reports even when tests fail where possible;
-- expose build failures and logs in the GitHub Actions UI.
+Current workflow:
+`.github/workflows/android-ci.yml`
 
-Current workflow file:
-`/.github/workflows/android-ci.yml`
+It:
+- triggers on pushes and pull requests to `main`;
+- uses JDK 17;
+- provisions Gradle 9.5.0;
+- builds Debug APK;
+- runs unit tests;
+- uploads the APK as `smart-traffic-debug-apk`;
+- uploads test reports;
+- exposes build logs/status in Actions.
 
-Current CI documentation:
-`docs/ANDROID_CI.md`
+The user verified the workflow succeeded on 2026-09-02:
+- Debug APK build: **SUCCESS**;
+- unit-test task: **SUCCESS** (currently no unit-test sources, task reported `NO-SOURCE`);
+- APK artifact uploaded successfully;
+- artifact size reported around 18 MB as a ZIP artifact.
 
-Current Android build configuration:
-- AGP 9.1.2
-- Kotlin Compose plugin 2.2.10
-- Java 17
-- Gradle 9.3.1 in CI
-- compileSdk 37
+Current Android build uses AGP 9.3.2 and Gradle 9.5.0 in CI. Keep these aligned unless a future verified release requires another combination.
 
-## 15. Development phases
+## 14. Current implementation state
 
-### Phase 0 — Project/build foundation
-- repository structure;
-- Android project;
-- CI/CD APK artifact;
-- test baseline;
-- design system foundation.
+The repository has:
+- Android Compose foundation;
+- app navigation;
+- Dashboard shell upgraded toward the premium control-center direction;
+- Live Camera shell;
+- Intelligent Radar shell with live analytics surface and minimum-speed control;
+- Local Analysis Lab shell with Android document picker;
+- Devices, Alerts and Settings feature areas;
+- device/analysis documentation;
+- CI workflow building a Debug APK successfully.
 
-### Phase 1 — Hardware-free Local Analysis Lab
-- video/image picker;
-- frame extraction;
-- basic playback;
-- detection/tracking pipeline abstraction;
-- results visualization;
-- test/report model.
+The latest UI work is intentionally a foundation, not the final visual product. Real video rendering, real device communication, actual detection/tracking and speed computation are still to be implemented.
 
-### Phase 2 — ESP32-CAM local connection
-- identify exact board;
-- firmware camera startup;
-- local Wi-Fi;
-- live MJPEG stream;
-- still capture;
-- Android device profile and connection test.
-
-### Phase 3 — Live Intelligent Radar
-- detection;
-- tracking;
-- trajectories;
-- target filters;
-- initial speed estimation;
-- confidence and diagnostics.
-
-### Phase 4 — Calibration + speed research
-- camera calibration workflow;
-- road-plane mapping;
-- homography;
-- trajectory smoothing;
-- benchmark against known-speed video/test references.
-
-### Phase 5 — Evidence and rules
-- vehicle records;
-- plate detection/OCR;
-- watchlist;
-- configurable rules;
-- alerts;
-- evidence packaging.
-
-### Phase 6 — Device fleet / future transports
-- multiple ESP32 devices;
-- Internet/backend mode;
-- radio/backhaul mode;
-- fleet monitoring;
-- remote management.
-
-## 16. Development rules
+## 15. Development rules
 
 - Work step-by-step and verify each milestone before advancing.
-- Do not dump dozens of unrelated files at once without explanation.
-- For each code file, state exactly where it belongs.
-- Use real build/runtime logs when debugging.
-- Do not assume unverified hardware variants.
-- Do not buy all components before the first milestone succeeds.
-- Avoid premature OCR, sensors, radio and cloud infrastructure.
-- Keep communication and processing layers modular so transport can later change without rewriting the whole system.
+- Do not dump dozens of unrelated files without explaining where each belongs.
+- Use real build/runtime logs to debug.
+- Do not assume an unverified hardware variant.
 - Do not hard-code one ESP32 IP/port.
+- Keep UI, domain, transport and analysis engine separate.
+- Do not claim radar-level accuracy without validation.
 - No map widget unless explicitly requested.
-- Separate UI, domain logic, device transport and analysis engine.
-- Treat speed estimation as an engineering measurement problem with calibration and validation, not merely an AI prediction.
+- Keep sensor integration optional.
+- Treat the context document as mandatory living project state.
 
-## 17. Conversation continuity requirement
+## 16. Conversation continuity rule
 
-The user explicitly asked that project context be preserved in a dedicated context document and updated with substantive conversation progress. This is an explicit standing project rule. The document should continue to capture new user requirements, decisions, corrections, implementation results and next actions.
+After every substantive project discussion, update this document with:
+- the user's new requirements/questions;
+- decisions and corrections;
+- implementation changes;
+- build/test results;
+- unresolved items;
+- next actions.
 
-## 18. Current implementation status
+The goal is to allow a future conversation to resume from this file without depending on chat memory.
 
-Repository state includes the Android project shell, feature package structure, Compose theme foundation, initial navigation/screens, and GitHub Actions Android CI workflow. The exact state of each build must be checked from the latest GitHub Actions run before claiming the APK is successfully built.
+## 17. Current next actions
 
-## 19. Immediate next actions
-
-1. Run/inspect the Android CI build and fix any real compile/build errors.
-2. Build the premium design system and replace structural placeholders.
-3. Implement the Local Analysis/Test Lab screen and analysis-session data model.
-4. Implement the Intelligent Radar screen architecture and overlay model.
-5. Establish the camera/device protocol abstraction before physical ESP32 hardware integration.
-6. When the physical ESP32-CAM is available, verify the exact board and implement v0.1 local live stream + capture.
-7. Continue updating this context document after every substantive project discussion.
+1. Keep CI green after each significant implementation change.
+2. Finish the reusable premium UI design system and responsive navigation.
+3. Define stable domain models for Device, CameraStream, MediaSource, Detection, Track, SpeedEstimate, Event, Rule and Watchlist entry.
+4. Define the analysis-engine interface shared by Local Analysis and Live Radar.
+5. Implement actual local media analysis incrementally.
+6. Implement configurable ESP32-CAM device profiles and local HTTP communication.
+7. When hardware is available, verify exact ESP32-CAM board and implement live stream + still capture.
+8. Develop and benchmark camera-only speed estimation with calibrated scenes and known references.
