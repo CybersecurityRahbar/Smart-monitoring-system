@@ -16,6 +16,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,6 +41,7 @@ enum class AppDestination {
     Dashboard, Radar, Live, Alerts, More, Reports, Analysis, Devices, Rules, Watchlist, Evidence, Settings
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppNavHost() {
     var destination by remember { mutableStateOf(AppDestination.Dashboard) }
@@ -64,8 +66,6 @@ fun AppNavHost() {
         } else if (destination != AppDestination.Dashboard) {
             destination = AppDestination.Dashboard
         }
-        // At the dashboard root we intentionally consume the first back press.
-        // The operator remains inside the control center rather than exiting abruptly.
     }
 
     Scaffold(
