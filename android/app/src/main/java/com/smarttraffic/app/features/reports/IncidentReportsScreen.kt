@@ -4,10 +4,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddAlert
@@ -20,12 +23,13 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,11 +38,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.shape.RoundedCornerShape
 import com.smarttraffic.app.core.tr
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun IncidentReportsScreen(paddingValues: PaddingValues) {
     var type by remember { mutableStateOf("Traffic violation") }
@@ -83,22 +85,8 @@ fun IncidentReportsScreen(paddingValues: PaddingValues) {
                     }
                 }
 
-                OutlinedTextField(
-                    value = location,
-                    onValueChange = { location = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(tr("location")) },
-                    leadingIcon = { Icon(Icons.Filled.LocationOn, null) },
-                    singleLine = true,
-                )
-
-                OutlinedTextField(
-                    value = plate,
-                    onValueChange = { plate = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(tr("plateNumber")) },
-                    singleLine = true,
-                )
+                OutlinedTextField(value = location, onValueChange = { location = it }, modifier = Modifier.fillMaxWidth(), label = { Text(tr("location")) }, leadingIcon = { Icon(Icons.Filled.LocationOn, null) }, singleLine = true)
+                OutlinedTextField(value = plate, onValueChange = { plate = it }, modifier = Modifier.fillMaxWidth(), label = { Text(tr("plateNumber")) }, singleLine = true)
 
                 Text(tr("priority"), style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -110,21 +98,11 @@ fun IncidentReportsScreen(paddingValues: PaddingValues) {
                     }
                 }
 
-                OutlinedTextField(
-                    value = details,
-                    onValueChange = { details = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(tr("details")) },
-                    minLines = 4,
-                )
+                OutlinedTextField(value = details, onValueChange = { details = it }, modifier = Modifier.fillMaxWidth(), label = { Text(tr("details")) }, minLines = 4)
 
-                Button(
-                    onClick = { submitted = true },
-                    enabled = location.isNotBlank() && details.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
+                Button(onClick = { submitted = true }, enabled = location.isNotBlank() && details.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Filled.AddAlert, null)
-                    Spacer(Modifier.padding(horizontal = 4.dp))
+                    Spacer(Modifier.height(0.dp))
                     Text(tr("submitReport"))
                 }
             }
