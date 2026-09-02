@@ -8,7 +8,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * ByteTrack-inspired Android tracker with the important production ingredients:
+ * ByteTrack-inspired Android tracker with production-oriented ingredients:
  * Kalman motion prediction, global linear assignment, two-stage high/low score
  * association, class-aware gating, confirmation and explicit lost-track handling.
  *
@@ -57,7 +57,7 @@ class ByteTrack(
             matchedDetectionIndices += match.detection.index
         }
 
-        // Second association: unmatched previously existing tracks with lower-score detections.
+        // Second association: unmatched existing tracks with lower-confidence detections.
         associate(
             tracks.values.filter { !it.matched && it.hits > 0 },
             low,
@@ -69,7 +69,7 @@ class ByteTrack(
 
         tracks.values.forEach { if (!it.matched) it.markLost() }
 
-        // A new identity is created only from an unmatched high-confidence observation.
+        // New identities are created only from unmatched high-confidence observations.
         high.forEach { indexed ->
             if (indexed.index in matchedDetectionIndices) return@forEach
             val track = InternalTrack(nextId++, indexed.value, frameIndex, timestampMs)
@@ -81,8 +81,8 @@ class ByteTrack(
         val iterator = tracks.iterator()
         while (iterator.hasNext()) {
             val track = iterator.next().value
-            // Single-frame false positives are discarded immediately unless confirmed
-            // by the next frame. Confirmed tracks may survive temporary occlusion.
+            // Single-frame false positives are discarded immediately. Confirmed tracks
+            // may survive temporary detector misses/occlusion up to maxLostFrames.
             if ((track.hits == 1 && track.lostFrames > 0) || track.lostFrames > maxLostFrames) {
                 iterator.remove()
             } else {
@@ -110,8 +110,15 @@ class ByteTrack(
                 if (track.lastDetection.classId != detection.classId) {
                     invalidCost
                 } else {
-                    val overlap = iou(track.predicted, detection)
-                    if (overlap < minimumIou) invalidCost else 1.0 - overlap
+                    // Prediction is valuable for motion, but a cold/temporarily stale
+                    // Kalman state must not fragment an otherwise obvious identity.
+                    // Use the stronger of the predicted-box and last-measured-box IoU
+                    // for gating and assignment cost. This preserves motion awareness
+                    // while remaining robust to short frame gaps and rapid motion.
+                    val predictedIou = iou(track.predicted, detection)
+                    val measuredIou = iou(track.lastDetection, detection)
+                    val associationIou = max(predictedIou, measuredIou)
+                    if (associationIou < minimumIou) invalidCost else 1.0 - associationIou
                 }
             }
         }
@@ -121,9 +128,11 @@ class ByteTrack(
             val track = trackList[row]
             val detection = detections[column]
             if (track.lastDetection.classId != detection.value.classId) return@mapNotNull null
-            val overlap = iou(track.predicted, detection.value)
-            if (overlap < minimumIou) return@mapNotNull null
-            Match(track, detection, overlap)
+            val predictedIou = iou(track.predicted, detection.value)
+            val measuredIou = iou(track.lastDetection, detection.value)
+            val associationIou = max(predictedIou, measuredIou)
+            if (associationIou < minimumIou) return@mapNotNull null
+            Match(track, detection, associationIou)
         }
     }
 
