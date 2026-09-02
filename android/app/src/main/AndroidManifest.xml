@@ -9,11 +9,13 @@
         android:allowBackup="true"
         android:label="Smart Traffic"
         android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.SmartTraffic">
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:supportsPictureInPicture="true">
+            android:supportsPictureInPicture="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
