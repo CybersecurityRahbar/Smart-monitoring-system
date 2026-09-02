@@ -10,8 +10,6 @@ target_compile_features(smarttraffic_native PRIVATE cxx_std_20)
 
 target_compile_options(smarttraffic_native PRIVATE
     -O3
-    -ffast-math
-    -fno-exceptions
     -fno-rtti
 )
 
