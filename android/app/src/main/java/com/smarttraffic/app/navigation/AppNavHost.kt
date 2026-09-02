@@ -2,13 +2,11 @@ package com.smarttraffic.app.navigation
 
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Analytics
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Dashboard
-import androidx.compose.material.icons.filled.DevicesOther
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -20,64 +18,95 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.smarttraffic.app.core.tr
 import com.smarttraffic.app.features.alerts.AlertsScreen
 import com.smarttraffic.app.features.analysis.LocalAnalysisScreen
 import com.smarttraffic.app.features.dashboard.DashboardScreen
 import com.smarttraffic.app.features.devices.DevicesScreen
+import com.smarttraffic.app.features.evidence.EvidenceScreen
 import com.smarttraffic.app.features.live.LiveCameraScreen
+import com.smarttraffic.app.features.more.OperationsHubScreen
 import com.smarttraffic.app.features.radar.IntelligentRadarScreen
+import com.smarttraffic.app.features.reports.IncidentReportsScreen
+import com.smarttraffic.app.features.rules.TrafficRulesScreen
 import com.smarttraffic.app.features.settings.SettingsScreen
+import com.smarttraffic.app.features.watchlist.WatchlistScreen
 
-private enum class TopLevelDestination(val label: String) {
-    Dashboard("Dashboard"),
-    Radar("Radar"),
-    Live("Live"),
-    Analysis("Lab"),
-    Devices("Devices"),
-    Alerts("Alerts"),
-    Settings("Settings"),
+enum class AppDestination {
+    Dashboard, Radar, Live, Alerts, More, Reports, Analysis, Devices, Rules, Watchlist, Evidence, Settings
 }
 
 @Composable
 fun AppNavHost() {
-    var destination by remember { mutableStateOf(TopLevelDestination.Dashboard) }
+    var destination by remember { mutableStateOf(AppDestination.Dashboard) }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
             NavigationBar {
-                TopLevelDestination.entries.forEach { item ->
+                val primary = listOf(
+                    AppDestination.Dashboard,
+                    AppDestination.Radar,
+                    AppDestination.Live,
+                    AppDestination.Alerts,
+                    AppDestination.More,
+                )
+                primary.forEach { item ->
                     NavigationBarItem(
                         selected = destination == item,
                         onClick = { destination = item },
                         icon = {
                             Icon(
                                 imageVector = when (item) {
-                                    TopLevelDestination.Dashboard -> Icons.Filled.Dashboard
-                                    TopLevelDestination.Radar -> Icons.Filled.Speed
-                                    TopLevelDestination.Live -> Icons.Filled.CameraAlt
-                                    TopLevelDestination.Analysis -> Icons.Filled.Analytics
-                                    TopLevelDestination.Devices -> Icons.Filled.DevicesOther
-                                    TopLevelDestination.Alerts -> Icons.Filled.Notifications
-                                    TopLevelDestination.Settings -> Icons.Filled.Settings
+                                    AppDestination.Dashboard -> Icons.Filled.Dashboard
+                                    AppDestination.Radar -> Icons.Filled.Speed
+                                    AppDestination.Live -> Icons.Filled.Videocam
+                                    AppDestination.Alerts -> Icons.Filled.Notifications
+                                    AppDestination.More -> Icons.Filled.MoreHoriz
+                                    else -> Icons.Filled.MoreHoriz
                                 },
-                                contentDescription = item.label,
+                                contentDescription = item.name,
                             )
                         },
-                        label = { Text(item.label) },
+                        label = {
+                            Text(
+                                when (item) {
+                                    AppDestination.Dashboard -> tr("dashboard")
+                                    AppDestination.Radar -> tr("radar")
+                                    AppDestination.Live -> tr("live")
+                                    AppDestination.Alerts -> tr("alerts")
+                                    AppDestination.More -> tr("more")
+                                    else -> item.name
+                                },
+                            )
+                        },
                     )
                 }
             }
         },
     ) { paddingValues ->
         when (destination) {
-            TopLevelDestination.Dashboard -> DashboardScreen(paddingValues)
-            TopLevelDestination.Radar -> IntelligentRadarScreen(paddingValues)
-            TopLevelDestination.Live -> LiveCameraScreen(paddingValues)
-            TopLevelDestination.Analysis -> LocalAnalysisScreen(paddingValues)
-            TopLevelDestination.Devices -> DevicesScreen(paddingValues)
-            TopLevelDestination.Alerts -> AlertsScreen(paddingValues)
-            TopLevelDestination.Settings -> SettingsScreen(paddingValues)
+            AppDestination.Dashboard -> DashboardScreen(paddingValues)
+            AppDestination.Radar -> IntelligentRadarScreen(paddingValues)
+            AppDestination.Live -> LiveCameraScreen(paddingValues)
+            AppDestination.Alerts -> AlertsScreen(paddingValues)
+            AppDestination.More -> OperationsHubScreen(
+                paddingValues = paddingValues,
+                onReports = { destination = AppDestination.Reports },
+                onAnalysis = { destination = AppDestination.Analysis },
+                onDevices = { destination = AppDestination.Devices },
+                onRules = { destination = AppDestination.Rules },
+                onWatchlist = { destination = AppDestination.Watchlist },
+                onEvidence = { destination = AppDestination.Evidence },
+                onSettings = { destination = AppDestination.Settings },
+            )
+            AppDestination.Reports -> IncidentReportsScreen(paddingValues)
+            AppDestination.Analysis -> LocalAnalysisScreen(paddingValues)
+            AppDestination.Devices -> DevicesScreen(paddingValues)
+            AppDestination.Rules -> TrafficRulesScreen(paddingValues)
+            AppDestination.Watchlist -> WatchlistScreen(paddingValues)
+            AppDestination.Evidence -> EvidenceScreen(paddingValues)
+            AppDestination.Settings -> SettingsScreen(paddingValues)
         }
     }
 }
