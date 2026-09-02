@@ -57,6 +57,9 @@ jobs:
       - name: Run unit tests
         run: gradle :app:testDebugUnitTest --stacktrace
 
+      - name: Run Android Lint
+        run: gradle :app:lintDebug --stacktrace
+
       - name: Upload debug APK
         if: success()
         uses: actions/upload-artifact@v6
@@ -71,6 +74,26 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: android-test-reports
-          path: android/app/build/reports/tests/testDebugUnitTest/**
+          path: |
+            android/app/build/reports/tests/testDebugUnitTest/**
+            android/app/build/reports/lint-results-debug.*
           if-no-files-found: ignore
           retention-days: 7
+
+  research-tests:
+    name: Validate Offline Research Math
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install research dependency
+        run: python -m pip install --disable-pip-version-check numpy
+
+      - name: Run research unit tests
+        run: python -m unittest discover -s ai/tests -p 'test_*.py' -v
