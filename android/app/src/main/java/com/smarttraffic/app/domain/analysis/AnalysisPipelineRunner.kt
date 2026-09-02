@@ -16,6 +16,8 @@ class AnalysisPipelineRunner(
         require(config.minimumDetectionConfidence >= config.trackerInputMinimumConfidence) {
             "minimumDetectionConfidence must not be below trackerInputMinimumConfidence"
         }
+        require(config.minimumTrackDurationMs >= 0L) { "minimumTrackDurationMs must be >= 0" }
+        require(config.minimumSpeedSamples >= 4) { "minimumSpeedSamples must be >= 4" }
         require(config.maxPlausibleSpeedKmh > 0.0) { "maxPlausibleSpeedKmh must be positive" }
         require(config.maxCalibrationReprojectionErrorPixels > 0.0) { "maxCalibrationReprojectionErrorPixels must be positive" }
         require(config.minimumCalibrationInlierRatio in 0.0..1.0) { "minimumCalibrationInlierRatio must be within [0,1]" }
@@ -57,30 +59,42 @@ class AnalysisPipelineRunner(
         var droppedFrames = 0L
         var trackingAssociationMisses = 0L
         var peakActiveTracks = 0
+        var lastActiveTracks = 0
         var previousFrameIndex: Long? = null
-        var firstTimestamp = Long.MAX_VALUE
-        var lastTimestamp = Long.MIN_VALUE
         val analysisStartNs = System.nanoTime()
 
         try {
             while (true) {
                 val frame = source.nextFrame() ?: break
                 frameCount++
-                firstTimestamp = minOf(firstTimestamp, frame.timestampMs)
-                lastTimestamp = maxOf(lastTimestamp, frame.timestampMs)
 
                 previousFrameIndex?.let { previous ->
-                    if (frame.index > previous + 1L) droppedFrames += frame.index - previous - 1L
+                    require(frame.index > previous) {
+                        "Frame indices must increase strictly: previous=$previous current=${frame.index}"
+                    }
+                    if (frame.index > previous + 1L) {
+                        droppedFrames += frame.index - previous - 1L
+                    }
                 }
                 previousFrameIndex = frame.index
 
                 val inferenceStartNs = System.nanoTime()
-                val rawDetections = detector.detect(frame.payload, frame.timestampMs, frame.index)
+                val rawDetections = try {
+                    detector.detect(frame.payload, frame.timestampMs, frame.index)
+                } catch (error: Throwable) {
+                    throw IllegalStateException(
+                        "Object detector failed at frame=${frame.index}, timestampMs=${frame.timestampMs}",
+                        error,
+                    )
+                }
                 val inferenceLatencyMs = (System.nanoTime() - inferenceStartNs) / 1_000_000.0
-                if (inferenceLatencyMs.isFinite() && inferenceLatencyMs >= 0.0) inferenceSamples += inferenceLatencyMs
+                require(inferenceLatencyMs.isFinite() && inferenceLatencyMs >= 0.0) {
+                    "Measured detector latency is invalid at frame=${frame.index}"
+                }
+                inferenceSamples += inferenceLatencyMs
 
                 val trackingDetections = rawDetections.filter {
-                    it.confidence.isFinite() && it.confidence >= config.trackerInputMinimumConfidence
+                    it.confidence.isFinite() && it.confidence in config.trackerInputMinimumConfidence..1f
                 }
                 trackingDetectionCount += trackingDetections.size.toLong()
                 val reportableDetections = trackingDetections.filter {
@@ -89,6 +103,7 @@ class AnalysisPipelineRunner(
                 allDetections += reportableDetections
 
                 val tracks = tracker.update(trackingDetections, frame.index, frame.timestampMs)
+                lastActiveTracks = tracks.size
                 peakActiveTracks = maxOf(peakActiveTracks, tracks.size)
                 for (track in tracks) {
                     val observation = track.observations.lastOrNull { it.frameIndex == frame.index }
@@ -106,7 +121,12 @@ class AnalysisPipelineRunner(
                         runCatching {
                             HomographyProjector(config.calibration!!.homography)
                                 .project(contact.first, contact.second)
-                        }.getOrNull()
+                        }.getOrElse { error ->
+                            throw IllegalStateException(
+                                "Ground-plane projection failed at frame=${frame.index}, track=${track.id}",
+                                error,
+                            )
+                        }
                     } else null
 
                     val enriched = observation.copy(groundPoint = ground, keypoints = keypoints)
@@ -118,7 +138,9 @@ class AnalysisPipelineRunner(
                     buffer.observations += enriched
 
                     if (config.enablePlateRecognition) {
-                        plateRecognizer!!.recognize(frame.payload, observation.detection)?.let(plateReadings::add)
+                        plateRecognizer!!.recognize(frame.payload, observation.detection)?.let { reading ->
+                            plateReadings += reading.copy(trackId = reading.trackId ?: track.id)
+                        }
                     }
                 }
             }
@@ -180,7 +202,7 @@ class AnalysisPipelineRunner(
                 detections = allDetections.size.toLong(),
                 inferenceFailures = 0,
                 trackingAssociationMisses = trackingAssociationMisses,
-                activeTracks = 0,
+                activeTracks = lastActiveTracks,
                 peakActiveTracks = peakActiveTracks,
                 completedTracks = completedTracks.size.toLong(),
                 speedEstimates = speedEstimates.size.toLong(),
@@ -193,11 +215,16 @@ class AnalysisPipelineRunner(
 
     private fun calibrationAccepted(config: AnalysisConfig): Boolean {
         val calibration = config.calibration ?: return !config.requireValidatedCalibration
+        if (calibration.imageWidth <= 0 || calibration.imageHeight <= 0) return false
+        if (calibration.homography.size != 9 || calibration.homography.any { !it.isFinite() }) return false
         if (!config.requireValidatedCalibration) return true
+
         val reprojection = calibration.reprojectionErrorPixels ?: return false
         val inlierRatio = calibration.homographyInlierRatio ?: return false
-        return reprojection.isFinite() && reprojection <= config.maxCalibrationReprojectionErrorPixels &&
-            inlierRatio.isFinite() && inlierRatio >= config.minimumCalibrationInlierRatio
+        return reprojection.isFinite() && reprojection >= 0.0 &&
+            reprojection <= config.maxCalibrationReprojectionErrorPixels &&
+            inlierRatio.isFinite() && inlierRatio in 0.0..1.0 &&
+            inlierRatio >= config.minimumCalibrationInlierRatio
     }
 
     private fun percentile(sorted: List<Double>, p: Double): Double? {
@@ -224,14 +251,28 @@ class AnalysisPipelineRunner(
         else ((detection.left + detection.right) / 2.0) to detection.bottom.toDouble()
     }
 
-    private fun temporalPlateConsensus(readings: List<PlateReading>): List<PlateReading> =
-        readings.groupBy { normalizePlate(it.text) }
+    private fun temporalPlateConsensus(readings: List<PlateReading>): List<PlateReading> {
+        if (readings.isEmpty()) return emptyList()
+
+        val trackedConsensus = readings
+            .filter { it.trackId != null }
+            .groupBy { it.trackId!! to normalizePlate(it.text) }
             .values
-            .map { group -> group.maxBy { it.confidence } }
-            .sortedByDescending { it.confidence }
+            .map { group ->
+                group.maxWithOrNull(
+                    compareBy<PlateReading> { it.confidence }
+                        .thenByDescending { it.frameIndex },
+                )!!
+            }
+
+        val untrackedReadings = readings.filter { it.trackId == null }
+        return (trackedConsensus + untrackedReadings).sortedWith(
+            compareByDescending<PlateReading> { it.confidence }.thenByDescending { it.frameIndex },
+        )
+    }
 
     private fun normalizePlate(text: String): String =
-        text.uppercase().replace(" ", "").replace("-", "")
+        text.uppercase().filter { it.isLetterOrDigit() }
 
     private data class MutableTrackBuffer(
         val id: Long,
