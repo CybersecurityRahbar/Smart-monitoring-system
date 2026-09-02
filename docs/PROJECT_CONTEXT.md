@@ -106,24 +106,39 @@ This is explicitly included as an **optional research mode** in Local Analysis. 
 ## Current AI/math implementation
 Files under `android/app/src/main/java/com/smarttraffic/app/domain/analysis/`:
 - `AnalysisModels.kt`: MediaSource, Detection, VehicleKeypoint, TrackObservation, Track, GroundPoint, SpeedEstimate, PlateReading, CalibrationProfile, AnalysisConfig, AnalysisMetrics, AnalysisResult.
-- `AnalysisEngine.kt`: ObjectDetector, MultiObjectTracker, VehicleKeypointEstimator, PlateRecognizer, AnalysisEngine and ModularAnalysisEngine coordinator skeleton.
+- `AnalysisEngine.kt`: ObjectDetector, MultiObjectTracker, VehicleKeypointEstimator, PlateRecognizer, AnalysisEngine and ModularAnalysisEngine connected to the frame pipeline.
+- `FrameSource.kt`: timestamped transport-independent frame contract.
+- `AnalysisPipelineRunner.kt`: actual frame loop that calls detector, tracker, optional keypoint/plate stages, contact-point logic, homography projection and robust speed estimation.
 - `GeometryAndSpeed.kt`: HomographyProjector + robust multi-sample/MAD outlier speed estimator.
 - `HomographyEstimator.kt`: dependency-free homography solver for deterministic tests; native/OpenCV robust/RANSAC path remains planned.
 - `ValidationMetrics.kt`: speed MAE/RMSE/median/P90/P95 and ±5/10/20% tolerance metrics.
 
-A duplicate VehicleKeypoint declaration in `AnalysisEngine.kt` was found and removed; `VehicleKeypoint` is now defined once in `AnalysisModels.kt`.
+`AnalysisConfig` now carries an optional `CalibrationProfile` and independent switches for ground-plane geometry, Vehicle Keypoints, Dynamic Keypoint Homography, Optical Flow refinement, Segmentation refinement and Re-ID.
 
-## Current AnalysisConfig switches
-- detector model;
-- tracker;
-- ground-plane calibration;
-- Vehicle Keypoints;
-- Dynamic Keypoint Homography;
-- Optical Flow refinement;
-- Segmentation refinement;
-- Re-ID;
-- OCR/rules/evidence;
-- radar overlay.
+## Local video/frame transport
+Added:
+- `data/analysis/LocalVideoFrameSource.kt` for real local video frame extraction using `MediaMetadataRetriever` and media timestamps;
+- `LocalImageFrameSource` for one-frame image experiments.
+
+## Live video transport
+Added:
+- `core/network/MjpegStreamClient.kt` dependency-free multipart MJPEG decoder;
+- `LiveCameraScreen` now uses the configured `DeviceSettings.streamUrl()` and displays decoded frames;
+- `VideoViewport` accepts a real `Bitmap` frame and live status text;
+- Live Camera has connect/reconnect/disconnect states.
+
+This live transport is code-complete enough for hardware testing, but final verification still requires a real ESP32-CAM stream.
+
+## Offline research engine
+Added under `ai/`:
+- `README.md` describing research/benchmark workflow;
+- `requirements.txt` for Ultralytics/OpenCV/NumPy/Pandas/SciPy;
+- `run_traffic_analysis.py` runnable video research pipeline using an explicit YOLO model and selectable tracker;
+- optional fixed homography speed projection;
+- optional Vehicle Keypoint + Dynamic Homography research path when a compatible keypoint model and template are supplied;
+- JSONL/JSON outputs and optional annotated video.
+
+Model weights are intentionally not bundled or invented in the repository; explicit validated weights must be supplied.
 
 ## Validation methodology
 Detection: precision/recall/mAP when ground truth exists.
@@ -143,32 +158,51 @@ Do not trust one OCR frame when multiple observations of a track exist.
 Store track ID, camera ID, timestamp, speed, rule threshold, confidence, metric position/zone, evidence refs, plate result and calibration/model/tracker versions.
 
 ## Research basis checked 2026-09-02
-- Ultralytics current multi-object tracking docs: BoT-SORT, ByteTrack, OC-SORT, Deep OC-SORT, FastTracker, TrackTrack.
-- Ultralytics YOLO26 vs RT-DETRv2 comparison.
+- Ultralytics current multi-object tracking docs: BoT-SORT, ByteTrack, OC-SORT, Deep OC-SORT, FastTracker, TrackTrack. citeturn562939search2turn562939search5
+- Ultralytics YOLO26 model/export documentation and YOLO26→LiteRT export path for edge/mobile deployment. citeturn562939search0turn562939search6turn562939search8
+- Google LiteRT current repository and samples, including the newer CompiledModel API and mobile acceleration direction. citeturn123045search2turn123045search6
 - 2026 monocular vehicle-speed research using vehicle keypoints + dynamic homography.
 - OpenCV homography/projective-geometry primitives.
 - Meta SAM2/SAM2.1 video segmentation/tracking.
 - Grounded-SAM2 grounding/segmentation/tracking workflows.
 
+Key engineering rule: model hype never overrides measured performance on our own traffic clips and target Android hardware.
+
 ## CI/CD
 GitHub Actions is mandatory. Previously verified Run #69 succeeded for Debug APK + tests + artifact.
 
-New AI/lab commits triggered **Run #87**; at last check its job was in progress. Do not call the newest AI changes build-verified until Run #87 completes successfully.
+Run #87 was cancelled by newer commits while its build step was in progress; it must not be treated as a failed source-code diagnosis and it must not be treated as verified. The latest commits after that run require a new CI result.
 
 ## Current status
-The project has moved from UI-only scaffolding into the deterministic AI/measurement foundation. The real ML runtime is **not finished yet**: frame decoding, detector adapters/model packaging, tracker implementations, native/OpenCV calibration/RANSAC, actual keypoint model, live ESP32 stream rendering, OCR runtime and persistence remain to be connected.
+The project has moved from UI-only scaffolding into a real deterministic measurement and transport foundation:
+- real local frame source;
+- real MJPEG decoder path;
+- real frame-pipeline coordinator;
+- robust homography projection and speed estimation;
+- advanced experiment switches;
+- Python research/benchmark runner.
+
+Still pending for a truly operational end-to-end AI system:
+- a validated on-device detector runtime/model adapter;
+- actual tracker implementation adapters on Android (rather than only contracts/runner);
+- actual trained vehicle-keypoint model;
+- native/OpenCV calibration + robust/RANSAC implementation;
+- real ESP32 firmware and hardware stream validation;
+- plate detector/OCR runtime;
+- persistence for events/evidence/watchlist;
+- complete rules/event integration with the engine;
+- runtime benchmarking and model selection on the user's actual phone.
 
 ## Next execution order
-1. Verify latest CI.
-2. Install/test Lab and Devices UI.
-3. Verify exact ESP32-CAM + OV2640 hardware.
-4. Implement ESP32 `/status`, `/capture`, `/stream`.
-5. Implement Android MJPEG source/decoder + reconnect/backpressure.
-6. Connect real decoded frames to AnalysisEngine.
-7. Integrate and benchmark detector candidates on the actual phone.
-8. Integrate and benchmark tracker candidates.
-9. Add camera calibration UI and native/OpenCV robust/RANSAC homography.
-10. Implement production camera-only speed measurement and quality gates.
-11. Implement actual Vehicle Keypoint + Dynamic Homography research backend and compare against calibrated baseline.
-12. Add plate detector/OCR + temporal fusion + rules/watchlist/evidence.
-13. Optimize with frame scheduling, quantization, GPU/NPU/native acceleration based on measured results.
+1. Verify a new CI run after the latest frame-pipeline/video commits.
+2. Install/test Live Camera with a known MJPEG source or the actual ESP32-CAM.
+3. Confirm exact ESP32-CAM + OV2640 hardware.
+4. Implement verified-board ESP32 `/status`, `/capture`, `/stream`.
+5. Connect the local MJPEG frames to `FrameSource`/`AnalysisPipelineRunner` through a production inference adapter.
+6. Integrate the first LiteRT-compatible YOLO26 model backend and benchmark CPU/GPU/NPU paths where available.
+7. Add Android tracker adapters and benchmark BoT-SORT/ByteTrack/OC-SORT/Deep OC-SORT.
+8. Add calibration profile UI/storage and native/OpenCV RANSAC homography.
+9. Implement and benchmark the camera-only speed pipeline with quality gates.
+10. Implement the actual Vehicle Keypoint + Dynamic Homography research backend and compare against calibrated baseline.
+11. Add plate detector/OCR + temporal fusion + rules/watchlist/evidence persistence.
+12. Optimize frame scheduling, quantization and accelerator selection based on measured results.
