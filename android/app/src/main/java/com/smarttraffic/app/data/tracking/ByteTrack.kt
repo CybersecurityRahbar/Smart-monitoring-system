@@ -116,7 +116,7 @@ class ByteTrack(
                     // for gating and assignment cost. This preserves motion awareness
                     // while remaining robust to short frame gaps and rapid motion.
                     val predictedIou = iou(track.predicted, detection)
-                    val measuredIou = iou(track.lastDetection, detection)
+                    val measuredIou = iou(ByteTrackBox(track.lastDetection), detection)
                     val associationIou = max(predictedIou, measuredIou)
                     if (associationIou < minimumIou) invalidCost else 1.0 - associationIou
                 }
@@ -129,7 +129,7 @@ class ByteTrack(
             val detection = detections[column]
             if (track.lastDetection.classId != detection.value.classId) return@mapNotNull null
             val predictedIou = iou(track.predicted, detection.value)
-            val measuredIou = iou(track.lastDetection, detection.value)
+            val measuredIou = iou(ByteTrackBox(track.lastDetection), detection.value)
             val associationIou = max(predictedIou, measuredIou)
             if (associationIou < minimumIou) return@mapNotNull null
             Match(track, detection, associationIou)
