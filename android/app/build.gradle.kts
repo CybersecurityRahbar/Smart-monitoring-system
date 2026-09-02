@@ -58,7 +58,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
 
-    implementation("com.google.ai.edge.litert:litert:2.1.6")
+    implementation("com.google.ai.edge.litert:litert:2.2.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 
