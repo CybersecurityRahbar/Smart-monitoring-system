@@ -15,9 +15,6 @@ import kotlin.math.min
  * Supported Ultralytics detection exports:
  * 1) YOLO26 end-to-end: [1,300,6] -> xyxy, confidence, classId.
  * 2) Traditional detection: [1,84,8400] -> xywh + class scores.
- *
- * Traditional output gets class-aware NMS on Android. Model weights stay
- * outside source control and are supplied as assets/models/*.tflite.
  */
 class LiteRtObjectDetector(
     context: Context,
@@ -32,6 +29,7 @@ class LiteRtObjectDetector(
         context.assets,
         assetName,
         CompiledModel.Options(accelerator),
+        null,
     )
     private val inputBuffers = model.createInputBuffers()
     private val outputBuffers = model.createOutputBuffers()
@@ -55,12 +53,8 @@ class LiteRtObjectDetector(
         lastInferenceLatencyMs = (System.nanoTime() - startNs) / 1_000_000.0
 
         return parseDetections(
-            raw = outputBuffers[0].readFloat(),
-            letterbox = prepared,
-            originalWidth = frame.width,
-            originalHeight = frame.height,
-            timestampMs = timestampMs,
-            frameIndex = frameIndex,
+            outputBuffers[0].readFloat(), prepared,
+            frame.width, frame.height, timestampMs, frameIndex,
         )
     }
 
@@ -105,17 +99,8 @@ class LiteRtObjectDetector(
             val bottom = toOriginalY(raw[offset + 3], letterbox, originalHeight)
             if (right <= left || bottom <= top) continue
 
-            results += Detection(
-                classId = classId,
-                className = classNames.getValue(classId),
-                confidence = confidence.coerceIn(0f, 1f),
-                left = left,
-                top = top,
-                right = right,
-                bottom = bottom,
-                frameIndex = frameIndex,
-                timestampMs = timestampMs,
-            )
+            results += Detection(classId, classNames.getValue(classId), confidence.coerceIn(0f, 1f),
+                left, top, right, bottom, frameIndex, timestampMs)
         }
         return results
     }
@@ -155,23 +140,16 @@ class LiteRtObjectDetector(
             val bottom = toOriginalY((y + h * 0.5f) * inputSize, letterbox, originalHeight)
             if (right <= left || bottom <= top) continue
 
-            candidates += Detection(
-                classId = bestClass,
-                className = classNames.getValue(bestClass),
-                confidence = bestConfidence.coerceIn(0f, 1f),
-                left = left,
-                top = top,
-                right = right,
-                bottom = bottom,
-                frameIndex = frameIndex,
-                timestampMs = timestampMs,
-            )
+            candidates += Detection(bestClass, classNames.getValue(bestClass), bestConfidence.coerceIn(0f, 1f),
+                left, top, right, bottom, frameIndex, timestampMs)
         }
         return nonMaxSuppression(candidates, nmsIouThreshold)
     }
 
     override fun close() {
-        model.destroy()
+        inputBuffers.forEach { it.close() }
+        outputBuffers.forEach { it.close() }
+        model.close()
     }
 
     companion object {
