@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DevicesOther
@@ -27,7 +26,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.smarttraffic.app.core.AppLanguage
 import com.smarttraffic.app.core.AppSettings
 import com.smarttraffic.app.core.DeviceSettings
 import com.smarttraffic.app.core.tr
@@ -39,6 +40,7 @@ import java.net.URL
 
 @Composable
 fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValues) {
+    val context = LocalContext.current
     var host by remember { mutableStateOf(DeviceSettings.host) }
     var port by remember { mutableStateOf(DeviceSettings.httpPort.toString()) }
     var streamPath by remember { mutableStateOf(DeviceSettings.streamPath) }
@@ -50,7 +52,7 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
 
     fun saveProfile() {
         DeviceSettings.save(
-            context = androidx.compose.ui.platform.LocalContext.current,
+            context = context,
             newHost = host,
             newHttpPort = port.toIntOrNull() ?: DeviceSettings.httpPort,
             newStreamPath = streamPath,
@@ -118,7 +120,7 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
                 Text(
                     text = buildString {
                         append(deviceText("Base URL: ", "العنوان الأساسي: "))
-                        append(DeviceSettings.baseUrlPreview(host, port.toIntOrNull() ?: 80))
+                        append(baseUrlPreview(host, port.toIntOrNull() ?: 80))
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -182,7 +184,7 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
 
 private enum class ConnectionState { IDLE, TESTING, SUCCESS, ERROR }
 
-private fun deviceText(en: String, ar: String): String = if (AppSettings.language == com.smarttraffic.app.core.AppLanguage.ARABIC) ar else en
+private fun deviceText(en: String, ar: String): String = if (AppSettings.language == AppLanguage.ARABIC) ar else en
 
 private suspend fun testEndpoint(urlString: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
     runCatching {
@@ -196,28 +198,19 @@ private suspend fun testEndpoint(urlString: String): Pair<Boolean, String> = wit
         val code = connection.responseCode
         connection.disconnect()
         if (code in 200..299) {
-            true to if (AppSettings.language == com.smarttraffic.app.core.AppLanguage.ARABIC) {
-                "تم الاتصال بنجاح • HTTP $code"
-            } else {
-                "Connection successful • HTTP $code"
-            }
+            true to deviceText("Connection successful • HTTP $code", "تم الاتصال بنجاح • HTTP $code")
         } else {
-            false to if (AppSettings.language == com.smarttraffic.app.core.AppLanguage.ARABIC) {
-                "الجهاز ردّ بالرمز HTTP $code"
-            } else {
-                "Device responded with HTTP $code"
-            }
+            false to deviceText("Device responded with HTTP $code", "الجهاز ردّ بالرمز HTTP $code")
         }
     }.getOrElse { error ->
-        false to if (AppSettings.language == com.smarttraffic.app.core.AppLanguage.ARABIC) {
-            "تعذر الاتصال: ${error.message ?: "خطأ في الشبكة"}"
-        } else {
-            "Connection failed: ${error.message ?: "network error"}"
-        }
+        false to deviceText(
+            "Connection failed: ${error.message ?: "network error"}",
+            "تعذر الاتصال: ${error.message ?: "خطأ في الشبكة"}",
+        )
     }
 }
 
-private fun DeviceSettings.baseUrlPreview(host: String, port: Int): String {
+private fun baseUrlPreview(host: String, port: Int): String {
     val cleanHost = host.trim().removePrefix("http://").removePrefix("https://").trimEnd('/')
     return "http://$cleanHost:$port"
 }
