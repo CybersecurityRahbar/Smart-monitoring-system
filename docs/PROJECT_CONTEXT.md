@@ -121,17 +121,19 @@ Files under `android/app/src/main/java/com/smarttraffic/app/domain/analysis/`:
 
 ## LiteRT detector integration — current
 Added under `android/app/src/main/java/com/smarttraffic/app/data/vision/`:
-- `LiteRtObjectDetector.kt`: first real Android detector adapter using LiteRT `CompiledModel` and `TensorBuffer`.
+- `LiteRtObjectDetector.kt`: first real Android detector adapter using LiteRT `CompiledModel` and tensor buffers.
 - `DetectorBenchmark.kt`: on-device benchmark with warmup, mean, median, P95, min/max latency and estimated FPS.
 
 Android dependency:
-- `com.google.ai.edge.litert:litert:2.1.6`.
+- `com.google.ai.edge.litert:litert:2.2.0`.
+- 2.1.6 was removed after AGP 9.3.2 reported duplicate `com.google.ai.edge.litert` namespace between `litert` and `litert-api`.
+- Google currently lists LiteRT 2.2.0 as the latest Android release and 2.1.6 as legacy.
 
-The detector currently targets the current Ultralytics YOLO LiteRT end-to-end `[N,6]` output convention and traffic classes car/motorcycle/bus/truck. The preprocessing path is CPU Kotlin today and is intentionally isolated so it can be replaced by the native C++ path without changing the detector contract.
+The detector is designed to support current Ultralytics detection output layouts including end-to-end `[1,300,6]` and traditional `[1,84,8400]` style parsing, with class-aware NMS where required. The preprocessing path is CPU Kotlin today and is intentionally isolated so it can be replaced by the native C++ path without changing the detector contract.
 
-Model weights are **not bundled**. `android/app/src/main/assets/models/README.md` defines the expected model asset workflow and export convention. A validated model file is required before claiming real detector inference on a phone.
+Model weights are **not bundled**. `android/app/src/main/assets/models/README.md` defines the expected model asset workflow. A validated model file is required before claiming real detector inference on a phone.
 
-Important runtime rule: benchmark CPU/GPU/NPU on the actual target phone where supported; do not copy vendor/website latency numbers into project results. LiteRT's newer CompiledModel API supports accelerator selection directly, while current public ecosystem reports show that NPU behavior can vary by device/runtime/model, so failures must be captured rather than hidden.
+Important runtime rule: benchmark CPU/GPU/NPU on the actual target phone where supported; do not copy vendor/website latency numbers into project results. LiteRT's CompiledModel API supports accelerator selection directly, and accelerator behavior must be captured per device/model rather than assumed.
 
 ## C++ / Android NDK native core — current
 Added under `android/app/src/main/cpp/`:
@@ -145,9 +147,9 @@ Added Kotlin facade:
 Android native build:
 - NDK `27.2.12479018`.
 - CMake `3.22.1`.
-- CI explicitly installs those SDK components before Gradle build.
+- CI installs those SDK components explicitly.
 
-The C++ layer is intentionally dependency-light in this first stage. OpenCV will be introduced when we implement native/RANSAC calibration, optical flow and other operations where its optimized primitives materially help. Future ByteTrack/association and selected tracking primitives can also move into C++ after correctness benchmarks.
+The C++ layer is intentionally dependency-light in this first stage. OpenCV will be introduced when native/RANSAC calibration, optical flow or other optimized CV operations are actually integrated and benchmarked. Future tracker association and hot-path preprocessing may also move to C++ after profiling.
 
 ## Local video/frame transport
 Added:
@@ -157,7 +159,7 @@ Added:
 ## Live video transport
 Added:
 - `core/network/MjpegStreamClient.kt` dependency-free multipart MJPEG decoder;
-- `LiveCameraScreen` now uses the configured `DeviceSettings.streamUrl()` and displays decoded frames;
+- `LiveCameraScreen` uses configured `DeviceSettings.streamUrl()` and displays decoded frames;
 - `VideoViewport` accepts a real `Bitmap` frame and live status text;
 - Live Camera has connect/reconnect/disconnect states.
 
@@ -191,20 +193,16 @@ Do not trust one OCR frame when multiple observations of a track exist.
 ## Events/evidence
 Store track ID, camera ID, timestamp, speed, rule threshold, confidence, metric position/zone, evidence refs, plate result and calibration/model/tracker versions.
 
-## Research basis checked 2026-09-02
-- Ultralytics current YOLO26 model/export documentation and YOLO26→LiteRT export path for edge/mobile deployment. citeturn618122search0turn618122search4
-- Google LiteRT current Kotlin `CompiledModel` / `TensorBuffer` APIs and official samples. citeturn654830view0turn685123search0turn537531search3
-- Current public LiteRT 2.x Android issues show that accelerator behavior, especially NPU paths, must be validated per hardware/runtime/model combination. citeturn133042search0turn133042search2
-
-Key engineering rule: model hype never overrides measured performance on our own traffic clips and target Android hardware.
-
 ## CI/CD
 GitHub Actions is mandatory. Previously verified Run #69 succeeded for Debug APK + tests + artifact.
 
-Run #87 was cancelled by newer commits while its build step was in progress; it must not be treated as a failed source-code diagnosis and it must not be treated as verified. Later commits introduced the LiteRT and native build layers, so each new source stage requires a fresh successful CI run before claiming build integrity.
+Run #104/105 exposed a `MediaMetadataRetriever` API misuse; fixed by switching to the `Context + Uri` overload.
+Run #123 exposed `sdkmanager` missing from PATH after NDK/CMake was added; fixed by resolving the SDK manager path in the workflow.
+Run #124 reached Gradle successfully but failed in Android manifest processing because LiteRT 2.1.6 and `litert-api` shared a namespace under AGP 9.3.2. This triggered the upgrade to LiteRT 2.2.0.
+A fresh CI run after the 2.2.0 change is required before calling the combined LiteRT+NDK build verified.
 
 ## Current status
-The project has moved from UI-only scaffolding into a real transport + deterministic measurement foundation and now has the first real mobile inference/native runtime layer:
+The project has moved from UI-only scaffolding into a real transport + deterministic measurement foundation and now has the first mobile inference/native runtime layer:
 - real local frame source;
 - real MJPEG decoder path;
 - real frame-pipeline coordinator;
@@ -212,13 +210,15 @@ The project has moved from UI-only scaffolding into a real transport + determini
 - LiteRT detector adapter;
 - device-side detector benchmark primitive;
 - C++/JNI native geometry/speed core;
+- ByteTrack Android baseline source;
 - advanced experiment switches;
 - Python research/benchmark runner.
 
 Still pending for a truly operational end-to-end AI system:
+- a successful CI run with LiteRT 2.2.0 + NDK/CMake;
 - validated `.tflite` detector weights installed and tested on the user's actual phone;
 - UI wiring for model/backend benchmark and visible benchmark reports;
-- actual Android tracker implementation adapters (rather than only contracts/runner);
+- full tracker correctness implementation/validation and actual integration with the pipeline runner;
 - actual trained vehicle-keypoint model;
 - native/OpenCV calibration + robust/RANSAC implementation;
 - native optical-flow refinement;
@@ -228,14 +228,14 @@ Still pending for a truly operational end-to-end AI system:
 - complete rules/event integration with the engine.
 
 ## Next execution order
-1. Verify the fresh Android CI run with both LiteRT and NDK/CMake.
-2. Add a model/backend registry and wire the benchmark into Analysis Lab.
-3. Put a validated YOLO26 LiteRT asset on the test device and run CPU/GPU/NPU measurements.
-4. Compare detector candidates on the same traffic clips and phone, recording accuracy + latency + thermal behavior.
-5. Implement Android ByteTrack as the correctness baseline, then benchmark BoT-SORT/OC-SORT/Deep OC-SORT and move hot association math to C++ where profiling justifies it.
-6. Connect detector + tracker outputs to `AnalysisPipelineRunner` so Local Analysis produces real tracks instead of configuration-only status.
+1. Verify the fresh Android CI run after upgrading to LiteRT 2.2.0.
+2. If CI succeeds, add focused unit tests for detector preprocessing/output parsing, ByteTrack association, native-vs-Kotlin geometry parity and speed estimator parity.
+3. Add a model/backend registry and wire DetectorBenchmark into Analysis Lab.
+4. Put validated YOLO26 LiteRT assets on the test device and run CPU/GPU/NPU measurements.
+5. Compare detector candidates on the same traffic clips and phone, recording accuracy + latency + thermal behavior.
+6. Finish ByteTrack correctness and integrate detector + tracker outputs into `AnalysisPipelineRunner` so Local Analysis produces real tracks.
 7. Add camera calibration profile UI/storage and native/OpenCV RANSAC homography.
-8. Route metric trajectory estimation through the validated native speed primitive where it matches the Kotlin reference implementation.
+8. Route metric trajectory estimation through validated native speed primitives where parity tests pass.
 9. Implement and benchmark camera-only speed with explicit quality gates and validation error.
 10. Implement actual Vehicle Keypoint + Dynamic Homography research backend and compare with fixed calibrated homography.
 11. Add plate detector/OCR + temporal fusion + rules/watchlist/evidence persistence.
