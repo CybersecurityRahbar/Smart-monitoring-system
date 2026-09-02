@@ -232,7 +232,7 @@ class TrafficReliabilityTest {
 
         override suspend fun nextFrame(): AnalysisFrame? = frames.getOrNull(cursor++)
 
-        override fun close() {
+        override suspend fun close() {
             closed = true
         }
     }
