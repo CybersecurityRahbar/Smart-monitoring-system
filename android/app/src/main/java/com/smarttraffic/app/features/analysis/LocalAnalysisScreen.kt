@@ -23,7 +23,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -34,55 +33,63 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.smarttraffic.app.core.AppLanguage
+import com.smarttraffic.app.core.AppSettings
 import com.smarttraffic.app.core.tr
+import com.smarttraffic.app.data.vision.DetectorModelRegistry
 import com.smarttraffic.app.domain.analysis.AnalysisConfig
+import com.smarttraffic.app.domain.analysis.AnalysisResult
 
 private enum class AnalysisSource { VIDEO, IMAGE }
-private enum class AnalysisTestMode { FULL_PIPELINE, DETECTION_TRACKING, SPEED_CALIBRATION, PLATE_READ }
+private enum class AnalysisTestMode { DETECTION_TRACKING, SPEED_CALIBRATION, PLATE_READ }
 
 @Composable
-fun LocalAnalysisScreen(paddingValues: PaddingValues) {
-    var selectedMedia by remember { mutableStateOf<String?>(null) }
+fun LocalAnalysisScreen(
+    paddingValues: PaddingValues,
+    viewModel: LocalAnalysisViewModel = viewModel(),
+) {
+    var selectedUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var source by remember { mutableStateOf(AnalysisSource.VIDEO) }
-    var testMode by remember { mutableStateOf(AnalysisTestMode.FULL_PIPELINE) }
-    var showRadarOverlay by remember { mutableStateOf(true) }
-    var useCalibratedHomography by remember { mutableStateOf(true) }
+    var testMode by remember { mutableStateOf(AnalysisTestMode.DETECTION_TRACKING) }
+    var useCalibratedHomography by remember { mutableStateOf(false) }
     var useVehicleKeypoints by remember { mutableStateOf(false) }
     var useDynamicKeypointHomography by remember { mutableStateOf(false) }
     var useOpticalFlowRefinement by remember { mutableStateOf(false) }
     var useSegmentationRefinement by remember { mutableStateOf(false) }
-    var useReIdentification by remember { mutableStateOf(true) }
-    var knownDistanceText by remember { mutableStateOf("10") }
-    var referenceFramesText by remember { mutableStateOf("30") }
-    var confidenceText by remember { mutableStateOf("70") }
-    var testState by remember { mutableStateOf(TestState.IDLE) }
-    var testMessage by remember { mutableStateOf<String?>(null) }
+    var useReIdentification by remember { mutableStateOf(false) }
+    var confidenceText by remember { mutableStateOf("25") }
+    var referenceFramesText by remember { mutableStateOf("8") }
 
-    val mediaPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        selectedMedia = uri?.toString()
-        if (uri != null) testState = TestState.READY
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val modelSpec = remember { DetectorModelRegistry.requireSpec("yolo26n") }
+    val modelInstalled = remember { DetectorModelRegistry.isInstalled(context, modelSpec) }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        selectedUri = uri
+        if (uri != null) viewModel.reset()
     }
 
-    val analysisConfig = AnalysisConfig(
-        minimumDetectionConfidence = (confidenceText.toFloatOrNull() ?: 70f).coerceIn(1f, 100f) / 100f,
-        minimumSpeedSamples = (referenceFramesText.toIntOrNull() ?: 30).coerceIn(4, 300),
+    val config = AnalysisConfig(
+        detectorModel = modelSpec.id,
+        tracker = "bytetrack",
+        minimumDetectionConfidence = (confidenceText.toFloatOrNull() ?: 25f).coerceIn(1f, 100f) / 100f,
+        minimumSpeedSamples = (referenceFramesText.toIntOrNull() ?: 8).coerceIn(4, 300),
         useGroundPlane = useCalibratedHomography,
         useVehicleKeypoints = useVehicleKeypoints,
         useDynamicKeypointHomography = useDynamicKeypointHomography,
         useOpticalFlowRefinement = useOpticalFlowRefinement,
         useSegmentationRefinement = useSegmentationRefinement,
         useReIdentification = useReIdentification,
-        showRadarOverlay = showRadarOverlay,
+        enablePlateRecognition = testMode == AnalysisTestMode.PLATE_READ,
+        showRadarOverlay = true,
     )
 
     Column(
-        Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(paddingValues)
-            .padding(horizontal = 18.dp, vertical = 16.dp),
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(paddingValues).padding(horizontal = 18.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -101,12 +108,12 @@ fun LocalAnalysisScreen(paddingValues: PaddingValues) {
                     Spacer(Modifier.size(8.dp))
                     Text(tr("mediaSource"), style = MaterialTheme.typography.titleMedium)
                 }
-                Text(selectedMedia ?: tr("noMedia"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(selectedUri?.toString() ?: tr("noMedia"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = source == AnalysisSource.VIDEO, onClick = { source = AnalysisSource.VIDEO }, label = { Text(labText("Video", "فيديو")) })
                     FilterChip(selected = source == AnalysisSource.IMAGE, onClick = { source = AnalysisSource.IMAGE }, label = { Text(labText("Image", "صورة")) })
                 }
-                Button(onClick = { mediaPicker.launch(arrayOf(if (source == AnalysisSource.VIDEO) "video/*" else "image/*")) }) {
+                Button(onClick = { picker.launch(arrayOf(if (source == AnalysisSource.VIDEO) "video/*" else "image/*")) }) {
                     Text(tr("chooseFromDevice"))
                 }
             }
@@ -114,73 +121,47 @@ fun LocalAnalysisScreen(paddingValues: PaddingValues) {
 
         Surface(shape = RoundedCornerShape(24.dp), tonalElevation = 2.dp) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(labText("Test profile", "ملف الاختبار"), style = MaterialTheme.typography.titleMedium)
+                Text(labText("Runtime readiness", "جاهزية التشغيل"), style = MaterialTheme.typography.titleMedium)
+                ReadinessRow(labText("Detector model", "نموذج الكشف"), "${modelSpec.id} • ${if (modelInstalled) labText("installed", "مثبت") else labText("NOT installed", "غير مثبت")}")
+                ReadinessRow(labText("Tracker", "التتبع"), "ByteTrack • Kalman + global assignment")
+                ReadinessRow(labText("Physical speed", "السرعة الفيزيائية"), if (useCalibratedHomography) labText("requires validated calibration", "يتطلب معايرة موثقة") else labText("blocked until validated calibration is supplied", "محجوبة حتى يتم توفير معايرة موثقة"))
                 Text(
                     labText(
-                        "The Lab replays the same analysis engine used by Live Radar. Radar is only the visualization layer; it is not a second speed algorithm.",
-                        "المختبر يعيد تشغيل محرك التحليل نفسه المستخدم في الرادار المباشر. الرادار طبقة عرض للنتائج وليس خوارزمية سرعة ثانية.",
+                        "No model, no calibration and no unavailable backend is silently substituted. A failed capability is reported as an error rather than a fake measurement.",
+                        "لا يتم تعويض النموذج أو المعايرة أو أي مكوّن غير متوفر بصمت. المكوّن غير المتوفر يظهر كخطأ بدل إنتاج قياس وهمي.",
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = testMode == AnalysisTestMode.FULL_PIPELINE, onClick = { testMode = AnalysisTestMode.FULL_PIPELINE }, label = { Text(labText("Full pipeline", "المسار الكامل")) })
-                    FilterChip(selected = testMode == AnalysisTestMode.DETECTION_TRACKING, onClick = { testMode = AnalysisTestMode.DETECTION_TRACKING }, label = { Text(labText("Detect + track", "كشف + تتبع")) })
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = testMode == AnalysisTestMode.SPEED_CALIBRATION, onClick = { testMode = AnalysisTestMode.SPEED_CALIBRATION }, label = { Text(labText("Speed / calibration", "السرعة / المعايرة")) })
-                    FilterChip(selected = testMode == AnalysisTestMode.PLATE_READ, onClick = { testMode = AnalysisTestMode.PLATE_READ }, label = { Text(labText("Plate / OCR", "اللوحة / OCR")) })
-                }
-
-                OutlinedTextField(
-                    value = knownDistanceText,
-                    onValueChange = { knownDistanceText = it.filter { ch -> ch.isDigit() || ch == '.' }.take(8) },
-                    label = { Text(labText("Known reference distance (m)", "المسافة المرجعية المعروفة (متر)")) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = referenceFramesText,
-                    onValueChange = { referenceFramesText = it.filter(Char::isDigit).take(4) },
-                    label = { Text(labText("Analysis sample window", "نافذة عينات التحليل")) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = confidenceText,
-                    onValueChange = { confidenceText = it.filter(Char::isDigit).take(3) },
-                    label = { Text(labText("Minimum detection confidence (%)", "الحد الأدنى لثقة الكشف (%)")) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }
 
         Surface(shape = RoundedCornerShape(24.dp), tonalElevation = 2.dp) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(labText("Test profile", "ملف الاختبار"), style = MaterialTheme.typography.titleMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = testMode == AnalysisTestMode.DETECTION_TRACKING, onClick = { testMode = AnalysisTestMode.DETECTION_TRACKING }, label = { Text(labText("Detect + track", "كشف + تتبع")) })
+                    FilterChip(selected = testMode == AnalysisTestMode.SPEED_CALIBRATION, onClick = { testMode = AnalysisTestMode.SPEED_CALIBRATION }, label = { Text(labText("Speed / calibration", "السرعة / المعايرة")) })
+                    FilterChip(selected = testMode == AnalysisTestMode.PLATE_READ, onClick = { testMode = AnalysisTestMode.PLATE_READ }, label = { Text(labText("Plate / OCR", "اللوحة / OCR")) })
+                }
+                OutlinedNumberField(value = referenceFramesText, onValueChange = { referenceFramesText = it.filter(Char::isDigit).take(4) }, label = labText("Minimum speed samples", "الحد الأدنى لعينات السرعة"))
+                OutlinedNumberField(value = confidenceText, onValueChange = { confidenceText = it.filter(Char::isDigit).take(3) }, label = labText("Report confidence (%)", "ثقة الكشف المعروضة (%)"))
+            }
+        }
+
+        Surface(shape = RoundedCornerShape(24.dp), tonalElevation = 2.dp) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(labText("Advanced vision stack", "حزمة الرؤية المتقدمة"), style = MaterialTheme.typography.titleMedium)
+                Text(labText("Available vision backends", "مكوّنات الرؤية المتوفرة"), style = MaterialTheme.typography.titleMedium)
+                AnalysisToggle(labText("Validated road homography", "Homography موثقة للطريق"), useCalibratedHomography) { useCalibratedHomography = it }
+                AnalysisToggle(labText("Vehicle keypoints", "Vehicle Keypoints"), useVehicleKeypoints, enabled = false) {}
+                AnalysisToggle(labText("Dynamic keypoint homography", "Dynamic Keypoint Homography"), useDynamicKeypointHomography, enabled = false) {}
+                AnalysisToggle(labText("Optical flow refinement", "Optical Flow"), useOpticalFlowRefinement, enabled = false) {}
+                AnalysisToggle(labText("Segmentation refinement", "Segmentation"), useSegmentationRefinement, enabled = false) {}
+                AnalysisToggle(labText("Appearance Re-ID", "Appearance Re-ID"), useReIdentification, enabled = false) {}
                 Text(
                     labText(
-                        "Every switch changes the AnalysisConfig passed to the same engine. Methods are independent so experiments can be compared without changing the Lab workflow.",
-                        "كل مفتاح يغير إعدادات AnalysisConfig المرسلة إلى المحرك نفسه. التقنيات مستقلة حتى نستطيع مقارنة التجارب دون تغيير طريقة عمل المختبر.",
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                AnalysisToggle(labText("Calibrated road homography", "Homography معايرة سطح الطريق"), useCalibratedHomography) { useCalibratedHomography = it }
-                AnalysisToggle(labText("Vehicle keypoints", "نقاط المركبة Vehicle Keypoints"), useVehicleKeypoints) { useVehicleKeypoints = it }
-                AnalysisToggle(labText("Keypoint + dynamic homography research mode", "وضع البحث: Keypoints + Dynamic Homography"), useDynamicKeypointHomography) { useDynamicKeypointHomography = it }
-                AnalysisToggle(labText("Optical-flow refinement", "تحسين Optical Flow"), useOpticalFlowRefinement) { useOpticalFlowRefinement = it }
-                AnalysisToggle(labText("Segmentation refinement", "تحسين بالتقسيم Segmentation"), useSegmentationRefinement) { useSegmentationRefinement = it }
-                AnalysisToggle(labText("Appearance Re-ID for tracking", "إعادة التعرف البصري Re-ID للتتبع"), useReIdentification) { useReIdentification = it }
-                AnalysisToggle(labText("Radar overlay / trajectories", "طبقة الرادار / مسارات الحركة"), showRadarOverlay) { showRadarOverlay = it }
-
-                Text(
-                    labText(
-                        "Research note: the keypoint/dynamic-homography method is experimental and must be reported with measured error; it does not automatically become enforcement-grade.",
-                        "ملاحظة بحثية: طريقة Keypoints مع Dynamic Homography تجريبية ويجب عرض خطئها المقاس؛ لا تصبح تلقائيًا طريقة إنفاذ رسمية.",
+                        "Disabled means the backend is not installed yet; there is no hidden no-op implementation.",
+                        "التعطيل يعني أن الـbackend لم يُدمج بعد؛ لا توجد نسخة وهمية تعمل في الخلفية.",
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -190,67 +171,103 @@ fun LocalAnalysisScreen(paddingValues: PaddingValues) {
 
         Button(
             onClick = {
-                testState = TestState.RUNNING
-                testMessage = labText(
-                    "Test configuration compiled. The runtime engine will receive detector=${analysisConfig.detectorModel}, tracker=${analysisConfig.tracker}, keypoints=${analysisConfig.useVehicleKeypoints}, dynamicHomography=${analysisConfig.useDynamicKeypointHomography}, opticalFlow=${analysisConfig.useOpticalFlowRefinement}, segmentation=${analysisConfig.useSegmentationRefinement}, reID=${analysisConfig.useReIdentification}.",
-                    "تم تجهيز إعدادات الاختبار. سيستقبل المحرك إعدادات الكشف=${analysisConfig.detectorModel} والتتبع=${analysisConfig.tracker} وKeypoints=${analysisConfig.useVehicleKeypoints} وDynamicHomography=${analysisConfig.useDynamicKeypointHomography} وOpticalFlow=${analysisConfig.useOpticalFlowRefinement} وSegmentation=${analysisConfig.useSegmentationRefinement} وReID=${analysisConfig.useReIdentification}.",
-                )
-                testState = TestState.WAITING_ENGINE
+                val uri = selectedUri ?: return@Button
+                val effectiveConfig = when (testMode) {
+                    AnalysisTestMode.DETECTION_TRACKING -> config.copy(useGroundPlane = false)
+                    AnalysisTestMode.SPEED_CALIBRATION -> config.copy(useGroundPlane = true)
+                    AnalysisTestMode.PLATE_READ -> config.copy(enablePlateRecognition = true)
+                }
+                viewModel.run(uri, if (source == AnalysisSource.VIDEO) AnalysisMediaType.VIDEO else AnalysisMediaType.IMAGE, effectiveConfig)
             },
-            enabled = selectedMedia != null && testState != TestState.WAITING_ENGINE,
+            enabled = selectedUri != null && modelInstalled && state.phase != AnalysisRunPhase.RUNNING,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(Icons.Filled.PlayArrow, null, Modifier.size(18.dp))
             Spacer(Modifier.size(6.dp))
-            Text(labText("Start analysis test", "بدء اختبار التحليل"))
+            Text(labText("Run real analysis", "تشغيل التحليل الفعلي"))
         }
 
-        if (testMessage != null) {
+        if (state.message != null) {
             Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(testStatusTitle(testState), style = MaterialTheme.typography.titleMedium)
-                    Text(testMessage!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(runTitle(state.phase), style = MaterialTheme.typography.titleMedium)
+                    Text(state.message!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
 
-        Surface(shape = RoundedCornerShape(24.dp), tonalElevation = 2.dp) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(labText("What the test measures", "ما الذي يقيسه الاختبار"), style = MaterialTheme.typography.titleMedium)
-                MeasurementRow(labText("Detection", "الكشف"), labText("boxes • class • confidence • recall/precision/mAP when ground truth exists", "الصناديق • الفئة • الثقة • Precision/Recall/mAP عند توفر الحقيقة الأرضية"))
-                MeasurementRow(labText("Tracking", "التتبع"), labText("stable IDs • trajectories • HOTA/IDF1/MOTA • ID switches", "المعرّفات الثابتة • المسارات • HOTA/IDF1/MOTA • تبديلات الهوية"))
-                MeasurementRow(labText("Geometry", "الهندسة"), labText("pixel → road meters • homography reprojection error", "بكسل → أمتار على الطريق • خطأ إسقاط Homography"))
-                MeasurementRow(labText("Speed", "السرعة"), labText("m/s + km/h • MAE • RMSE • P50/P90/P95 • ±5/10/20%", "م/ث + كم/س • MAE • RMSE • P50/P90/P95 • ±5/10/20%"))
-                MeasurementRow(labText("Plate/OCR", "اللوحة/OCR"), labText("plate confidence • exact-match • temporal consensus", "ثقة اللوحة • التطابق الكامل • الإجماع عبر الإطارات"))
-                MeasurementRow(labText("Runtime", "الأداء"), labText("decode FPS • inference latency • end-to-end latency • dropped frames", "FPS فك الترميز • زمن الاستدلال • الزمن الكلي • الإطارات المفقودة"))
-            }
+        state.result?.let { result -> AnalysisResultCard(result) }
+    }
+}
+
+@Composable
+private fun AnalysisResultCard(result: AnalysisResult) {
+    Surface(shape = RoundedCornerShape(24.dp), tonalElevation = 3.dp) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(labText("Executed metrics", "القياسات الناتجة من التنفيذ"), style = MaterialTheme.typography.titleMedium)
+            val m = result.metrics
+            MetricRow(labText("Frames", "الإطارات"), m.framesProcessed.toString())
+            MetricRow(labText("Reportable detections", "الاكتشافات المعروضة"), m.detections.toString())
+            MetricRow(labText("Tracking detections", "مدخلات التتبع"), m.trackingDetections.toString())
+            MetricRow(labText("Tracks", "المسارات"), result.tracks.size.toString())
+            MetricRow(labText("Peak active tracks", "أقصى مسارات نشطة"), m.peakActiveTracks.toString())
+            MetricRow(labText("Inference median", "وسيط زمن الاستدلال"), formatMs(m.inferenceMedianLatencyMs))
+            MetricRow(labText("Inference P95", "P95 زمن الاستدلال"), formatMs(m.inferenceP95LatencyMs))
+            MetricRow(labText("Processing FPS", "FPS المعالجة"), m.processingFps?.let { "%.2f".format(it) } ?: "—")
+            MetricRow(labText("Dropped frames", "الإطارات المفقودة"), m.droppedFrames.toString())
+            MetricRow(labText("Association misses", "فشل ربط التتبع"), m.trackingAssociationMisses.toString())
+            MetricRow(labText("Speed estimates", "تقديرات السرعة"), m.speedEstimates.toString())
+            MetricRow(labText("Rejected speed tracks", "مسارات السرعة المرفوضة"), m.rejectedSpeedEstimates.toString())
+            Text(
+                labText(
+                    "Speed is intentionally absent when calibration/quality gates fail. An uncertainty value is not ground-truth accuracy.",
+                    "يتم حجب السرعة عمدًا عند فشل بوابات المعايرة/الجودة. وقيمة عدم اليقين ليست دقة مقارنة بالحقيقة الأرضية.",
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
 
 @Composable
-private fun AnalysisToggle(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+private fun ReadinessRow(title: String, value: String) = MetricRow(title, value)
+
+@Composable
+private fun MetricRow(title: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Text(title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text(value, style = MaterialTheme.typography.labelLarge)
     }
 }
 
 @Composable
-private fun MeasurementRow(title: String, detail: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(title, style = MaterialTheme.typography.labelLarge)
-        Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun AnalysisToggle(label: String, checked: Boolean, enabled: Boolean = true, onCheckedChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
     }
 }
 
-private enum class TestState { IDLE, READY, RUNNING, WAITING_ENGINE }
-
-private fun testStatusTitle(state: TestState): String = when (state) {
-    TestState.IDLE -> labText("Idle", "جاهز")
-    TestState.READY -> labText("Media ready", "الوسائط جاهزة")
-    TestState.RUNNING -> labText("Preparing", "جاري التجهيز")
-    TestState.WAITING_ENGINE -> labText("Engine adapter pending", "واجهة محرك التحليل لم تُربط بعد")
+@Composable
+private fun OutlinedNumberField(value: String, onValueChange: (String) -> Unit, label: String) {
+    androidx.compose.material3.OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
-private fun labText(en: String, ar: String): String = if (com.smarttraffic.app.core.AppSettings.language == com.smarttraffic.app.core.AppLanguage.ARABIC) ar else en
+private fun formatMs(value: Double?): String = value?.let { "%.2f ms".format(it) } ?: "—"
+
+private fun runTitle(phase: AnalysisRunPhase): String = when (phase) {
+    AnalysisRunPhase.IDLE -> labText("Ready", "جاهز")
+    AnalysisRunPhase.RUNNING -> labText("Running real pipeline", "تشغيل المسار الفعلي")
+    AnalysisRunPhase.SUCCESS -> labText("Analysis completed", "اكتمل التحليل")
+    AnalysisRunPhase.ERROR -> labText("Analysis failed", "فشل التحليل")
+}
+
+private fun labText(en: String, ar: String): String =
+    if (AppSettings.language == AppLanguage.ARABIC) ar else en

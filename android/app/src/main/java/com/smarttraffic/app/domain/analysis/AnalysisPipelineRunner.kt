@@ -19,6 +19,33 @@ class AnalysisPipelineRunner(
         require(config.maxPlausibleSpeedKmh > 0.0) { "maxPlausibleSpeedKmh must be positive" }
         require(config.maxCalibrationReprojectionErrorPixels > 0.0) { "maxCalibrationReprojectionErrorPixels must be positive" }
         require(config.minimumCalibrationInlierRatio in 0.0..1.0) { "minimumCalibrationInlierRatio must be within [0,1]" }
+        require(!config.useVehicleKeypoints || keypointEstimator != null) {
+            "Vehicle keypoints are enabled but no VehicleKeypointEstimator backend is installed"
+        }
+        require(!config.enablePlateRecognition || plateRecognizer != null) {
+            "Plate recognition is enabled but no PlateRecognizer backend is installed"
+        }
+        require(!config.useDynamicKeypointHomography || config.useVehicleKeypoints) {
+            "Dynamic keypoint homography requires VehicleKeypoints"
+        }
+        require(!config.useDynamicKeypointHomography || keypointEstimator != null) {
+            "Dynamic keypoint homography is enabled but no VehicleKeypointEstimator backend is installed"
+        }
+        require(!config.useOpticalFlowRefinement) {
+            "Optical-flow refinement is not installed in the current runtime"
+        }
+        require(!config.useSegmentationRefinement) {
+            "Segmentation refinement is not installed in the current runtime"
+        }
+        require(!config.useReIdentification) {
+            "Appearance Re-ID is not installed in the current tracker runtime"
+        }
+        require(!config.enableRules) {
+            "Traffic-rule evaluation is not installed in the current runtime"
+        }
+        require(!config.enableEvidence) {
+            "Evidence persistence is not installed in the current runtime"
+        }
 
         tracker.reset()
         val allDetections = mutableListOf<Detection>()
@@ -70,8 +97,8 @@ class AnalysisPipelineRunner(
                         continue
                     }
 
-                    val keypoints = if (config.useVehicleKeypoints && keypointEstimator != null) {
-                        keypointEstimator.estimate(frame.payload, observation.detection)
+                    val keypoints = if (config.useVehicleKeypoints) {
+                        keypointEstimator!!.estimate(frame.payload, observation.detection)
                     } else emptyList()
 
                     val contact = selectContactPoint(observation.detection, keypoints)
@@ -90,8 +117,8 @@ class AnalysisPipelineRunner(
                     buffer.confidenceSamples += track.trackConfidence.toDouble()
                     buffer.observations += enriched
 
-                    if (config.enablePlateRecognition && plateRecognizer != null) {
-                        plateRecognizer.recognize(frame.payload, observation.detection)?.let(plateReadings::add)
+                    if (config.enablePlateRecognition) {
+                        plateRecognizer!!.recognize(frame.payload, observation.detection)?.let(plateReadings::add)
                     }
                 }
             }

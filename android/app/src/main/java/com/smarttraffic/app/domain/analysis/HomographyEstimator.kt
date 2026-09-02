@@ -8,6 +8,9 @@ import kotlin.random.Random
 /**
  * Numerically safer homography estimation with normalized coordinates and an optional
  * deterministic RANSAC stage for rejecting bad calibration correspondences.
+ *
+ * The implementation is a testable Android fallback. Production calibration should
+ * use a numerically stronger native/OpenCV SVD implementation once the parity tests pass.
  */
 object HomographyEstimator {
     data class Point(val x: Double, val y: Double)
@@ -111,7 +114,9 @@ object HomographyEstimator {
             }
         }
         val hn = solveLinearSystem(ata, atb).toList() + 1.0
-        val denormalized = multiply3x3(multiply3x3(inverse3x3(ns.transform), hn), nt.transform)
+        // With x_n = T_s x and y_n = T_t y, H_n = T_t H T_s^-1, hence
+        // H = T_t^-1 H_n T_s.
+        val denormalized = multiply3x3(multiply3x3(inverse3x3(nt.transform), hn), ns.transform)
         val scale = denormalized[8]
         require(scale.isFinite() && abs(scale) > 1e-12) { "Invalid homography scale" }
         return denormalized.map { it / scale }

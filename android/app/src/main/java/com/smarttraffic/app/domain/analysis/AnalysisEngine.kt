@@ -20,6 +20,11 @@ interface PlateRecognizer {
     suspend fun recognize(frame: Any, vehicle: Detection): PlateReading?
 }
 
+/** Converts a logical media source into a real timestamped frame stream. */
+fun interface FrameSourceFactory {
+    suspend fun create(source: MediaSource): FrameSource
+}
+
 interface AnalysisEngine {
     suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult
 
@@ -36,6 +41,7 @@ class ModularAnalysisEngine(
     private val tracker: MultiObjectTracker,
     private val keypoints: VehicleKeypointEstimator? = null,
     private val plateRecognizer: PlateRecognizer? = null,
+    private val frameSourceFactory: FrameSourceFactory? = null,
 ) : AnalysisEngine {
     private val runner = AnalysisPipelineRunner(
         detector = detector,
@@ -44,8 +50,11 @@ class ModularAnalysisEngine(
         plateRecognizer = plateRecognizer,
     )
 
-    override suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult =
-        AnalysisResult(source = source)
+    override suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult {
+        val factory = frameSourceFactory
+            ?: error("No FrameSourceFactory is configured for MediaSource ${source.id}")
+        return runner.run(factory.create(source), config)
+    }
 
     override suspend fun analyze(source: FrameSource, config: AnalysisConfig): AnalysisResult =
         runner.run(source, config)
