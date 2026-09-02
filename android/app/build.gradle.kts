@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.smarttraffic.app"
     compileSdk = 37
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.smarttraffic.app"
@@ -14,7 +15,6 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        ndkVersion = "27.2.12479018"
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++20"
@@ -58,7 +58,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
 
-    // LiteRT 2.x Kotlin API: CompiledModel + CPU/GPU/NPU accelerator selection.
     implementation("com.google.ai.edge.litert:litert:2.1.6")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
