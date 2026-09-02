@@ -365,7 +365,7 @@ The following screens were also rechecked for localization and consistency:
 The newly reviewed versions now avoid the earlier half-English/half-Arabic presentation on common operator surfaces.
 
 Current intentional prototype placeholders remain:
-- device connection settings are not yet backed by real network transport;
+- device connection settings were previously not backed by real network transport;
 - alert records are not yet database-backed;
 - evidence vault is not yet persistent;
 - local analysis runs only the media selection shell until the native analysis engine is connected.
@@ -495,11 +495,13 @@ It:
 - uploads test reports when present;
 - exposes build logs/status in Actions.
 
-The user verified an earlier workflow run on 2026-09-02 with:
+**Latest verified run #69:**
 - Debug APK build: **SUCCESS**;
-- unit-test task: **SUCCESS** (currently no unit-test sources, task reported `NO-SOURCE`);
-- APK artifact uploaded successfully;
-- artifact size reported around 18 MB as a ZIP artifact.
+- unit-test task: **SUCCESS**;
+- APK artifact upload: **SUCCESS**;
+- artifact ID: `9862594300`;
+- artifact ZIP size: `18,178,244` bytes;
+- artifact SHA-256: `9840af48b5be5b8f7f2139cff7072e5c3323e182742b3459f3f307966af61989`.
 
 Current Android build uses AGP 9.3.2 and Gradle 9.5.0 in CI. Keep these aligned unless a future verified release requires another combination.
 
@@ -533,13 +535,24 @@ Implemented in the current UI pass:
 - dashboard scrolling/layout fixes;
 - radar layout/control cleanup.
 
+New connectivity foundation implemented after the successful #69 build:
+- persistent `DeviceSettings` profile;
+- editable host/IP;
+- editable HTTP port;
+- editable `/stream`, `/capture`, `/status` endpoints;
+- URL normalization and generated endpoint URLs;
+- Android-local persistence for the profile;
+- `/status` HTTP connection test running off the UI thread;
+- Devices screen now has Save + Test and Reset controls;
+- `MainActivity` loads the persisted device profile at startup.
+
 Still not connected to real backends/vision:
-- actual ESP32 stream;
+- actual ESP32 stream rendering;
 - live detection/tracking;
 - OCR;
 - physical or camera-only speed calculation;
 - persistent event/report database;
-- real device commands;
+- real device control commands;
 - real evidence storage.
 
 ## 23. Development rules
@@ -568,15 +581,86 @@ After every substantive project discussion, update this document with:
 
 The goal is to allow a future conversation to resume from this file without depending on chat memory.
 
-## 25. Immediate next actions
+## 25. Current execution plan
 
-1. Confirm the newest CI run is green after the latest UI/navigation/rules changes.
-2. Download/install the newest APK and test the physical Back button, top back button, English dashboard layout, Arabic RTL, Night mode and editable traffic rules.
-3. Test Radar and Live Camera video mode controls and PiP behavior on the phone.
-4. Continue consolidating localization into Android resource files and review all remaining legacy feature strings.
-5. Define stable domain models for Device, CameraStream, MediaSource, Detection, Track, SpeedEstimate, Event, Rule and Watchlist entry.
-6. Define the analysis-engine interface shared by Local Analysis and Live Radar.
-7. Implement actual local-media analysis incrementally.
-8. Implement configurable ESP32-CAM device profiles and local HTTP communication.
-9. When hardware is available, verify exact ESP32-CAM board and implement live stream + still capture.
-10. Develop and benchmark camera-only speed estimation with calibrated scenes and known references.
+### Phase A — UI stability
+Status: **verified build; awaiting physical UI retest by user**.
+- English/Arabic layout;
+- RTL horizontal scrolling;
+- navigation/back behavior;
+- editable traffic rules;
+- radar control clarity;
+- live/PiP modes.
+
+### Phase B — Device connectivity foundation
+Status: **implemented; CI verification pending for this new commit**.
+- device profile;
+- editable host/IP/port/endpoints;
+- local persistence;
+- status endpoint health check;
+- no hard-coded runtime address.
+
+### Phase C — Real camera transport
+Next implementation stage after Phase B CI passes.
+- verify exact camera board and sensor variant from hardware photo;
+- implement ESP32 firmware `/status`, `/capture`, `/stream` for the verified board;
+- test local Wi-Fi connection;
+- render live MJPEG stream in Android;
+- capture still frame from Android;
+- show device health/connection state;
+- validate reconnect/timeout behavior.
+
+### Phase D — Shared media/analysis model
+- define stable `MediaSource`, `Frame`, `Detection`, `Track`, `SpeedEstimate`, `Event`, `WatchlistEntry` models;
+- define transport-independent `AnalysisEngine` interface;
+- make Local Analysis and Live Radar consume the same abstraction.
+
+### Phase E — Computer vision
+- vehicle/object detector;
+- multi-object tracking;
+- trajectory visualization;
+- camera/road calibration;
+- camera-only speed estimation;
+- confidence/error output;
+- violation event generation from configurable rules.
+
+### Phase F — OCR + evidence
+- license plate detection;
+- OCR;
+- normalization/configurable plate rules;
+- evidence capture;
+- watchlist matching;
+- alert/event linkage;
+- persistent storage.
+
+### Phase G — hardening
+- full Arabic/English resource migration;
+- unit tests for settings/rules/transport;
+- integration tests where practical;
+- performance profiling;
+- multi-device readiness;
+- release/build documentation.
+
+## 26. Latest discussion record — 2026-09-02
+
+User confirmed that the Android CI build succeeded and explicitly requested continuing the project plan rather than stopping at the APK milestone.
+
+Decision:
+- Do not jump directly into AI/OCR.
+- Start with a real device connectivity foundation because the first physical milestone is ESP32-CAM → local Wi-Fi → Android live feed.
+- Keep the endpoint configurable so the Android app is not tied to one ESP32 IP or port.
+
+Implementation completed in response:
+- added `core/DeviceSettings.kt` for persisted device profile/configuration;
+- updated `MainActivity.kt` to load the profile at startup;
+- upgraded `features/devices/DevicesScreen.kt` with editable host, port and endpoint fields;
+- added an asynchronous `/status` HTTP health test;
+- added local Save + Test / Reset controls.
+
+Verification state:
+- Previous commit `561fc311...` has a verified successful CI run #69 with APK artifact.
+- The subsequent connectivity commits are new and must pass a fresh CI run before their build status is considered verified.
+
+Next action:
+- verify CI for the new connectivity foundation;
+- then implement the actual ESP32-camera transport and Android stream renderer once the exact board is confirmed.
