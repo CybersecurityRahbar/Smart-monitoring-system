@@ -86,6 +86,7 @@ data class AnalysisConfig(
     val minimumDetectionConfidence: Float = 0.70f,
     val minimumTrackDurationMs: Long = 500L,
     val minimumSpeedSamples: Int = 8,
+    val calibration: CalibrationProfile? = null,
     val useGroundPlane: Boolean = true,
     val useVehicleKeypoints: Boolean = false,
     val useDynamicKeypointHomography: Boolean = false,
