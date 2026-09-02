@@ -8,6 +8,7 @@
 
 - GitHub repository: `CybersecurityRahbar/Smart-monitoring-system`
 - Working system name: **Smart Traffic Monitoring System**
+- Android product/app name: **Smart Traffic**
 - Repository name is intentionally broad (`Smart-monitoring-system`) and the traffic-specific system name is used inside the project.
 - Project type: low-cost university prototype, intended to evolve toward an intelligent traffic/vehicle monitoring system.
 - It is a prototype, not a legally certified traffic enforcement device.
@@ -31,7 +32,7 @@ Build a modular system that can:
 
 Start with:
 - ESP32-CAM + OV2640
-- Cheap locally available board was identified previously in Sana'a; the exact physical board must be verified from a photo before wiring/code is finalized.
+- The exact physical board must be verified from a photo before wiring/code is finalized.
 - ESP32-CAM is responsible initially for camera capture, Wi-Fi communication, simple events, and later sensors.
 - Heavy computer vision/AI is intended to run on Android rather than on the ESP32-CAM.
 
@@ -43,7 +44,7 @@ Longer-term optional upgrade:
 **Version 0.1:**
 `ESP32-CAM + OV2640 → local Wi-Fi → Android → live stream`
 
-No Internet, radio, sensors, OCR, or AI in the first milestone.
+No Internet, radio, sensors, OCR, or AI are required in the first hardware milestone.
 
 The simplest initial communication model is ESP32-CAM acting as a local Wi-Fi access point and the Android phone connecting directly to it. A router-based local Wi-Fi mode can be added later.
 
@@ -76,9 +77,9 @@ Later, small telemetry/events can use HTTP or WebSocket. Internet mode can be ad
 - image capture and event delivery
 
 ### v0.3 — Speed prototype
-Two options are being evaluated:
+Two options were discussed:
 1. dual-sensor timing (IR1/IR2) as a reference/prototype;
-2. **camera-only computer-vision speed estimation**, which is now considered a major desired direction.
+2. **camera-only computer-vision speed estimation**, now a major desired direction.
 
 ### v0.4 — Vehicle record
 Combine:
@@ -110,7 +111,7 @@ Android dashboard for:
 
 ## 7. Important design decision: camera-only speed estimation
 
-The user proposed measuring vehicle speed from the camera/video alone, without relying on physical sensors. This is feasible in principle and is now an important research/engineering direction for the project.
+The user proposed measuring vehicle speed from the camera/video alone, without relying on physical sensors. This is feasible in principle and is now an important research/engineering direction.
 
 Target pipeline:
 
@@ -138,7 +139,7 @@ Filtering / regression
 Vehicle speed (km/h)
 ```
 
-Key difficulty: pixels do not directly equal meters. A calibrated camera/road geometry model is required. The project should not claim radar-level accuracy without validation.
+Key difficulty: pixels do not directly equal meters. A calibrated camera/road geometry model is required. The project must not claim radar-level accuracy without validation.
 
 Useful algorithmic components under consideration:
 - camera calibration;
@@ -152,12 +153,12 @@ Useful algorithmic components under consideration:
 - confidence/error estimation.
 
 Possible future sensor fusion:
-`vision speed + dual-beam timing reference`, but sensors are not mandatory for the first vision-only prototype.
+`vision speed + dual-beam timing reference`, but sensors are optional.
 
 ## 8. Sensor discussion retained for reference
 
 If physical sensors are later needed for a prototype reference:
-- Prefer a proper through-beam photoelectric/IR sensor over cheap short-range robot obstacle sensors for multi-meter timing experiments.
+- Prefer proper through-beam photoelectric/IR sensors over cheap short-range robot obstacle sensors for multi-meter timing experiments.
 - Example discussed: OMRON E3Z-T61 (through-beam IR, 15 m sensing distance) as an industrial reference; E3Z-T62 was also discussed as a longer-range variant.
 - Such industrial outputs must not be connected directly to an ESP32 GPIO without proper voltage/interface protection.
 - No sensor purchase is required for v0.1.
@@ -183,84 +184,194 @@ ESP32-CAM → Radio modem → Radio gateway/backhaul → Server → Android
 
 Radio is a future replaceable transport layer, not part of v0.1.
 
-## 10. Software/language direction discussed
+## 10. Software/language direction
 
-The goal is not to force the whole project into one language. The preferred architecture is a **multi-language system with clear boundaries**:
+The project uses a multi-language architecture with clear boundaries:
+- **Kotlin** for the Android application/UI and app-level logic.
+- **Jetpack Compose** for Android UI.
+- **C++** for performance-sensitive native computer-vision/math components through Android NDK/JNI when needed.
+- **Python** for research, experimentation, dataset preparation, algorithm prototyping and evaluation.
+- **C/C++** for ESP32 firmware.
 
-- **Kotlin** for the Android application/UI, lifecycle, networking orchestration, storage, permissions, and app-level logic.
-- **C++** for performance-sensitive native computer-vision/math components on Android via the Android NDK when needed.
-- **Python** for research, experimentation, dataset preparation, algorithm prototyping, evaluation, and offline tooling.
-- **C/C++ (Arduino/ESP-IDF style)** for ESP32 firmware, depending on the selected ESP32 development stack.
+Current Android direction uses AGP 9.x with built-in Kotlin rather than the legacy `org.jetbrains.kotlin.android` plugin. This follows current Android guidance that AGP 9 enables built-in Kotlin by default.
 
-Reasoning:
-- Android officially supports Kotlin and also supports C/C++ through the NDK/JNI.
-- Heavy vision/math code can be isolated into native C++ instead of forcing the Android UI layer to handle it.
-- Python is valuable for rapid CV/ML experimentation but is not the sole language for the shipping Android application.
-
-Current official Android documentation confirms C/C++ can be added under `src/main/cpp`, built with CMake/NDK, and called from Kotlin/Java via JNI; Android also states Kotlin is preferred over Groovy for Gradle configuration. See the project conversation sources/notes for references.
-
-## 11. Repository structure target
+## 11. Repository structure implemented
 
 ```text
 Smart-monitoring-system/
-├── android/        # Android application
-├── esp32/          # ESP32-CAM firmware
-├── ai/             # Computer vision / ML experiments and reusable assets
-├── backend/        # Future server/cloud components
-├── docs/           # Architecture, context, calibration, testing, decisions
+├── android/
+│   ├── app/
+│   │   └── src/main/java/com/smarttraffic/app/
+│   │       ├── core/
+│   │       ├── domain/
+│   │       ├── features/
+│   │       │   ├── dashboard/
+│   │       │   ├── live/
+│   │       │   ├── evidence/
+│   │       │   ├── devices/
+│   │       │   ├── control/
+│   │       │   ├── rules/
+│   │       │   ├── watchlist/
+│   │       │   ├── alerts/
+│   │       │   ├── systemsettings/
+│   │       │   └── appsettings/
+│   │       ├── navigation/
+│   │       └── ui/theme/
+│   ├── build.gradle.kts
+│   ├── settings.gradle.kts
+│   ├── gradle.properties
+│   ├── PROJECT_STRUCTURE.md
+│   └── README.md
+├── esp32/
+│   └── README.md
+├── ai/                 # planned
+├── backend/            # planned
+├── docs/
+│   ├── PROJECT_CONTEXT.md
+│   └── ARCHITECTURE.md
 └── README.md
 ```
 
-Only `android/`, `esp32/`, and `docs/` are needed initially. `ai/` and `backend/` can be populated later.
+## 12. Android application requirements captured on 2026-09-02
 
-## 12. Development rules
+The Android application is the **central command center** and the visual face of Smart Traffic. The user explicitly wants a premium, advanced, elegant UI and a system that can later control every available ESP32-CAM capability.
+
+Functional screen/feature families:
+1. **Dashboard / Monitoring Center**
+   - real-time metrics and numbers;
+   - current date/time;
+   - vehicle counts;
+   - speed statistics;
+   - camera/device status;
+   - warnings/alerts;
+   - future electrical/power telemetry.
+2. **Live Camera**
+   - live video;
+   - stream/connection diagnostics;
+   - camera controls;
+   - capture button.
+3. **Images / Evidence**
+   - captured images;
+   - vehicle/event records;
+   - plate/OCR when available;
+   - speed, timestamp and evidence details.
+4. **ESP32-CAM Device Control**
+   - on-demand photo capture;
+   - camera controls supported by firmware;
+   - status;
+   - safe device actions such as restart/shutdown when supported.
+5. **Device Connection / Connectivity**
+   - add/select devices;
+   - configurable IP/host;
+   - configurable ports/endpoints;
+   - local Wi-Fi settings;
+   - connection test;
+   - timeouts/reconnect;
+   - device identity;
+   - no hard-coded single IP.
+6. **Traffic Rules / Policies**
+   - editable speed limits;
+   - capture thresholds;
+   - alarm thresholds;
+   - object/vehicle classes;
+   - configurable violation rules.
+7. **Watchlist / Reports**
+   - manually enter reported vehicle/plate records;
+   - example reported plate: `1/52863`;
+   - configurable response when a matching plate is detected;
+   - create capture/event/evidence record containing plate, image, timestamp, speed and available metadata.
+8. **Alerts / Notifications**
+   - speeding;
+   - watchlist matches;
+   - device offline/online;
+   - camera faults;
+   - storage/power warnings;
+   - system faults.
+9. **System Settings**
+   - traffic-system configuration;
+   - devices, calibration, processing, retention and system policies.
+10. **Application Settings**
+   - theme;
+   - notifications;
+   - language;
+   - accessibility;
+   - display and app behavior.
+
+The screen list is not final; features can be split into nested screens where appropriate. Primary navigation should remain compact and clear rather than putting every setting into the bottom bar.
+
+## 13. UI/design direction
+
+The UI should look like a premium control center, not a basic CRUD application.
+
+Requirements:
+- strong visual hierarchy;
+- modern high-end dark-first direction is preferred as a starting point;
+- sophisticated cards, status surfaces and data visualization;
+- coherent typography, spacing, icons and motion;
+- reusable design-system components;
+- responsive/adaptive layouts for phones and larger screens;
+- avoid visual clutter;
+- animations should communicate state and transitions.
+
+## 14. Android implementation already added
+
+Initial project shell now exists in GitHub:
+- `android/settings.gradle.kts`
+- `android/build.gradle.kts`
+- `android/gradle.properties`
+- `android/app/build.gradle.kts`
+- AndroidManifest and base theme
+- `MainActivity.kt`
+- `SmartTrafficApp.kt`
+- `navigation/AppNavHost.kt`
+- premium dark-first theme foundation
+- initial Dashboard, Live Camera, Devices, Alerts and Settings screens
+- feature documentation for Evidence, Device Control, Traffic Rules, Watchlist, System Settings and Application Settings.
+
+The current UI is a **structural shell**, not the final premium design. The next UI iterations should replace placeholders with the complete design system and real state/data.
+
+## 15. Architecture decision for Android
+
+The UI should follow state-driven unidirectional data flow:
+
+```text
+Compose UI
+    ↓ events
+ViewModel / StateFlow
+    ↓
+Use Cases / Domain
+    ↓
+Repositories
+    ↓
+Data Sources
+    ├── ESP32 local network
+    ├── future Internet backend
+    └── future radio gateway
+```
+
+The ESP32 protocol must remain behind interfaces. A device connection profile must be data/configuration, not source code.
+
+## 16. Development rules
 
 - Work step-by-step and verify each milestone before advancing.
-- Do not dump dozens of files at once.
+- Do not dump dozens of unrelated files at once without explanation.
 - For each code file, state exactly where it belongs.
 - Use real build/runtime logs when debugging.
 - Do not assume unverified hardware variants.
 - Do not buy all components before the first milestone succeeds.
 - Avoid premature OCR, sensors, radio, cloud, or complex AI.
 - Keep communication and processing layers modular so transport can later change without rewriting the whole system.
-- Do not claim memories/details that are not present in this context document.
+- Do not hard-code one ESP32 IP/port.
+- No map widget unless explicitly requested.
 
-## 13. Conversation log / decisions captured so far
+## 17. Conversation continuity requirement
 
-### User-provided project context
-The user supplied a detailed project context document dated 2026-09-01 covering the project objective, ESP32-CAM starting hardware, staged versions 0.1–1.0, communication strategy, possible sensors, local stores, and constraints.
+The user explicitly asked that project context be preserved in a dedicated context document and updated with substantive conversation progress. This is an explicit standing project rule. The document should continue to capture new user requirements, decisions, corrections, implementation results and next actions.
 
-### Discussion: local Wi-Fi
-We established that the first prototype can operate without Internet or radio:
-`ESP32-CAM → Wi-Fi → Android`.
-The ESP32 can act as an access point, allowing the phone to connect directly.
+## 18. Immediate next actions
 
-### Discussion: Internet connectivity
-We established that ESP32-CAM does not have cellular Internet by itself; it can use Wi-Fi supplied by a router/hotspot/modem. A future scalable architecture should use a backend instead of exposing a device directly to the Internet.
-
-### Discussion: radio
-We established that future radio can be used as a digital data/backhaul link, including for video, but it is unnecessary for the small first prototype.
-
-### Discussion: physical speed sensors
-We discussed dual IR/through-beam timing as a simple experimental speed reference. We also distinguished industrial photoelectric sensors from short-range robot obstacle sensors.
-
-### Discussion: camera-only speed
-The user proposed using the camera and accurate algorithms to identify and track a vehicle in video and calculate speed without physical sensors. We agreed this is feasible in principle and outlined a computer-vision geometry pipeline based on calibration, homography/ground-plane mapping, tracking, time, and filtering.
-
-### Discussion: naming
-The working system name was chosen as **Smart Traffic Monitoring System**. The GitHub repository remains `Smart-monitoring-system`.
-
-## 14. Context maintenance rule
-
-This file is a living project context. After every substantive project discussion, update it with:
-- the user's new question/request;
-- the technical answer/decision;
-- changed architecture or requirements;
-- next action;
-- any unresolved issue.
-
-The purpose is to preserve project continuity across future chats.
-
-## 15. Immediate next step
-
-Before implementing the Android application, inspect the repository state and establish the initial project skeleton. Then identify the exact ESP32-CAM board variant and programming method when the physical hardware is available/photographed.
+1. Verify/fix the Android project build setup with the selected AGP/Compose versions and generate a buildable APK when the development environment is available.
+2. Replace the structural UI placeholders with the final premium Smart Traffic design system.
+3. Add device-domain models and the configurable ESP32 connection/repository abstraction.
+4. Then implement the first real local connectivity milestone with the physical ESP32-CAM: live stream + still capture.
+5. Continue updating this context document after each substantive milestone.
