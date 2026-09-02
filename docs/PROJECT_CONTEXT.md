@@ -215,7 +215,7 @@ Requirements:
 - radar overlays readable over video;
 - complex configuration grouped into hubs/nested screens.
 
-The bottom navigation should eventually remain compact. During the foundation phase a few high-value sections may be exposed directly; later we can consolidate less-frequent areas behind hubs or a More/Settings area.
+The bottom navigation should eventually remain compact. Complex areas belong behind hubs/nested navigation.
 
 A detailed visual direction is recorded in `docs/UI_VISION.md`.
 
@@ -284,7 +284,7 @@ class
 speed range
 confidence
 zone
- direction
+direction
 watchlist state
 ```
 with AND/OR composition rather than a hard-coded speed-only mode.
@@ -312,8 +312,6 @@ The analysis interface must be independent of transport so live camera, local fi
 ```text
 Smart-monitoring-system/
 ├── android/
-│   ├── app/
-│   └── ...
 ├── esp32/
 ├── ai/
 ├── native/
@@ -343,7 +341,7 @@ It:
 - builds Debug APK;
 - runs unit tests;
 - uploads the APK as `smart-traffic-debug-apk`;
-- uploads test reports;
+- uploads test reports when present;
 - exposes build logs/status in Actions.
 
 The user verified the workflow succeeded on 2026-09-02:
@@ -354,24 +352,37 @@ The user verified the workflow succeeded on 2026-09-02:
 
 Current Android build uses AGP 9.3.2 and Gradle 9.5.0 in CI. Keep these aligned unless a future verified release requires another combination.
 
-## 14. Current implementation state
+## 14. Runtime launch bug found and fixed
+
+The current `AndroidManifest.xml` incorrectly declared `android:name=".SmartTrafficApp"` on `<application>` while `SmartTrafficApp.kt` is a `@Composable` function rather than an `android.app.Application` subclass.
+
+This could make Android try to instantiate the composable as an Application and crash at launch, matching the user's earlier report that a previous APK closed immediately.
+
+Fix applied on 2026-09-02:
+- removed `android:name=".SmartTrafficApp"` from `<application>`;
+- kept `MainActivity` as the launcher activity;
+- `MainActivity` continues to call `setContent { SmartTrafficApp() }`.
+
+A fresh CI run after this fix is required before claiming runtime launch has been verified on a physical device.
+
+## 15. Current implementation state
 
 The repository has:
 - Android Compose foundation;
 - app navigation;
-- Dashboard shell upgraded toward the premium control-center direction;
+- premium-direction Dashboard shell;
 - Live Camera shell;
-- Intelligent Radar shell with live analytics surface and minimum-speed control;
-- Local Analysis Lab shell with Android document picker;
+- Intelligent Radar shell;
+- Local Analysis Lab shell with device-media picker;
 - Devices, Alerts and Settings feature areas;
-- device/analysis documentation;
-- CI workflow building a Debug APK successfully.
+- analysis/design documentation;
+- GitHub Actions CI producing a Debug APK artifact.
 
-The latest UI work is intentionally a foundation, not the final visual product. Real video rendering, real device communication, actual detection/tracking and speed computation are still to be implemented.
+The latest verified CI run succeeded before the manifest runtime fix. Therefore the next APK must be built from the post-fix commit and tested on-device.
 
-## 15. Development rules
+## 16. Development rules
 
-- Work step-by-step and verify each milestone before advancing.
+- Work step-by-step and verify milestones.
 - Do not dump dozens of unrelated files without explaining where each belongs.
 - Use real build/runtime logs to debug.
 - Do not assume an unverified hardware variant.
@@ -380,27 +391,29 @@ The latest UI work is intentionally a foundation, not the final visual product. 
 - Do not claim radar-level accuracy without validation.
 - No map widget unless explicitly requested.
 - Keep sensor integration optional.
-- Treat the context document as mandatory living project state.
+- Treat this context document as mandatory living project state.
 
-## 16. Conversation continuity rule
+## 17. Conversation continuity rule
 
 After every substantive project discussion, update this document with:
 - the user's new requirements/questions;
 - decisions and corrections;
 - implementation changes;
 - build/test results;
+- runtime findings;
 - unresolved items;
 - next actions.
 
 The goal is to allow a future conversation to resume from this file without depending on chat memory.
 
-## 17. Current next actions
+## 18. Immediate next actions
 
-1. Keep CI green after each significant implementation change.
-2. Finish the reusable premium UI design system and responsive navigation.
-3. Define stable domain models for Device, CameraStream, MediaSource, Detection, Track, SpeedEstimate, Event, Rule and Watchlist entry.
-4. Define the analysis-engine interface shared by Local Analysis and Live Radar.
-5. Implement actual local media analysis incrementally.
-6. Implement configurable ESP32-CAM device profiles and local HTTP communication.
-7. When hardware is available, verify exact ESP32-CAM board and implement live stream + still capture.
-8. Develop and benchmark camera-only speed estimation with calibrated scenes and known references.
+1. Confirm CI succeeds on the post-manifest-fix commit.
+2. Download/install the new APK and verify the app launches and displays the UI.
+3. Continue replacing structural screen shells with the final premium control-center design.
+4. Define stable domain models for Device, CameraStream, MediaSource, Detection, Track, SpeedEstimate, Event, Rule and Watchlist entry.
+5. Define the analysis-engine interface shared by Local Analysis and Live Radar.
+6. Implement actual local-media analysis incrementally.
+7. Implement configurable ESP32-CAM device profiles and local HTTP communication.
+8. When hardware is available, verify exact ESP32-CAM board and implement live stream + still capture.
+9. Develop and benchmark camera-only speed estimation with calibrated scenes and known references.
