@@ -1,5 +1,7 @@
 package com.smarttraffic.app.core.ui
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,7 +29,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import com.smarttraffic.app.MainActivity
 import com.smarttraffic.app.core.VideoDisplayMode
@@ -40,6 +44,8 @@ fun VideoViewport(
     onModeChange: (VideoDisplayMode) -> Unit,
     modifier: Modifier = Modifier,
     showPipAction: Boolean = true,
+    frame: Bitmap? = null,
+    statusText: String? = null,
 ) {
     val context = LocalContext.current
     val height = when (mode) {
@@ -58,7 +64,16 @@ fun VideoViewport(
                 Modifier.fillMaxSize().clip(RoundedCornerShape(24.dp)).background(Color.Black),
                 contentAlignment = Alignment.Center,
             ) {
-                ColumnPlaceholder(title)
+                if (frame != null) {
+                    Image(
+                        bitmap = frame.asImageBitmap(),
+                        contentDescription = title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                } else {
+                    ColumnPlaceholder(title)
+                }
             }
 
             Surface(
@@ -95,7 +110,11 @@ fun VideoViewport(
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     Icon(Icons.Filled.Tune, null, tint = MaterialTheme.colorScheme.primary)
-                    Text(tr("localFeed"), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        statusText ?: tr("localFeed"),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                 }
             }
         }
