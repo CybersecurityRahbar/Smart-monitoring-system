@@ -14,9 +14,9 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,34 +32,18 @@ import com.smarttraffic.app.core.ui.VideoViewport
 fun LiveCameraScreen(paddingValues: PaddingValues) {
     var videoMode by remember { mutableStateOf(VideoDisplayMode.FULLSCREEN) }
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(paddingValues).padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Column {
-                Text(tr("live"), style = MaterialTheme.typography.headlineSmall)
-                Text("Operator video workspace • ESP32-CAM", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+    Column(Modifier.fillMaxSize().padding(paddingValues).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column {
+            Text(tr("live"), style = MaterialTheme.typography.headlineSmall)
+            Text(tr("liveDescription"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-
-        VideoViewport(
-            title = "PRIMARY CAMERA",
-            mode = videoMode,
-            onModeChange = { videoMode = it },
-            modifier = if (videoMode == VideoDisplayMode.FULLSCREEN) Modifier.weight(1f) else Modifier.fillMaxWidth(),
-        )
-
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        VideoViewport(title = tr("primaryCamera"), mode = videoMode, onModeChange = { videoMode = it }, modifier = Modifier.fillMaxWidth())
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = {}, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.CameraAlt, null, Modifier.size(18.dp))
-                Spacer(Modifier.size(6.dp))
-                Text(tr("capture"))
+                Icon(Icons.Filled.CameraAlt, null, Modifier.size(18.dp)); Spacer(Modifier.size(6.dp)); Text(tr("capture"))
             }
             OutlinedButton(onClick = {}, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.SettingsRemote, null, Modifier.size(18.dp))
-                Spacer(Modifier.size(6.dp))
-                Text(tr("cameraControl"))
+                Icon(Icons.Filled.SettingsRemote, null, Modifier.size(18.dp)); Spacer(Modifier.size(6.dp)); Text(tr("cameraControl"))
             }
         }
     }
