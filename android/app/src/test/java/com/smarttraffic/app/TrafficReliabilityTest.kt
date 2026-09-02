@@ -2,6 +2,7 @@ package com.smarttraffic.app
 
 import com.smarttraffic.app.data.tracking.ByteTrack
 import com.smarttraffic.app.domain.analysis.AnalysisConfig
+import com.smarttraffic.app.domain.analysis.AnalysisFrame
 import com.smarttraffic.app.domain.analysis.AnalysisPipelineRunner
 import com.smarttraffic.app.domain.analysis.Detection
 import com.smarttraffic.app.domain.analysis.FrameSource
@@ -10,7 +11,8 @@ import com.smarttraffic.app.domain.analysis.MediaSource
 import com.smarttraffic.app.domain.analysis.ObjectDetector
 import com.smarttraffic.app.domain.analysis.RobustSpeedEstimator
 import com.smarttraffic.app.domain.analysis.TrackObservation
-import com.smarttraffic.app.domain.analysis.AnalysisFrame
+import com.smarttraffic.app.domain.analysis.GroundPoint
+import com.smarttraffic.app.domain.analysis.CalibrationProfile
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -26,12 +28,7 @@ class TrafficReliabilityTest {
                 frameIndex = i.toLong(),
                 timestampMs = i * 100L,
                 detection = detection(i.toLong(), i * 0.1f),
-                groundPoint = com.smarttraffic.app.domain.analysis.GroundPoint(
-                    xMeters = trueX + noise,
-                    yMeters = 0.0,
-                    sourcePixelX = trueX,
-                    sourcePixelY = 0.0,
-                ),
+                groundPoint = GroundPoint(trueX + noise, 0.0, trueX, 0.0),
             )
         }
 
@@ -55,11 +52,11 @@ class TrafficReliabilityTest {
                 frameIndex = i.toLong(),
                 timestampMs = i * 100L,
                 detection = detection(i.toLong(), 0f),
-                groundPoint = com.smarttraffic.app.domain.analysis.GroundPoint(
-                    xMeters = if (i % 2 == 0) 0.01 else -0.01,
-                    yMeters = if (i % 3 == 0) 0.01 else -0.01,
-                    sourcePixelX = 0.0,
-                    sourcePixelY = 0.0,
+                groundPoint = GroundPoint(
+                    if (i % 2 == 0) 0.01 else -0.01,
+                    if (i % 3 == 0) 0.01 else -0.01,
+                    0.0,
+                    0.0,
                 ),
             )
         }
@@ -90,7 +87,8 @@ class TrafficReliabilityTest {
         }
 
         val result = HomographyEstimator.estimateRansac(
-            source, target,
+            source,
+            target,
             reprojectionThreshold = 0.01,
             iterations = 300,
             minimumInliers = 7,
@@ -135,17 +133,11 @@ class TrafficReliabilityTest {
     @Test
     fun pipelineReportsFrameGapsAndProducesMeasuredSpeed() = runBlocking {
         val frames = (0..19).filter { it != 5 }.map { index ->
-            AnalysisFrame(
-                index = index.toLong(),
-                timestampMs = index * 100L,
-                payload = index,
-                width = 1920,
-                height = 1080,
-            )
+            AnalysisFrame(index.toLong(), index * 100L, index, 1920, 1080)
         }
         val detector = object : ObjectDetector {
             override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> =
-                listOf(detection(frameIndex, frameIndex * 0.1f, confidence = 0.90f))
+                listOf(detection(frameIndex, frameIndex * 10f, confidence = 0.90f, width = 40f))
         }
         val source = SyntheticFrameSource(frames)
         val runner = AnalysisPipelineRunner(detector, ByteTrack())
@@ -156,11 +148,15 @@ class TrafficReliabilityTest {
                 minimumDetectionConfidence = 0.25f,
                 minimumSpeedSamples = 8,
                 minimumTrackDurationMs = 500L,
-                calibration = com.smarttraffic.app.domain.analysis.CalibrationProfile(
+                calibration = CalibrationProfile(
                     id = "test",
                     imageWidth = 1920,
                     imageHeight = 1080,
-                    homography = listOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                    homography = listOf(
+                        0.01, 0.0, 0.0,
+                        0.0, 1.0, 0.0,
+                        0.0, 0.0, 1.0,
+                    ),
                 ),
             ),
         )
@@ -171,23 +167,28 @@ class TrafficReliabilityTest {
         assertTrue(result.metrics.inferenceP95LatencyMs != null)
         assertTrue(result.metrics.peakActiveTracks >= 1)
         assertEquals(1, result.speedEstimates.size)
-        assertTrue(kotlin.math.abs(result.speedEstimates.values.single().kilometersPerHour - 0.36) < 0.10)
-        assertTrue(result.metrics.rejectedSpeedEstimates == 0L)
+        assertTrue(kotlin.math.abs(result.speedEstimates.values.single().kilometersPerHour - 3.6) < 0.35)
+        assertEquals(0L, result.metrics.rejectedSpeedEstimates)
         assertTrue(source.closed)
     }
 
-    private fun detection(frameIndex: Long, left: Float, classId: Int = 2, confidence: Float = 0.90f): Detection =
-        Detection(
-            classId = classId,
-            className = when (classId) { 2 -> "car"; 3 -> "motorcycle"; 5 -> "bus"; else -> "truck" },
-            confidence = confidence,
-            left = left,
-            top = 0f,
-            right = left + 10f,
-            bottom = 100f,
-            frameIndex = frameIndex,
-            timestampMs = frameIndex * 100L,
-        )
+    private fun detection(
+        frameIndex: Long,
+        left: Float,
+        classId: Int = 2,
+        confidence: Float = 0.90f,
+        width: Float = 10f,
+    ): Detection = Detection(
+        classId = classId,
+        className = when (classId) { 2 -> "car"; 3 -> "motorcycle"; 5 -> "bus"; else -> "truck" },
+        confidence = confidence,
+        left = left,
+        top = 0f,
+        right = left + width,
+        bottom = 100f,
+        frameIndex = frameIndex,
+        timestampMs = frameIndex * 100L,
+    )
 
     private class SyntheticFrameSource(
         private val frames: List<AnalysisFrame>,
