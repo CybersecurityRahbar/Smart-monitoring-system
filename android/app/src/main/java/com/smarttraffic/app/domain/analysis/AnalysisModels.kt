@@ -58,7 +58,11 @@ data class SpeedEstimate(
     val confidence: Float,
     val sampleCount: Int,
     val durationMs: Long,
+    val velocityXMps: Double? = null,
+    val velocityYMps: Double? = null,
+    val directionDegrees: Double? = null,
     val positionResidualMeters: Double? = null,
+    /** Estimated uncertainty/dispersion, not ground-truth error. */
     val errorKmh: Double? = null,
 )
 
@@ -83,9 +87,13 @@ data class CalibrationProfile(
 data class AnalysisConfig(
     val detectorModel: String = "yolo26n",
     val tracker: String = "botsort",
-    val minimumDetectionConfidence: Float = 0.70f,
+    /** Lowest confidence retained for the tracker so low-score recovery remains possible. */
+    val trackerInputMinimumConfidence: Float = 0.10f,
+    /** Confidence threshold for detections considered reportable/primary results. */
+    val minimumDetectionConfidence: Float = 0.25f,
     val minimumTrackDurationMs: Long = 500L,
     val minimumSpeedSamples: Int = 8,
+    val maxPlausibleSpeedKmh: Double = 250.0,
     val calibration: CalibrationProfile? = null,
     val useGroundPlane: Boolean = true,
     val useVehicleKeypoints: Boolean = false,
@@ -100,14 +108,25 @@ data class AnalysisConfig(
 )
 
 data class AnalysisMetrics(
+    /** Reserved for a source that can report pure decode timing. */
     val decodeFps: Double? = null,
     val inferenceLatencyMs: Double? = null,
+    val inferenceMedianLatencyMs: Double? = null,
+    val inferenceP95LatencyMs: Double? = null,
     val endToEndLatencyMs: Double? = null,
+    val totalProcessingTimeMs: Double? = null,
+    val processingFps: Double? = null,
     val droppedFrames: Long = 0,
+    val framesProcessed: Long = 0,
+    val trackingDetections: Long = 0,
     val detections: Long = 0,
+    val inferenceFailures: Long = 0,
+    val trackingAssociationMisses: Long = 0,
     val activeTracks: Int = 0,
+    val peakActiveTracks: Int = 0,
     val completedTracks: Long = 0,
     val speedEstimates: Long = 0,
+    val rejectedSpeedEstimates: Long = 0,
     val plateReads: Long = 0,
     val homographyReprojectionError: Double? = null,
 )

@@ -1,8 +1,8 @@
 package com.smarttraffic.app.domain.analysis
 
 /**
- * Real frame-to-result coordinator. ML implementations are injected, so the
- * same runner can execute on local files or the live ESP32 source.
+ * Real frame-to-result coordinator. Every tracker result must carry its own current
+ * observation; the runner deliberately does not fall back to an unrelated detection.
  */
 class AnalysisPipelineRunner(
     private val detector: ObjectDetector,
@@ -11,12 +11,24 @@ class AnalysisPipelineRunner(
     private val plateRecognizer: PlateRecognizer? = null,
 ) {
     suspend fun run(source: FrameSource, config: AnalysisConfig): AnalysisResult {
+        require(config.trackerInputMinimumConfidence in 0f..1f) { "trackerInputMinimumConfidence must be within [0,1]" }
+        require(config.minimumDetectionConfidence in 0f..1f) { "minimumDetectionConfidence must be within [0,1]" }
+        require(config.minimumDetectionConfidence >= config.trackerInputMinimumConfidence) {
+            "minimumDetectionConfidence must not be below trackerInputMinimumConfidence"
+        }
+        require(config.maxPlausibleSpeedKmh > 0.0) { "maxPlausibleSpeedKmh must be positive" }
+
         tracker.reset()
         val allDetections = mutableListOf<Detection>()
         val trackBuffers = linkedMapOf<Long, MutableTrackBuffer>()
         val plateReadings = mutableListOf<PlateReading>()
+        val inferenceSamples = mutableListOf<Double>()
         var frameCount = 0L
+        var trackingDetectionCount = 0L
         var droppedFrames = 0L
+        var trackingAssociationMisses = 0L
+        var peakActiveTracks = 0
+        var previousFrameIndex: Long? = null
         var firstTimestamp = Long.MAX_VALUE
         var lastTimestamp = Long.MIN_VALUE
         val analysisStartNs = System.nanoTime()
@@ -28,14 +40,34 @@ class AnalysisPipelineRunner(
                 firstTimestamp = minOf(firstTimestamp, frame.timestampMs)
                 lastTimestamp = maxOf(lastTimestamp, frame.timestampMs)
 
-                val detections = detector.detect(frame.payload, frame.timestampMs, frame.index)
-                    .filter { it.confidence >= config.minimumDetectionConfidence }
-                allDetections += detections
+                previousFrameIndex?.let { previous ->
+                    if (frame.index > previous + 1L) droppedFrames += frame.index - previous - 1L
+                }
+                previousFrameIndex = frame.index
 
-                val tracks = tracker.update(detections, frame.index, frame.timestampMs)
+                val inferenceStartNs = System.nanoTime()
+                val rawDetections = detector.detect(frame.payload, frame.timestampMs, frame.index)
+                val inferenceLatencyMs = (System.nanoTime() - inferenceStartNs) / 1_000_000.0
+                if (inferenceLatencyMs.isFinite() && inferenceLatencyMs >= 0.0) inferenceSamples += inferenceLatencyMs
+
+                val trackingDetections = rawDetections.filter {
+                    it.confidence.isFinite() && it.confidence >= config.trackerInputMinimumConfidence
+                }
+                trackingDetectionCount += trackingDetections.size.toLong()
+                val reportableDetections = trackingDetections.filter {
+                    it.confidence >= config.minimumDetectionConfidence
+                }
+                allDetections += reportableDetections
+
+                val tracks = tracker.update(trackingDetections, frame.index, frame.timestampMs)
+                peakActiveTracks = maxOf(peakActiveTracks, tracks.size)
                 for (track in tracks) {
-                    val observation = currentObservation(track, detections, frame.index, frame.timestampMs)
-                        ?: continue
+                    val observation = track.observations.lastOrNull { it.frameIndex == frame.index }
+                    if (observation == null) {
+                        trackingAssociationMisses++
+                        continue
+                    }
+
                     val keypoints = if (config.useVehicleKeypoints && keypointEstimator != null) {
                         keypointEstimator.estimate(frame.payload, observation.detection)
                     } else emptyList()
@@ -60,8 +92,6 @@ class AnalysisPipelineRunner(
                         plateRecognizer.recognize(frame.payload, observation.detection)?.let(plateReadings::add)
                     }
                 }
-
-                if (tracks.isEmpty() && detections.isNotEmpty()) droppedFrames++
             }
         } finally {
             source.close()
@@ -73,7 +103,9 @@ class AnalysisPipelineRunner(
             Track(
                 id = buffer.id,
                 className = buffer.className,
-                observations = buffer.observations.toList(),
+                observations = buffer.observations.sortedWith(
+                    compareBy<TrackObservation> { it.timestampMs }.thenBy { it.frameIndex },
+                ),
                 trackConfidence = averageConfidence.toFloat().coerceIn(0f, 1f),
                 wasOccluded = buffer.wasOccluded,
             )
@@ -81,14 +113,24 @@ class AnalysisPipelineRunner(
 
         val speedEstimates = if (config.useGroundPlane && config.calibration != null) {
             completedTracks.mapNotNull { track ->
-                estimateSpeed(track, config)?.let { speed -> track.id to speed }
+                RobustSpeedEstimator(
+                    minimumSamples = config.minimumSpeedSamples,
+                    minimumDurationMs = config.minimumTrackDurationMs,
+                    maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
+                ).estimate(track.observations)?.let { speed -> track.id to speed }
             }.toMap()
         } else emptyMap()
 
-        val elapsedSeconds = (System.nanoTime() - analysisStartNs) / 1_000_000_000.0
-        val decodeFps = frameCount.takeIf { it > 0L && elapsedSeconds > 0.0 }
+        val elapsedMs = (System.nanoTime() - analysisStartNs) / 1_000_000.0
+        val elapsedSeconds = elapsedMs / 1000.0
+        val processingFps = frameCount.takeIf { it > 0L && elapsedSeconds > 0.0 }
             ?.let { it / elapsedSeconds }
+        val e2ePerFrameMs = frameCount.takeIf { it > 0L }?.let { elapsedMs / it }
         val homographyError = config.calibration?.reprojectionErrorPixels
+
+        val sortedInference = inferenceSamples.sorted()
+        val inferenceMedian = percentile(sortedInference, 0.50)
+        val inferenceP95 = percentile(sortedInference, 0.95)
 
         return AnalysisResult(
             source = source.source,
@@ -97,34 +139,36 @@ class AnalysisPipelineRunner(
             speedEstimates = speedEstimates,
             plateReadings = temporalPlateConsensus(plateReadings),
             metrics = AnalysisMetrics(
-                decodeFps = decodeFps,
-                endToEndLatencyMs = elapsedSeconds * 1000.0,
+                inferenceLatencyMs = inferenceMedian,
+                inferenceMedianLatencyMs = inferenceMedian,
+                inferenceP95LatencyMs = inferenceP95,
+                endToEndLatencyMs = e2ePerFrameMs,
+                totalProcessingTimeMs = elapsedMs,
+                processingFps = processingFps,
                 droppedFrames = droppedFrames,
+                framesProcessed = frameCount,
+                trackingDetections = trackingDetectionCount,
                 detections = allDetections.size.toLong(),
+                inferenceFailures = 0,
+                trackingAssociationMisses = trackingAssociationMisses,
                 activeTracks = 0,
+                peakActiveTracks = peakActiveTracks,
                 completedTracks = completedTracks.size.toLong(),
                 speedEstimates = speedEstimates.size.toLong(),
+                rejectedSpeedEstimates = (completedTracks.size - speedEstimates.size).toLong().coerceAtLeast(0L),
                 plateReads = plateReadings.size.toLong(),
                 homographyReprojectionError = homographyError,
             ),
         )
     }
 
-    private fun estimateSpeed(track: Track, config: AnalysisConfig): SpeedEstimate? =
-        RobustSpeedEstimator(
-            minimumSamples = config.minimumSpeedSamples,
-            minimumDurationMs = config.minimumTrackDurationMs,
-        ).estimate(track.observations)
-
-    private fun currentObservation(
-        track: Track,
-        detections: List<Detection>,
-        frameIndex: Long,
-        timestampMs: Long,
-    ): TrackObservation? {
-        track.observations.lastOrNull { it.frameIndex == frameIndex }?.let { return it }
-        val detection = detections.maxByOrNull { it.confidence } ?: return null
-        return TrackObservation(frameIndex, timestampMs, detection)
+    private fun percentile(sorted: List<Double>, p: Double): Double? {
+        if (sorted.isEmpty()) return null
+        val position = p.coerceIn(0.0, 1.0) * sorted.lastIndex
+        val lower = position.toInt()
+        val upper = minOf(sorted.lastIndex, lower + 1)
+        if (lower == upper) return sorted[lower]
+        return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower)
     }
 
     private fun selectContactPoint(
@@ -132,7 +176,7 @@ class AnalysisPipelineRunner(
         keypoints: List<VehicleKeypoint>,
     ): Pair<Double, Double> {
         val learned = keypoints
-            .filter { it.confidence >= 0.50f }
+            .filter { it.confidence >= 0.50f && it.x.isFinite() && it.y.isFinite() }
             .firstOrNull {
                 it.name.lowercase() in setOf(
                     "ground_contact", "contact", "footprint", "rear_contact", "front_contact",
