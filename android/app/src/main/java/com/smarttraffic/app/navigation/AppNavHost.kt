@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.smarttraffic.app.core.tr
@@ -41,8 +42,7 @@ enum class AppDestination {
 
 @Composable
 fun AppNavHost() {
-    var destination by mutableStateOf(AppDestination.Dashboard)
-    var exitRequestArmed by mutableStateOf(false)
+    var destination by remember { mutableStateOf(AppDestination.Dashboard) }
 
     val isNested = destination in setOf(
         AppDestination.Reports,
@@ -56,7 +56,6 @@ fun AppNavHost() {
 
     fun navigateBackInApp() {
         destination = if (isNested) AppDestination.More else AppDestination.Dashboard
-        exitRequestArmed = false
     }
 
     BackHandler(enabled = true) {
@@ -64,11 +63,9 @@ fun AppNavHost() {
             navigateBackInApp()
         } else if (destination != AppDestination.Dashboard) {
             destination = AppDestination.Dashboard
-        } else {
-            // Deliberately keep the root Activity alive on the first back press.
-            // A second back press can be implemented later with a visible confirmation policy.
-            exitRequestArmed = !exitRequestArmed
         }
+        // At the dashboard root we intentionally consume the first back press.
+        // The operator remains inside the control center rather than exiting abruptly.
     }
 
     Scaffold(
@@ -91,7 +88,7 @@ fun AppNavHost() {
                 primary.forEach { item ->
                     NavigationBarItem(
                         selected = destination == item,
-                        onClick = { destination = item; exitRequestArmed = false },
+                        onClick = { destination = item },
                         icon = {
                             Icon(
                                 when (item) {
