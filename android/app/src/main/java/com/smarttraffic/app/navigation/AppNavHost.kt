@@ -1,13 +1,17 @@
 package com.smarttraffic.app.navigation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -15,7 +19,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.smarttraffic.app.core.tr
@@ -38,17 +41,57 @@ enum class AppDestination {
 
 @Composable
 fun AppNavHost() {
-    var destination by remember { mutableStateOf(AppDestination.Dashboard) }
+    var destination by mutableStateOf(AppDestination.Dashboard)
+    var exitRequestArmed by mutableStateOf(false)
+
+    val isNested = destination in setOf(
+        AppDestination.Reports,
+        AppDestination.Analysis,
+        AppDestination.Devices,
+        AppDestination.Rules,
+        AppDestination.Watchlist,
+        AppDestination.Evidence,
+        AppDestination.Settings,
+    )
+
+    fun navigateBackInApp() {
+        destination = if (isNested) AppDestination.More else AppDestination.Dashboard
+        exitRequestArmed = false
+    }
+
+    BackHandler(enabled = true) {
+        if (isNested) {
+            navigateBackInApp()
+        } else if (destination != AppDestination.Dashboard) {
+            destination = AppDestination.Dashboard
+        } else {
+            // Deliberately keep the root Activity alive on the first back press.
+            // A second back press can be implemented later with a visible confirmation policy.
+            exitRequestArmed = !exitRequestArmed
+        }
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
+        topBar = {
+            if (isNested) {
+                CenterAlignedTopAppBar(
+                    title = { Text(nestedTitle(destination)) },
+                    navigationIcon = {
+                        IconButton(onClick = ::navigateBackInApp) {
+                            Icon(Icons.Filled.ArrowBack, contentDescription = tr("back"))
+                        }
+                    },
+                )
+            }
+        },
         bottomBar = {
             NavigationBar {
                 val primary = listOf(AppDestination.Dashboard, AppDestination.Radar, AppDestination.Live, AppDestination.Alerts, AppDestination.More)
                 primary.forEach { item ->
                     NavigationBarItem(
                         selected = destination == item,
-                        onClick = { destination = item },
+                        onClick = { destination = item; exitRequestArmed = false },
                         icon = {
                             Icon(
                                 when (item) {
@@ -100,4 +143,15 @@ private fun destinationLabel(destination: AppDestination): String = when (destin
     AppDestination.Alerts -> tr("alerts")
     AppDestination.More -> tr("more")
     else -> destination.name
+}
+
+private fun nestedTitle(destination: AppDestination): String = when (destination) {
+    AppDestination.Reports -> tr("incidentReports")
+    AppDestination.Analysis -> tr("analysisLab")
+    AppDestination.Devices -> tr("devices")
+    AppDestination.Rules -> tr("rules")
+    AppDestination.Watchlist -> tr("watchlist")
+    AppDestination.Evidence -> tr("evidence")
+    AppDestination.Settings -> tr("settings")
+    else -> destinationLabel(destination)
 }
