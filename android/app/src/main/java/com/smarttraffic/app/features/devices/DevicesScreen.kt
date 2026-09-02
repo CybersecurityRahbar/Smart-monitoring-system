@@ -26,7 +26,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import com.smarttraffic.app.core.AppLanguage
 import com.smarttraffic.app.core.AppSettings
@@ -40,7 +41,7 @@ import java.net.URL
 
 @Composable
 fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValues) {
-    val context = LocalContext.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     var host by remember { mutableStateOf(DeviceSettings.host) }
     var port by remember { mutableStateOf(DeviceSettings.httpPort.toString()) }
     var streamPath by remember { mutableStateOf(DeviceSettings.streamPath) }
@@ -49,6 +50,7 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
     var connectionState by remember { mutableStateOf(ConnectionState.IDLE) }
     var resultMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    val technicalTextStyle = MaterialTheme.typography.bodyLarge.merge(TextStyle(textDirection = TextDirection.Ltr))
 
     fun saveProfile() {
         DeviceSettings.save(
@@ -85,6 +87,7 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
                     onValueChange = { host = it },
                     label = { Text(deviceText("Host / IP", "العنوان / IP")) },
                     singleLine = true,
+                    textStyle = technicalTextStyle,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
@@ -92,28 +95,35 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
                     onValueChange = { port = it.filter(Char::isDigit).take(5) },
                     label = { Text(deviceText("HTTP port", "منفذ HTTP")) },
                     singleLine = true,
+                    textStyle = technicalTextStyle,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
+                endpointField(
                     value = streamPath,
+                    label = deviceText("Stream endpoint", "مسار البث"),
                     onValueChange = { streamPath = it },
-                    label = { Text(deviceText("Stream endpoint", "مسار البث")) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = technicalTextStyle,
                 )
-                OutlinedTextField(
+                endpointField(
                     value = capturePath,
+                    label = deviceText("Capture endpoint", "مسار الالتقاط"),
                     onValueChange = { capturePath = it },
-                    label = { Text(deviceText("Capture endpoint", "مسار الالتقاط")) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = technicalTextStyle,
                 )
-                OutlinedTextField(
+                endpointField(
                     value = statusPath,
+                    label = deviceText("Status endpoint", "مسار الحالة"),
                     onValueChange = { statusPath = it },
-                    label = { Text(deviceText("Status endpoint", "مسار الحالة")) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = technicalTextStyle,
+                )
+
+                Text(
+                    text = deviceText(
+                        "Each endpoint is technical data and is displayed left-to-right for readability, even when the app language is Arabic.",
+                        "هذه المسارات بيانات تقنية، لذلك تُعرض من اليسار إلى اليمين لسهولة القراءة حتى عند استخدام العربية.",
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
 
                 Spacer(Modifier.height(4.dp))
@@ -122,7 +132,7 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
                         append(deviceText("Base URL: ", "العنوان الأساسي: "))
                         append(baseUrlPreview(host, port.toIntOrNull() ?: 80))
                     },
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.merge(TextStyle(textDirection = TextDirection.Ltr)),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
 
@@ -180,6 +190,23 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+@Composable
+private fun endpointField(
+    value: String,
+    label: String,
+    onValueChange: (String) -> Unit,
+    textStyle: TextStyle,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        singleLine = true,
+        textStyle = textStyle,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 private enum class ConnectionState { IDLE, TESTING, SUCCESS, ERROR }
