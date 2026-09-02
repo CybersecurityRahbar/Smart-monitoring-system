@@ -63,6 +63,7 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                         assetName = spec.assetPath,
                         accelerator = Accelerator.CPU,
                         inputSize = spec.inputSize,
+                        expectedOutput = spec.expectedOutput,
                     ).use { detector ->
                         val frameSource = when (mediaType) {
                             AnalysisMediaType.VIDEO -> LocalVideoFrameSource(app, uri)

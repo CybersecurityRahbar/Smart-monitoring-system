@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import com.google.ai.edge.litert.Accelerator
 import com.google.ai.edge.litert.CompiledModel
 import com.smarttraffic.app.domain.analysis.Detection
-import com.smarttraffic.app.domain.analysis.ObjectDetector
 import kotlin.math.max
 import kotlin.math.min
 
@@ -15,6 +14,9 @@ import kotlin.math.min
  * Supported Ultralytics detection exports:
  * 1) YOLO26 end-to-end: [1,300,6] -> xyxy, confidence, classId.
  * 2) Traditional detection: [1,84,8400] -> xywh + class scores.
+ *
+ * The tensor contract is validated at runtime so an incompatible artifact cannot
+ * silently produce plausible-looking but incorrect detections.
  */
 class LiteRtObjectDetector(
     context: Context,
@@ -24,7 +26,8 @@ class LiteRtObjectDetector(
     private val classCount: Int = 80,
     private val classNames: Map<Int, String> = COCO_TRAFFIC_CLASSES,
     private val nmsIouThreshold: Float = 0.60f,
-) : ObjectDetector, AutoCloseable {
+    private val expectedOutput: ExpectedOutput? = null,
+) : com.smarttraffic.app.domain.analysis.ObjectDetector, AutoCloseable {
     private val model = CompiledModel.create(
         context.assets,
         assetName,
@@ -38,9 +41,21 @@ class LiteRtObjectDetector(
         require(inputBuffers.size == 1) {
             "Smart Traffic detector expects one input tensor, got ${inputBuffers.size}"
         }
-        require(outputBuffers.isNotEmpty()) {
-            "Smart Traffic detector requires at least one output tensor"
+        require(outputBuffers.size == 1) {
+            "Smart Traffic detector expects one output tensor, got ${outputBuffers.size}"
         }
+
+        val input = inputBuffers.single()
+        val inputShape = input.getShape().toList()
+        require(inputShape.size == 4 && inputShape[0] == 1 && inputShape[1] == 3 &&
+            inputShape[2] == inputSize && inputShape[3] == inputSize) {
+            "Unsupported detector input shape=$inputShape; expected [1,3,$inputSize,$inputSize]"
+        }
+        require(input.getDataType().toString().contains("FLOAT32", ignoreCase = true)) {
+            "Unsupported detector input type=${input.getDataType()}; this adapter currently requires FLOAT32"
+        }
+
+        validateOutputShape(outputBuffers.single().getShape().toList())
     }
 
     override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> {
@@ -52,14 +67,32 @@ class LiteRtObjectDetector(
         model.run(inputBuffers, outputBuffers)
         lastInferenceLatencyMs = (System.nanoTime() - startNs) / 1_000_000.0
 
+        val output = outputBuffers.single()
+        validateOutputShape(output.getShape().toList())
         return parseDetections(
-            outputBuffers[0].readFloat(), prepared,
+            output.readFloat(), prepared,
             frame.width, frame.height, timestampMs, frameIndex,
         )
     }
 
     var lastInferenceLatencyMs: Double = 0.0
         private set
+
+    private fun validateOutputShape(shape: List<Int>) {
+        val accepted = setOf(listOf(1, 300, 6), listOf(1, classCount + 4, 8400))
+        require(shape in accepted) {
+            "Unsupported LiteRT detector output shape=$shape; expected [1,300,6] or [1,${classCount + 4},8400]"
+        }
+        when (expectedOutput) {
+            ExpectedOutput.YOLO26_END_TO_END -> require(shape == listOf(1, 300, 6)) {
+                "Model registry expects YOLO26 end-to-end output [1,300,6], actual=$shape"
+            }
+            ExpectedOutput.YOLO_CLASSIC_8400 -> require(shape == listOf(1, classCount + 4, 8400)) {
+                "Model registry expects classic YOLO output [1,${classCount + 4},8400], actual=$shape"
+            }
+            null -> Unit
+        }
+    }
 
     private fun parseDetections(
         raw: FloatArray,
@@ -68,14 +101,13 @@ class LiteRtObjectDetector(
         originalHeight: Int,
         timestampMs: Long,
         frameIndex: Long,
-    ): List<Detection> = when {
-        raw.size == 300 * 6 -> parseEndToEnd(raw, letterbox, originalWidth, originalHeight, timestampMs, frameIndex)
-        raw.size == (classCount + 4) * 8400 -> parseTraditional(
-            raw, letterbox, originalWidth, originalHeight, timestampMs, frameIndex,
-        )
-        else -> throw IllegalStateException(
-            "Unsupported LiteRT detector output size=${raw.size}; expected [1,300,6] or [1,${classCount + 4},8400]",
-        )
+    ): List<Detection> {
+        val endToEnd = raw.size == 300 * 6
+        return if (endToEnd) {
+            parseEndToEnd(raw, letterbox, originalWidth, originalHeight, timestampMs, frameIndex)
+        } else {
+            parseTraditional(raw, letterbox, originalWidth, originalHeight, timestampMs, frameIndex)
+        }
     }
 
     private fun parseEndToEnd(
@@ -92,13 +124,11 @@ class LiteRtObjectDetector(
             val confidence = raw[offset + 4]
             val classId = raw[offset + 5].toInt()
             if (!confidence.isFinite() || confidence <= 0f || classId !in classNames) continue
-
             val left = toOriginalX(raw[offset], letterbox, originalWidth)
             val top = toOriginalY(raw[offset + 1], letterbox, originalHeight)
             val right = toOriginalX(raw[offset + 2], letterbox, originalWidth)
             val bottom = toOriginalY(raw[offset + 3], letterbox, originalHeight)
             if (right <= left || bottom <= top) continue
-
             results += Detection(classId, classNames.getValue(classId), confidence.coerceIn(0f, 1f),
                 left, top, right, bottom, frameIndex, timestampMs)
         }
@@ -203,6 +233,7 @@ internal object LetterboxPreprocessor {
 
     fun prepare(bitmap: Bitmap, size: Int): Result {
         require(size > 0) { "input size must be positive" }
+        require(bitmap.width > 0 && bitmap.height > 0) { "bitmap dimensions must be positive" }
         val scale = min(size.toFloat() / bitmap.width, size.toFloat() / bitmap.height)
         val scaledWidth = max(1, (bitmap.width * scale).toInt())
         val scaledHeight = max(1, (bitmap.height * scale).toInt())
