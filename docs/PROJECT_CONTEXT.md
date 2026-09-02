@@ -80,14 +80,17 @@ The Android app is the main operator console and visual face of the system. It m
 - alerts/warnings;
 - device health;
 - future voltage/current/power telemetry;
-- quick actions.
+- quick actions;
+- direct incident-report entry should be prominent.
 
 2. **Live Camera**
 - live stream;
 - capture;
 - camera controls;
 - connection diagnostics;
-- device status.
+- device status;
+- operator video presentation modes: fullscreen, standard and compact/floating-in-app;
+- system Picture-in-Picture (PiP) path so video can continue while the user leaves the app.
 
 3. **Intelligent Radar / Live Analytics**
 A separate analytics workspace over live or selected media.
@@ -100,7 +103,8 @@ Required direction:
 - confidence;
 - filters by object class and speed range;
 - focus on objects moving at configured speeds;
-- expandable algorithm controls.
+- expandable algorithm controls;
+- same flexible video presentation modes as Live Camera.
 
 Conceptual pipeline:
 ```text
@@ -173,6 +177,8 @@ Example reported plate: `1/52863`.
 A match can trigger configurable actions such as capture, event creation, operator alert, evidence preservation and reporting of plate/speed/time/metadata.
 Plate format must remain configurable and normalized carefully.
 
+**New:** an actual **Incident Reports** input screen is now present. It includes incident type, location, vehicle/plate, priority, details and submit flow, plus recent report examples.
+
 10. **Alerts / Notifications**
 - speeding;
 - watchlist hits;
@@ -201,25 +207,80 @@ Plate format must remain configurable and normalized carefully.
 
 ## 7. UI/design direction
 
-The application is the face of the system and must feel like a premium professional control center.
+The user explicitly wants the UI to feel like an **international / professional traffic operations control system**, not a generic student app.
 
-Requirements:
-- dark-first, high-contrast technical aesthetic;
-- sophisticated cards/panels and live indicators;
-- strong numeric hierarchy for operational metrics;
-- coherent typography, spacing and iconography;
-- restrained accent colors with warning/error colors reserved for states;
-- meaningful motion for state/transition feedback;
-- adaptive layouts;
-- reusable design-system components;
-- radar overlays readable over video;
-- complex configuration grouped into hubs/nested screens.
+Web research performed on 2026-09-02 examined professional traffic-control and video-management visual patterns, including multi-camera/video-wall layouts, maps + analytics panels, operator workspaces, status/alert hierarchy, and high-density monitoring screens. Examples reviewed included GoodVision, TomTom traffic monitoring imagery, municipal traffic control rooms, and traffic operations-center references.
 
-The bottom navigation should eventually remain compact. Complex areas belong behind hubs/nested navigation.
+Design conclusions adopted:
+- integrated command-center layout: live video + metrics + events + operator actions;
+- strong visual hierarchy for live state and alerts;
+- dense but structured information, avoiding decorative clutter;
+- video should be a first-class workspace, not a simple centered placeholder;
+- secondary workflows should be grouped behind an operations hub rather than putting every function in bottom navigation;
+- mobile bottom navigation should stay compact. Android Material guidance recommends roughly 3–5 primary navigation items, so the app now uses 5 top-level items.
 
-A detailed visual direction is recorded in `docs/UI_VISION.md`.
+Current top-level navigation:
+1. Dashboard
+2. Intelligent Radar
+3. Live Camera
+4. Alerts
+5. More / Operations Hub
 
-## 8. Camera-only speed estimation
+The Operations Hub exposes:
+- Incident Reports
+- Analysis Lab
+- Devices
+- Traffic Rules
+- Watchlist
+- Evidence
+- Settings
+
+Visual language:
+- dark-first command-center aesthetic;
+- refined high-contrast surfaces;
+- teal/blue operational accents;
+- warning/error colors reserved for actual state;
+- rounded but controlled geometry;
+- large readable operational numbers;
+- adaptive spacing and room for future tablets/desktops.
+
+## 8. Language and theme support — implemented
+
+The app now has a persisted application preference layer in:
+`android/app/src/main/java/com/smarttraffic/app/core/AppSettings.kt`
+
+Supported languages:
+- **English** — default on first installation.
+- **Arabic** — switches the application UI to Arabic and changes layout direction to RTL.
+
+The preference is stored locally and survives restarts.
+
+Night mode:
+- a real **Night mode** switch was added to Application Settings;
+- it persists locally;
+- current default is dark mode to preserve the command-center visual identity;
+- turning it off switches to a lighter professional palette.
+
+A shared translation helper currently provides the common labels used by the new operator UI. This is an incremental localization layer and should later be expanded so every remaining legacy feature string is localized.
+
+## 9. Video presentation and Picture-in-Picture — implemented at UI layer
+
+A reusable component was added:
+`android/app/src/main/java/com/smarttraffic/app/core/ui/VideoViewport.kt`
+
+Both Live Camera and Intelligent Radar now support:
+- **Fullscreen** mode;
+- **Standard** mode;
+- **Compact** mode for a smaller/floating-in-app presentation;
+- a **PiP** action that enters Android system Picture-in-Picture mode.
+
+`MainActivity` now prepares `PictureInPictureParams` and the manifest enables `android:supportsPictureInPicture="true"`.
+
+Android official guidance confirms that PiP is the appropriate system multi-window mechanism for video apps and is available from Android 8.0/API 26. The PiP window is system-controlled and can remain visible while navigating elsewhere.
+
+Current limitation: the project still uses a visual video placeholder because the actual ESP32 stream connection is not implemented yet. Therefore PiP/UI behavior is prepared, but a real camera stream has not yet been validated inside PiP.
+
+## 10. Camera-only speed estimation
 
 Preferred research path:
 ```text
@@ -263,7 +324,7 @@ Potential components:
 
 Physical sensor timing can later act as a reference or sensor-fusion input rather than the primary method.
 
-## 9. Intelligent radar model
+## 11. Intelligent radar model
 
 "Radar" is a software computer-vision analytics layer, not a claim that ESP32-CAM itself is a radar sensor.
 
@@ -289,7 +350,7 @@ watchlist state
 ```
 with AND/OR composition rather than a hard-coded speed-only mode.
 
-## 10. Sensors retained for reference
+## 12. Sensors retained for reference
 
 If physical timing sensors are needed later:
 - prefer proper through-beam photoelectric/IR sensors over cheap robot obstacle sensors for multi-meter experiments;
@@ -297,7 +358,7 @@ If physical timing sensors are needed later:
 - industrial sensor outputs require appropriate interface/voltage protection before ESP32 GPIO;
 - no sensors are required for v0.1.
 
-## 11. Software/language direction
+## 13. Software/language direction
 
 - **Kotlin** — Android UI/application/domain orchestration.
 - **Jetpack Compose** — Android UI.
@@ -307,7 +368,7 @@ If physical timing sensors are needed later:
 
 The analysis interface must be independent of transport so live camera, local files and future sources can share the same engine API.
 
-## 12. Repository structure
+## 14. Repository structure
 
 ```text
 Smart-monitoring-system/
@@ -327,7 +388,16 @@ Smart-monitoring-system/
 └── README.md
 ```
 
-## 13. CI/CD and APK
+Important new Android files:
+- `android/app/src/main/java/com/smarttraffic/app/core/AppSettings.kt`
+- `android/app/src/main/java/com/smarttraffic/app/core/ui/VideoViewport.kt`
+- `android/app/src/main/java/com/smarttraffic/app/features/reports/IncidentReportsScreen.kt`
+- `android/app/src/main/java/com/smarttraffic/app/features/more/OperationsHubScreen.kt`
+- `android/app/src/main/java/com/smarttraffic/app/features/rules/TrafficRulesScreen.kt`
+- `android/app/src/main/java/com/smarttraffic/app/features/watchlist/WatchlistScreen.kt`
+- `android/app/src/main/java/com/smarttraffic/app/features/evidence/EvidenceScreen.kt`
+
+## 15. CI/CD and APK
 
 GitHub Actions is a permanent project requirement.
 
@@ -344,7 +414,7 @@ It:
 - uploads test reports when present;
 - exposes build logs/status in Actions.
 
-The user verified the workflow succeeded on 2026-09-02:
+The user verified an earlier workflow run on 2026-09-02 with:
 - Debug APK build: **SUCCESS**;
 - unit-test task: **SUCCESS** (currently no unit-test sources, task reported `NO-SOURCE`);
 - APK artifact uploaded successfully;
@@ -352,35 +422,45 @@ The user verified the workflow succeeded on 2026-09-02:
 
 Current Android build uses AGP 9.3.2 and Gradle 9.5.0 in CI. Keep these aligned unless a future verified release requires another combination.
 
-## 14. Runtime launch bug found and fixed
+## 16. Runtime launch bug found and fixed
 
-The current `AndroidManifest.xml` incorrectly declared `android:name=".SmartTrafficApp"` on `<application>` while `SmartTrafficApp.kt` is a `@Composable` function rather than an `android.app.Application` subclass.
+The old `AndroidManifest.xml` incorrectly declared `android:name=".SmartTrafficApp"` on `<application>` while `SmartTrafficApp.kt` is a `@Composable` function rather than an `android.app.Application` subclass.
 
-This could make Android try to instantiate the composable as an Application and crash at launch, matching the user's earlier report that a previous APK closed immediately.
-
-Fix applied on 2026-09-02:
-- removed `android:name=".SmartTrafficApp"` from `<application>`;
-- kept `MainActivity` as the launcher activity;
+Fix already applied:
+- removed `android:name=".SmartTrafficApp"`;
+- kept `MainActivity` as launcher;
 - `MainActivity` continues to call `setContent { SmartTrafficApp() }`.
 
-A fresh CI run after this fix is required before claiming runtime launch has been verified on a physical device.
+The user has now confirmed the corrected APK can be **installed and opened successfully** and that the application shows the existing screens. This resolves the previous immediate-close runtime problem for the tested build.
 
-## 15. Current implementation state
+A new post-UI-change CI run is currently in progress and must be confirmed before the latest UI commit is called install-ready.
 
-The repository has:
-- Android Compose foundation;
-- app navigation;
-- premium-direction Dashboard shell;
-- Live Camera shell;
-- Intelligent Radar shell;
-- Local Analysis Lab shell with device-media picker;
-- Devices, Alerts and Settings feature areas;
-- analysis/design documentation;
-- GitHub Actions CI producing a Debug APK artifact.
+## 17. Current implementation state
 
-The latest verified CI run succeeded before the manifest runtime fix. Therefore the next APK must be built from the post-fix commit and tested on-device.
+The new UI pass now includes:
+- premium command-center dashboard refinement;
+- five-item primary navigation;
+- operations hub for secondary workflows;
+- actual incident-report intake screen;
+- traffic-rules screen;
+- watchlist screen;
+- evidence screen;
+- application language preference with English default and Arabic RTL;
+- persisted night-mode toggle;
+- shared live-video viewport with fullscreen/standard/compact modes;
+- Android system Picture-in-Picture preparation for live video;
+- refined dark/light theme colors.
 
-## 16. Development rules
+The UI is still a prototype layer. The following are not yet connected to actual backends/vision:
+- real ESP32 stream;
+- live detection/tracking;
+- OCR;
+- physical or camera-only speed calculation;
+- persistent event/report database;
+- real device commands;
+- real evidence storage.
+
+## 18. Development rules
 
 - Work step-by-step and verify milestones.
 - Do not dump dozens of unrelated files without explaining where each belongs.
@@ -393,7 +473,7 @@ The latest verified CI run succeeded before the manifest runtime fix. Therefore 
 - Keep sensor integration optional.
 - Treat this context document as mandatory living project state.
 
-## 17. Conversation continuity rule
+## 19. Conversation continuity rule
 
 After every substantive project discussion, update this document with:
 - the user's new requirements/questions;
@@ -406,14 +486,15 @@ After every substantive project discussion, update this document with:
 
 The goal is to allow a future conversation to resume from this file without depending on chat memory.
 
-## 18. Immediate next actions
+## 20. Immediate next actions
 
-1. Confirm CI succeeds on the post-manifest-fix commit.
-2. Download/install the new APK and verify the app launches and displays the UI.
-3. Continue replacing structural screen shells with the final premium control-center design.
-4. Define stable domain models for Device, CameraStream, MediaSource, Detection, Track, SpeedEstimate, Event, Rule and Watchlist entry.
-5. Define the analysis-engine interface shared by Local Analysis and Live Radar.
-6. Implement actual local-media analysis incrementally.
-7. Implement configurable ESP32-CAM device profiles and local HTTP communication.
-8. When hardware is available, verify exact ESP32-CAM board and implement live stream + still capture.
-9. Develop and benchmark camera-only speed estimation with calibrated scenes and known references.
+1. Confirm the newest CI run after the UI changes is green.
+2. Download/install the newest APK and test: navigation, Reports, Arabic switch, RTL, Night mode, video modes and PiP.
+3. Continue the visual pass across every remaining screen so legacy shells use the same command-center design system.
+4. Replace the temporary translation map with a complete resource-based localization architecture once the UI structure settles.
+5. Define stable domain models for Device, CameraStream, MediaSource, Detection, Track, SpeedEstimate, Event, Rule and Watchlist entry.
+6. Define the analysis-engine interface shared by Local Analysis and Live Radar.
+7. Implement actual local-media analysis incrementally.
+8. Implement configurable ESP32-CAM device profiles and local HTTP communication.
+9. When hardware is available, verify exact ESP32-CAM board and implement live stream + still capture.
+10. Develop and benchmark camera-only speed estimation with calibrated scenes and known references.
