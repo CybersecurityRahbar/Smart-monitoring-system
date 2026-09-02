@@ -4,15 +4,15 @@ import com.smarttraffic.app.data.tracking.ByteTrack
 import com.smarttraffic.app.domain.analysis.AnalysisConfig
 import com.smarttraffic.app.domain.analysis.AnalysisFrame
 import com.smarttraffic.app.domain.analysis.AnalysisPipelineRunner
+import com.smarttraffic.app.domain.analysis.CalibrationProfile
 import com.smarttraffic.app.domain.analysis.Detection
 import com.smarttraffic.app.domain.analysis.FrameSource
+import com.smarttraffic.app.domain.analysis.GroundPoint
 import com.smarttraffic.app.domain.analysis.HomographyEstimator
 import com.smarttraffic.app.domain.analysis.MediaSource
 import com.smarttraffic.app.domain.analysis.ObjectDetector
 import com.smarttraffic.app.domain.analysis.RobustSpeedEstimator
 import com.smarttraffic.app.domain.analysis.TrackObservation
-import com.smarttraffic.app.domain.analysis.GroundPoint
-import com.smarttraffic.app.domain.analysis.CalibrationProfile
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -157,6 +157,9 @@ class TrafficReliabilityTest {
                         0.0, 1.0, 0.0,
                         0.0, 0.0, 1.0,
                     ),
+                    reprojectionErrorPixels = 0.0,
+                    homographyInlierCount = 4,
+                    homographyInlierRatio = 1.0,
                 ),
             ),
         )
@@ -170,6 +173,34 @@ class TrafficReliabilityTest {
         assertTrue(kotlin.math.abs(result.speedEstimates.values.single().kilometersPerHour - 3.6) < 0.35)
         assertEquals(0L, result.metrics.rejectedSpeedEstimates)
         assertTrue(source.closed)
+    }
+
+    @Test
+    fun pipelineRefusesUnvalidatedCalibrationForPhysicalSpeed() = runBlocking {
+        val detector = object : ObjectDetector {
+            override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> =
+                listOf(detection(frameIndex, frameIndex * 10f, confidence = 0.95f, width = 40f))
+        }
+        val source = SyntheticFrameSource((0L..19L).map { index ->
+            AnalysisFrame(index, index * 100L, index, 1920, 1080)
+        })
+        val runner = AnalysisPipelineRunner(detector, ByteTrack())
+        val result = runner.run(
+            source,
+            AnalysisConfig(
+                minimumSpeedSamples = 8,
+                minimumTrackDurationMs = 500L,
+                calibration = CalibrationProfile(
+                    id = "unvalidated",
+                    imageWidth = 1920,
+                    imageHeight = 1080,
+                    homography = listOf(0.01, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                ),
+            ),
+        )
+
+        assertTrue(result.speedEstimates.isEmpty())
+        assertEquals(1L, result.metrics.rejectedSpeedEstimates)
     }
 
     private fun detection(

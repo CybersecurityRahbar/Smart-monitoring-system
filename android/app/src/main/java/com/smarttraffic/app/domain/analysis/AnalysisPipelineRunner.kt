@@ -17,6 +17,8 @@ class AnalysisPipelineRunner(
             "minimumDetectionConfidence must not be below trackerInputMinimumConfidence"
         }
         require(config.maxPlausibleSpeedKmh > 0.0) { "maxPlausibleSpeedKmh must be positive" }
+        require(config.maxCalibrationReprojectionErrorPixels > 0.0) { "maxCalibrationReprojectionErrorPixels must be positive" }
+        require(config.minimumCalibrationInlierRatio in 0.0..1.0) { "minimumCalibrationInlierRatio must be within [0,1]" }
 
         tracker.reset()
         val allDetections = mutableListOf<Detection>()
@@ -73,9 +75,9 @@ class AnalysisPipelineRunner(
                     } else emptyList()
 
                     val contact = selectContactPoint(observation.detection, keypoints)
-                    val ground = if (config.useGroundPlane && config.calibration != null) {
+                    val ground = if (config.useGroundPlane && calibrationAccepted(config)) {
                         runCatching {
-                            HomographyProjector(config.calibration.homography)
+                            HomographyProjector(config.calibration!!.homography)
                                 .project(contact.first, contact.second)
                         }.getOrNull()
                     } else null
@@ -111,7 +113,8 @@ class AnalysisPipelineRunner(
             )
         }
 
-        val speedEstimates = if (config.useGroundPlane && config.calibration != null) {
+        val calibrationReady = calibrationAccepted(config)
+        val speedEstimates = if (config.useGroundPlane && calibrationReady) {
             completedTracks.mapNotNull { track ->
                 RobustSpeedEstimator(
                     minimumSamples = config.minimumSpeedSamples,
@@ -126,7 +129,6 @@ class AnalysisPipelineRunner(
         val processingFps = frameCount.takeIf { it > 0L && elapsedSeconds > 0.0 }
             ?.let { it / elapsedSeconds }
         val e2ePerFrameMs = frameCount.takeIf { it > 0L }?.let { elapsedMs / it }
-        val homographyError = config.calibration?.reprojectionErrorPixels
 
         val sortedInference = inferenceSamples.sorted()
         val inferenceMedian = percentile(sortedInference, 0.50)
@@ -157,9 +159,18 @@ class AnalysisPipelineRunner(
                 speedEstimates = speedEstimates.size.toLong(),
                 rejectedSpeedEstimates = (completedTracks.size - speedEstimates.size).toLong().coerceAtLeast(0L),
                 plateReads = plateReadings.size.toLong(),
-                homographyReprojectionError = homographyError,
+                homographyReprojectionError = config.calibration?.reprojectionErrorPixels,
             ),
         )
+    }
+
+    private fun calibrationAccepted(config: AnalysisConfig): Boolean {
+        val calibration = config.calibration ?: return !config.requireValidatedCalibration
+        if (!config.requireValidatedCalibration) return true
+        val reprojection = calibration.reprojectionErrorPixels ?: return false
+        val inlierRatio = calibration.homographyInlierRatio ?: return false
+        return reprojection.isFinite() && reprojection <= config.maxCalibrationReprojectionErrorPixels &&
+            inlierRatio.isFinite() && inlierRatio >= config.minimumCalibrationInlierRatio
     }
 
     private fun percentile(sorted: List<Double>, p: Double): Double? {

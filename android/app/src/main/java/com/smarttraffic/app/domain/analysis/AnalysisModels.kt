@@ -82,11 +82,14 @@ data class CalibrationProfile(
     val distortionCoefficients: List<Double>? = null,
     val reprojectionErrorPixels: Double? = null,
     val version: Int = 1,
+    val homographyInlierCount: Int? = null,
+    val homographyInlierRatio: Double? = null,
 )
 
 data class AnalysisConfig(
     val detectorModel: String = "yolo26n",
-    val tracker: String = "botsort",
+    /** Current Android implementation is the Kalman + Hungarian ByteTrack baseline. */
+    val tracker: String = "bytetrack",
     /** Lowest confidence retained for the tracker so low-score recovery remains possible. */
     val trackerInputMinimumConfidence: Float = 0.10f,
     /** Confidence threshold for detections considered reportable/primary results. */
@@ -94,16 +97,22 @@ data class AnalysisConfig(
     val minimumTrackDurationMs: Long = 500L,
     val minimumSpeedSamples: Int = 8,
     val maxPlausibleSpeedKmh: Double = 250.0,
+    /** Do not publish metric speed from an unvalidated calibration by default. */
+    val requireValidatedCalibration: Boolean = true,
+    /** Initial engineering gate; must be tuned against calibration validation data. */
+    val maxCalibrationReprojectionErrorPixels: Double = 2.0,
+    /** Initial engineering gate; must be validated on the target camera geometry. */
+    val minimumCalibrationInlierRatio: Double = 0.75,
     val calibration: CalibrationProfile? = null,
     val useGroundPlane: Boolean = true,
     val useVehicleKeypoints: Boolean = false,
     val useDynamicKeypointHomography: Boolean = false,
     val useOpticalFlowRefinement: Boolean = false,
     val useSegmentationRefinement: Boolean = false,
-    val useReIdentification: Boolean = true,
-    val enablePlateRecognition: Boolean = true,
-    val enableRules: Boolean = true,
-    val enableEvidence: Boolean = true,
+    val useReIdentification: Boolean = false,
+    val enablePlateRecognition: Boolean = false,
+    val enableRules: Boolean = false,
+    val enableEvidence: Boolean = false,
     val showRadarOverlay: Boolean = true,
 )
 
