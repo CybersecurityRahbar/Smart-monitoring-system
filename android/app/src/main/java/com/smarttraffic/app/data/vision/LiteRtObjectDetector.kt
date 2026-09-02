@@ -11,12 +11,14 @@ import kotlin.math.min
 /**
  * Real Android detector backend using LiteRT CompiledModel.
  *
- * Supported Ultralytics detection exports:
+ * The LiteRT 2.2 Android TensorBuffer API used by this project does not expose the
+ * shape/type accessors used by an older implementation. The runtime contract here is
+ * therefore enforced by buffer count, successful float I/O, exact flattened output
+ * element count, and the explicit model-registry contract.
+ *
+ * Supported exports:
  * 1) YOLO26 end-to-end: [1,300,6] -> xyxy, confidence, classId.
  * 2) Traditional detection: [1,84,8400] -> xywh + class scores.
- *
- * The tensor contract is validated at runtime so an incompatible artifact cannot
- * silently produce plausible-looking but incorrect detections.
  */
 class LiteRtObjectDetector(
     context: Context,
@@ -36,6 +38,9 @@ class LiteRtObjectDetector(
     )
     private val inputBuffers = model.createInputBuffers()
     private val outputBuffers = model.createOutputBuffers()
+    private val expectedInputElements = 3 * inputSize * inputSize
+    private val expectedEndToEndElements = 300 * 6
+    private val expectedClassicElements = (classCount + 4) * 8400
 
     init {
         require(inputBuffers.size == 1) {
@@ -44,51 +49,49 @@ class LiteRtObjectDetector(
         require(outputBuffers.size == 1) {
             "Smart Traffic detector expects one output tensor, got ${outputBuffers.size}"
         }
-
-        val input = inputBuffers.single()
-        val inputShape = input.getShape().toList()
-        require(inputShape.size == 4 && inputShape[0] == 1 && inputShape[1] == 3 &&
-            inputShape[2] == inputSize && inputShape[3] == inputSize) {
-            "Unsupported detector input shape=$inputShape; expected [1,3,$inputSize,$inputSize]"
-        }
-        require(input.getDataType().toString().contains("FLOAT32", ignoreCase = true)) {
-            "Unsupported detector input type=${input.getDataType()}; this adapter currently requires FLOAT32"
-        }
-
-        validateOutputShape(outputBuffers.single().getShape().toList())
     }
 
     override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> {
         require(frame is Bitmap) { "LiteRtObjectDetector requires Bitmap frames" }
         val prepared = LetterboxPreprocessor.prepare(frame, inputSize)
-        inputBuffers[0].writeFloat(prepared.chwRgb)
+        require(prepared.chwRgb.size == expectedInputElements) {
+            "Prepared detector input has ${prepared.chwRgb.size} elements; expected $expectedInputElements"
+        }
+
+        // writeFloat is the supported typed write path; an incompatible tensor contract
+        // is rejected by LiteRT rather than being silently reinterpreted.
+        inputBuffers.single().writeFloat(prepared.chwRgb)
 
         val startNs = System.nanoTime()
         model.run(inputBuffers, outputBuffers)
         lastInferenceLatencyMs = (System.nanoTime() - startNs) / 1_000_000.0
 
-        val output = outputBuffers.single()
-        validateOutputShape(output.getShape().toList())
+        val raw = outputBuffers.single().readFloat()
+        validateRawOutputLength(raw.size)
         return parseDetections(
-            output.readFloat(), prepared,
-            frame.width, frame.height, timestampMs, frameIndex,
+            raw,
+            prepared,
+            frame.width,
+            frame.height,
+            timestampMs,
+            frameIndex,
         )
     }
 
     var lastInferenceLatencyMs: Double = 0.0
         private set
 
-    private fun validateOutputShape(shape: List<Int>) {
-        val accepted = setOf(listOf(1, 300, 6), listOf(1, classCount + 4, 8400))
-        require(shape in accepted) {
-            "Unsupported LiteRT detector output shape=$shape; expected [1,300,6] or [1,${classCount + 4},8400]"
+    private fun validateRawOutputLength(elementCount: Int) {
+        require(elementCount == expectedEndToEndElements || elementCount == expectedClassicElements) {
+            "Unsupported LiteRT detector output element count=$elementCount; expected " +
+                "$expectedEndToEndElements ([1,300,6]) or $expectedClassicElements ([1,${classCount + 4},8400])"
         }
         when (expectedOutput) {
-            ExpectedOutput.YOLO26_END_TO_END -> require(shape == listOf(1, 300, 6)) {
-                "Model registry expects YOLO26 end-to-end output [1,300,6], actual=$shape"
+            ExpectedOutput.YOLO26_END_TO_END -> require(elementCount == expectedEndToEndElements) {
+                "Model registry expects YOLO26 end-to-end output [1,300,6], actual element count=$elementCount"
             }
-            ExpectedOutput.YOLO_CLASSIC_8400 -> require(shape == listOf(1, classCount + 4, 8400)) {
-                "Model registry expects classic YOLO output [1,${classCount + 4},8400], actual=$shape"
+            ExpectedOutput.YOLO_CLASSIC_8400 -> require(elementCount == expectedClassicElements) {
+                "Model registry expects classic YOLO output [1,${classCount + 4},8400], actual element count=$elementCount"
             }
             null -> Unit
         }
@@ -102,8 +105,8 @@ class LiteRtObjectDetector(
         timestampMs: Long,
         frameIndex: Long,
     ): List<Detection> {
-        val endToEnd = raw.size == 300 * 6
-        return if (endToEnd) {
+        validateRawOutputLength(raw.size)
+        return if (raw.size == expectedEndToEndElements) {
             parseEndToEnd(raw, letterbox, originalWidth, originalHeight, timestampMs, frameIndex)
         } else {
             parseTraditional(raw, letterbox, originalWidth, originalHeight, timestampMs, frameIndex)
@@ -129,8 +132,17 @@ class LiteRtObjectDetector(
             val right = toOriginalX(raw[offset + 2], letterbox, originalWidth)
             val bottom = toOriginalY(raw[offset + 3], letterbox, originalHeight)
             if (right <= left || bottom <= top) continue
-            results += Detection(classId, classNames.getValue(classId), confidence.coerceIn(0f, 1f),
-                left, top, right, bottom, frameIndex, timestampMs)
+            results += Detection(
+                classId,
+                classNames.getValue(classId),
+                confidence.coerceIn(0f, 1f),
+                left,
+                top,
+                right,
+                bottom,
+                frameIndex,
+                timestampMs,
+            )
         }
         return results
     }
@@ -170,8 +182,17 @@ class LiteRtObjectDetector(
             val bottom = toOriginalY((y + h * 0.5f) * inputSize, letterbox, originalHeight)
             if (right <= left || bottom <= top) continue
 
-            candidates += Detection(bestClass, classNames.getValue(bestClass), bestConfidence.coerceIn(0f, 1f),
-                left, top, right, bottom, frameIndex, timestampMs)
+            candidates += Detection(
+                bestClass,
+                classNames.getValue(bestClass),
+                bestConfidence.coerceIn(0f, 1f),
+                left,
+                top,
+                right,
+                bottom,
+                frameIndex,
+                timestampMs,
+            )
         }
         return nonMaxSuppression(candidates, nmsIouThreshold)
     }
