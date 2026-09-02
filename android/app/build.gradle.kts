@@ -44,6 +44,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
 
+    // LiteRT 2.x Kotlin API: CompiledModel + CPU/GPU/NPU accelerator selection.
+    implementation("com.google.ai.edge.litert:litert:2.1.6")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
