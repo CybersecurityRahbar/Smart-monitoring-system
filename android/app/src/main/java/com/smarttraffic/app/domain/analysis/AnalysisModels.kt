@@ -29,11 +29,19 @@ data class GroundPoint(
     val reprojectionErrorMeters: Double? = null,
 )
 
+data class VehicleKeypoint(
+    val name: String,
+    val x: Double,
+    val y: Double,
+    val confidence: Float,
+)
+
 data class TrackObservation(
     val frameIndex: Long,
     val timestampMs: Long,
     val detection: Detection,
     val groundPoint: GroundPoint? = null,
+    val keypoints: List<VehicleKeypoint> = emptyList(),
 )
 
 data class Track(
@@ -79,6 +87,11 @@ data class AnalysisConfig(
     val minimumTrackDurationMs: Long = 500L,
     val minimumSpeedSamples: Int = 8,
     val useGroundPlane: Boolean = true,
+    val useVehicleKeypoints: Boolean = false,
+    val useDynamicKeypointHomography: Boolean = false,
+    val useOpticalFlowRefinement: Boolean = false,
+    val useSegmentationRefinement: Boolean = false,
+    val useReIdentification: Boolean = true,
     val enablePlateRecognition: Boolean = true,
     val enableRules: Boolean = true,
     val enableEvidence: Boolean = true,
@@ -95,6 +108,7 @@ data class AnalysisMetrics(
     val completedTracks: Long = 0,
     val speedEstimates: Long = 0,
     val plateReads: Long = 0,
+    val homographyReprojectionError: Double? = null,
 )
 
 data class AnalysisResult(
