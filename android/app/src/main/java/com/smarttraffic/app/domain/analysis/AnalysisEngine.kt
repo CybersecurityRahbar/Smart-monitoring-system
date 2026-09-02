@@ -16,13 +16,6 @@ interface VehicleKeypointEstimator {
     suspend fun estimate(frame: Any, detection: Detection): List<VehicleKeypoint>
 }
 
-data class VehicleKeypoint(
-    val name: String,
-    val x: Double,
-    val y: Double,
-    val confidence: Float,
-)
-
 interface PlateRecognizer {
     suspend fun recognize(frame: Any, vehicle: Detection): PlateReading?
 }
@@ -45,8 +38,6 @@ class ModularAnalysisEngine(
 ) : AnalysisEngine {
 
     override suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult {
-        // Frame decoding/model invocation is intentionally not coupled to this coordinator yet.
-        // The implementation becomes live once a FrameSource/decoder adapter is connected.
         tracker.reset()
         return AnalysisResult(source = source)
     }
