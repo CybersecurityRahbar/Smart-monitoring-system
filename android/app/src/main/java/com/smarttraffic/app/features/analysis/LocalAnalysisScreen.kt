@@ -29,64 +29,37 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.smarttraffic.app.core.tr
 
 @Composable
 fun LocalAnalysisScreen(paddingValues: PaddingValues) {
     var selectedMedia by remember { mutableStateOf<String?>(null) }
 
-    val mediaPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-        onResult = { uri -> selectedMedia = uri?.toString() },
-    )
+    val mediaPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> selectedMedia = uri?.toString() }
 
-    Column(
-        modifier = Modifier.padding(paddingValues).padding(horizontal = 20.dp, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
+    Column(Modifier.padding(paddingValues).padding(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.Analytics, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.size(10.dp))
             Column {
-                Text("Local Analysis Lab", style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    "Validate the same vision pipeline before connecting the camera.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(tr("localAnalysisLab"), style = MaterialTheme.typography.headlineMedium)
+                Text(tr("analysisDescription"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(26.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        ) {
+        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.VideoLibrary, null, Modifier.size(22.dp))
-                    Spacer(Modifier.size(8.dp))
-                    Text("Media source", style = MaterialTheme.typography.titleMedium)
+                    Icon(Icons.Filled.VideoLibrary, null, Modifier.size(22.dp)); Spacer(Modifier.size(8.dp)); Text(tr("mediaSource"), style = MaterialTheme.typography.titleMedium)
                 }
-                Text(
-                    selectedMedia ?: "No video or image selected yet.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Button(onClick = { mediaPicker.launch(arrayOf("video/*", "image/*")) }) {
-                    Text("Choose from device")
-                }
+                Text(selectedMedia ?: tr("noMedia"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(onClick = { mediaPicker.launch(arrayOf("video/*", "image/*")) }) { Text(tr("chooseFromDevice")) }
             }
         }
-
         Surface(shape = RoundedCornerShape(24.dp), tonalElevation = 2.dp) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Analysis pipeline", style = MaterialTheme.typography.titleMedium)
-                Text("Detection  •  Tracking  •  Calibration  •  Speed  •  Confidence")
-                Text(
-                    "The lab is designed to feed the same analysis engine that will later consume ESP32-CAM live frames.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(tr("analysisPipeline"), style = MaterialTheme.typography.titleMedium)
+                Text(tr("analysisPipelineDetail"))
+                Text(tr("analysisEngineConnectionDetail"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
