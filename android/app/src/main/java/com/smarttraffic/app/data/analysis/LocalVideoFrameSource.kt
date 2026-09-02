@@ -1,6 +1,6 @@
 package com.smarttraffic.app.data.analysis
 
-import android.content.ContentResolver
+import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -14,7 +14,7 @@ import com.smarttraffic.app.domain.analysis.MediaSource
  * receives a real monotonic media clock instead of assuming a fixed FPS.
  */
 class LocalVideoFrameSource(
-    private val contentResolver: ContentResolver,
+    private val context: Context,
     private val uri: Uri,
     private val sampleIntervalMs: Long = 100L,
 ) : FrameSource {
@@ -31,7 +31,7 @@ class LocalVideoFrameSource(
     override val source: MediaSource
 
     init {
-        retriever.setDataSource(contentResolver, uri)
+        retriever.setDataSource(context, uri)
         durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
             ?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
         width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
