@@ -10,26 +10,29 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * First real on-device detector backend for Smart Traffic.
+ * Real Android detector backend using LiteRT CompiledModel.
  *
- * Model weights stay outside source control. Place an exported LiteRT model
- * under app/src/main/assets/models/ and pass its asset name.
- * This adapter currently supports the current Ultralytics end-to-end [N, 6]
- * output: x1, y1, x2, y2, confidence, classId.
+ * Supported Ultralytics detection exports:
+ * 1) YOLO26 end-to-end: [1,300,6] -> xyxy, confidence, classId.
+ * 2) Traditional detection: [1,84,8400] -> xywh + class scores.
+ *
+ * Traditional output gets class-aware NMS on Android. Model weights stay
+ * outside source control and are supplied as assets/models/*.tflite.
  */
 class LiteRtObjectDetector(
     context: Context,
     private val assetName: String,
     accelerator: Accelerator = Accelerator.CPU,
     private val inputSize: Int = 640,
+    private val classCount: Int = 80,
     private val classNames: Map<Int, String> = COCO_TRAFFIC_CLASSES,
+    private val nmsIouThreshold: Float = 0.60f,
 ) : ObjectDetector, AutoCloseable {
     private val model = CompiledModel.create(
         context.assets,
         assetName,
         CompiledModel.Options(accelerator),
     )
-
     private val inputBuffers = model.createInputBuffers()
     private val outputBuffers = model.createOutputBuffers()
 
@@ -44,23 +47,18 @@ class LiteRtObjectDetector(
 
     override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> {
         require(frame is Bitmap) { "LiteRtObjectDetector requires Bitmap frames" }
-
-        val originalWidth = frame.width
-        val originalHeight = frame.height
         val prepared = LetterboxPreprocessor.prepare(frame, inputSize)
         inputBuffers[0].writeFloat(prepared.chwRgb)
 
         val startNs = System.nanoTime()
         model.run(inputBuffers, outputBuffers)
-        val endNs = System.nanoTime()
-        lastInferenceLatencyMs = (endNs - startNs) / 1_000_000.0
+        lastInferenceLatencyMs = (System.nanoTime() - startNs) / 1_000_000.0
 
-        val raw = outputBuffers[0].readFloat()
         return parseDetections(
-            raw = raw,
+            raw = outputBuffers[0].readFloat(),
             letterbox = prepared,
-            originalWidth = originalWidth,
-            originalHeight = originalHeight,
+            originalWidth = frame.width,
+            originalHeight = frame.height,
             timestampMs = timestampMs,
             frameIndex = frameIndex,
         )
@@ -76,30 +74,35 @@ class LiteRtObjectDetector(
         originalHeight: Int,
         timestampMs: Long,
         frameIndex: Long,
-    ): List<Detection> {
-        if (raw.isEmpty() || raw.size % 6 != 0) {
-            throw IllegalStateException(
-                "Unsupported LiteRT detector output: ${raw.size} float values; expected [N,6] end-to-end output",
-            )
-        }
+    ): List<Detection> = when {
+        raw.size == 300 * 6 -> parseEndToEnd(raw, letterbox, originalWidth, originalHeight, timestampMs, frameIndex)
+        raw.size == (classCount + 4) * 8400 -> parseTraditional(
+            raw, letterbox, originalWidth, originalHeight, timestampMs, frameIndex,
+        )
+        else -> throw IllegalStateException(
+            "Unsupported LiteRT detector output size=${raw.size}; expected [1,300,6] or [1,${classCount + 4},8400]",
+        )
+    }
 
-        val count = raw.size / 6
-        val results = ArrayList<Detection>(count)
-        for (i in 0 until count) {
+    private fun parseEndToEnd(
+        raw: FloatArray,
+        letterbox: LetterboxPreprocessor.Result,
+        originalWidth: Int,
+        originalHeight: Int,
+        timestampMs: Long,
+        frameIndex: Long,
+    ): List<Detection> {
+        val results = ArrayList<Detection>(32)
+        for (i in 0 until 300) {
             val offset = i * 6
             val confidence = raw[offset + 4]
             val classId = raw[offset + 5].toInt()
-            if (!confidence.isFinite() || classId !in classNames || confidence <= 0f) continue
+            if (!confidence.isFinite() || confidence <= 0f || classId !in classNames) continue
 
-            val left = ((raw[offset] - letterbox.padX) / letterbox.scale)
-                .coerceIn(0f, originalWidth.toFloat())
-            val top = ((raw[offset + 1] - letterbox.padY) / letterbox.scale)
-                .coerceIn(0f, originalHeight.toFloat())
-            val right = ((raw[offset + 2] - letterbox.padX) / letterbox.scale)
-                .coerceIn(0f, originalWidth.toFloat())
-            val bottom = ((raw[offset + 3] - letterbox.padY) / letterbox.scale)
-                .coerceIn(0f, originalHeight.toFloat())
-
+            val left = toOriginalX(raw[offset], letterbox, originalWidth)
+            val top = toOriginalY(raw[offset + 1], letterbox, originalHeight)
+            val right = toOriginalX(raw[offset + 2], letterbox, originalWidth)
+            val bottom = toOriginalY(raw[offset + 3], letterbox, originalHeight)
             if (right <= left || bottom <= top) continue
 
             results += Detection(
@@ -117,6 +120,56 @@ class LiteRtObjectDetector(
         return results
     }
 
+    private fun parseTraditional(
+        raw: FloatArray,
+        letterbox: LetterboxPreprocessor.Result,
+        originalWidth: Int,
+        originalHeight: Int,
+        timestampMs: Long,
+        frameIndex: Long,
+    ): List<Detection> {
+        val candidates = ArrayList<Detection>(256)
+        val numCandidates = 8400
+        for (candidate in 0 until numCandidates) {
+            val x = raw[candidate]
+            val y = raw[numCandidates + candidate]
+            val w = raw[2 * numCandidates + candidate]
+            val h = raw[3 * numCandidates + candidate]
+            if (!x.isFinite() || !y.isFinite() || !w.isFinite() || !h.isFinite() || w <= 0f || h <= 0f) continue
+
+            var bestClass = -1
+            var bestConfidence = 0f
+            for (classId in classNames.keys) {
+                if (classId >= classCount) continue
+                val score = raw[(4 + classId) * numCandidates + candidate]
+                if (score > bestConfidence) {
+                    bestConfidence = score
+                    bestClass = classId
+                }
+            }
+            if (bestClass < 0 || bestConfidence <= 0f) continue
+
+            val left = toOriginalX((x - w * 0.5f) * inputSize, letterbox, originalWidth)
+            val top = toOriginalY((y - h * 0.5f) * inputSize, letterbox, originalHeight)
+            val right = toOriginalX((x + w * 0.5f) * inputSize, letterbox, originalWidth)
+            val bottom = toOriginalY((y + h * 0.5f) * inputSize, letterbox, originalHeight)
+            if (right <= left || bottom <= top) continue
+
+            candidates += Detection(
+                classId = bestClass,
+                className = classNames.getValue(bestClass),
+                confidence = bestConfidence.coerceIn(0f, 1f),
+                left = left,
+                top = top,
+                right = right,
+                bottom = bottom,
+                frameIndex = frameIndex,
+                timestampMs = timestampMs,
+            )
+        }
+        return nonMaxSuppression(candidates, nmsIouThreshold)
+    }
+
     override fun close() {
         model.destroy()
     }
@@ -131,8 +184,37 @@ class LiteRtObjectDetector(
     }
 }
 
-/** CPU-side RGB NCHW letterboxing. This can later be replaced by the C++
- * preprocessing path without changing the detector contract. */
+private fun toOriginalX(x: Float, letterbox: LetterboxPreprocessor.Result, width: Int): Float =
+    ((x - letterbox.padX) / letterbox.scale).coerceIn(0f, width.toFloat())
+
+private fun toOriginalY(y: Float, letterbox: LetterboxPreprocessor.Result, height: Int): Float =
+    ((y - letterbox.padY) / letterbox.scale).coerceIn(0f, height.toFloat())
+
+private fun nonMaxSuppression(detections: List<Detection>, iouThreshold: Float): List<Detection> {
+    val kept = ArrayList<Detection>()
+    for ((_, group) in detections.groupBy { it.classId }) {
+        val remaining = group.sortedByDescending { it.confidence }.toMutableList()
+        while (remaining.isNotEmpty()) {
+            val best = remaining.removeAt(0)
+            kept += best
+            remaining.removeAll { candidate -> iou(best, candidate) > iouThreshold }
+        }
+    }
+    return kept.sortedByDescending { it.confidence }
+}
+
+private fun iou(a: Detection, b: Detection): Float {
+    val left = max(a.left, b.left)
+    val top = max(a.top, b.top)
+    val right = min(a.right, b.right)
+    val bottom = min(a.bottom, b.bottom)
+    val intersection = max(0f, right - left) * max(0f, bottom - top)
+    val areaA = max(0f, a.right - a.left) * max(0f, a.bottom - a.top)
+    val areaB = max(0f, b.right - b.left) * max(0f, b.bottom - b.top)
+    val union = areaA + areaB - intersection
+    return if (union > 0f) intersection / union else 0f
+}
+
 internal object LetterboxPreprocessor {
     data class Result(
         val chwRgb: FloatArray,
@@ -152,15 +234,8 @@ internal object LetterboxPreprocessor {
 
         val pixels = IntArray(size * size)
         java.util.Arrays.fill(pixels, 0xFF727272.toInt())
-        scaled.getPixels(
-            pixels,
-            padY.toInt() * size + padX.toInt(),
-            size,
-            0,
-            0,
-            scaledWidth,
-            scaledHeight,
-        )
+        val offset = padY.toInt() * size + padX.toInt()
+        scaled.getPixels(pixels, offset, size, 0, 0, scaledWidth, scaledHeight)
 
         val plane = size * size
         val chw = FloatArray(plane * 3)
