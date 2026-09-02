@@ -33,6 +33,13 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      - name: Install Android NDK and CMake
+        working-directory: android
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "ndk;27.2.12479018" "cmake;3.22.1"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
