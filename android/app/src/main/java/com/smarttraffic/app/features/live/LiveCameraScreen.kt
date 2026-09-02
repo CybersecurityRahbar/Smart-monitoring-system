@@ -11,9 +11,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Capture
 import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
@@ -38,9 +38,7 @@ fun LiveCameraScreen(paddingValues: PaddingValues) {
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(tr("live"), style = MaterialTheme.typography.headlineSmall)
-                }
+                Text(tr("live"), style = MaterialTheme.typography.headlineSmall)
                 Text("Operator video workspace • ESP32-CAM", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
