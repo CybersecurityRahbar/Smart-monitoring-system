@@ -10,13 +10,11 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
+import com.smarttraffic.app.core.AppLanguage
 import com.smarttraffic.app.core.AppSettings
 import com.smarttraffic.app.ui.theme.SmartTrafficTheme
-import java.util.Locale
-import androidx.compose.runtime.compositionLocalOf
-
-val LocalLayoutDirectionOverride = compositionLocalOf { LayoutDirection.Ltr }
 
 class MainActivity : ComponentActivity() {
     private var pipArmed by mutableStateOf(false)
@@ -25,12 +23,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         AppSettings.load(applicationContext)
         setContent {
-            val direction = if (AppSettings.language == com.smarttraffic.app.core.AppLanguage.ARABIC) {
+            val direction = if (AppSettings.language == AppLanguage.ARABIC) {
                 LayoutDirection.Rtl
             } else {
                 LayoutDirection.Ltr
             }
-            CompositionLocalProvider(LocalLayoutDirectionOverride provides direction) {
+            CompositionLocalProvider(LocalLayoutDirection provides direction) {
                 SmartTrafficTheme(darkTheme = AppSettings.darkMode) {
                     SmartTrafficApp()
                 }
