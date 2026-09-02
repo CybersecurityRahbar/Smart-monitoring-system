@@ -9,7 +9,6 @@ class AnalysisPipelineRunner(
     private val tracker: MultiObjectTracker,
     private val keypointEstimator: VehicleKeypointEstimator? = null,
     private val plateRecognizer: PlateRecognizer? = null,
-    private val sampleIntervalPolicy: FrameSamplingPolicy = FrameSamplingPolicy(),
 ) {
     suspend fun run(source: FrameSource, config: AnalysisConfig): AnalysisResult {
         tracker.reset()
@@ -20,7 +19,7 @@ class AnalysisPipelineRunner(
         var droppedFrames = 0L
         var firstTimestamp = Long.MAX_VALUE
         var lastTimestamp = Long.MIN_VALUE
-        var decodeStartNs = System.nanoTime()
+        val analysisStartNs = System.nanoTime()
 
         try {
             while (true) {
@@ -34,26 +33,18 @@ class AnalysisPipelineRunner(
                 allDetections += detections
 
                 val tracks = tracker.update(detections, frame.index, frame.timestampMs)
-                val currentTrackIds = tracks.mapTo(hashSetOf()) { it.id }
-
-                if (config.useReIdentification.not() && tracks.any { it.wasOccluded }) {
-                    // Re-ID is optional; the tracker remains authoritative for identity.
-                    droppedFrames += 0L
-                }
-
                 for (track in tracks) {
                     val observation = currentObservation(track, detections, frame.index, frame.timestampMs)
                         ?: continue
                     val keypoints = if (config.useVehicleKeypoints && keypointEstimator != null) {
                         keypointEstimator.estimate(frame.payload, observation.detection)
-                    } else {
-                        emptyList()
-                    }
+                    } else emptyList()
 
                     val contact = selectContactPoint(observation.detection, keypoints)
                     val ground = if (config.useGroundPlane && config.calibration != null) {
                         runCatching {
-                            HomographyProjector(config.calibration.homography).project(contact.first, contact.second)
+                            HomographyProjector(config.calibration.homography)
+                                .project(contact.first, contact.second)
                         }.getOrNull()
                     } else null
 
@@ -70,10 +61,7 @@ class AnalysisPipelineRunner(
                     }
                 }
 
-                if (currentTrackIds.isEmpty() && detections.isNotEmpty()) {
-                    // Detections without a maintained identity are intentionally not promoted to speed events.
-                    droppedFrames += 0L
-                }
+                if (tracks.isEmpty() && detections.isNotEmpty()) droppedFrames++
             }
         } finally {
             source.close()
@@ -91,16 +79,16 @@ class AnalysisPipelineRunner(
             )
         }
 
-        val speedEstimates = if (config.useGroundPlane) {
+        val speedEstimates = if (config.useGroundPlane && config.calibration != null) {
             completedTracks.mapNotNull { track ->
-                estimateSpeed(track, config)?.let(track.id::let to it)
+                estimateSpeed(track, config)?.let { speed -> track.id to speed }
             }.toMap()
         } else emptyMap()
 
-        val elapsedSeconds = (System.nanoTime() - decodeStartNs) / 1_000_000_000.0
-        val mediaSeconds = if (firstTimestamp != Long.MAX_VALUE && lastTimestamp >= firstTimestamp) {
-            (lastTimestamp - firstTimestamp) / 1000.0
-        } else 0.0
+        val elapsedSeconds = (System.nanoTime() - analysisStartNs) / 1_000_000_000.0
+        val decodeFps = frameCount.takeIf { it > 0L && elapsedSeconds > 0.0 }
+            ?.let { it / elapsedSeconds }
+        val homographyError = config.calibration?.reprojectionErrorPixels
 
         return AnalysisResult(
             source = source.source,
@@ -109,14 +97,15 @@ class AnalysisPipelineRunner(
             speedEstimates = speedEstimates,
             plateReadings = temporalPlateConsensus(plateReadings),
             metrics = AnalysisMetrics(
-                decodeFps = frameCount.takeIf { it > 0 && elapsedSeconds > 0.0 }?.div(elapsedSeconds),
-                endToEndLatencyMs = (elapsedSeconds * 1000.0).takeIf { it > 0.0 },
+                decodeFps = decodeFps,
+                endToEndLatencyMs = elapsedSeconds * 1000.0,
                 droppedFrames = droppedFrames,
                 detections = allDetections.size.toLong(),
                 activeTracks = 0,
                 completedTracks = completedTracks.size.toLong(),
                 speedEstimates = speedEstimates.size.toLong(),
                 plateReads = plateReadings.size.toLong(),
+                homographyReprojectionError = homographyError,
             ),
         )
     }
@@ -144,18 +133,20 @@ class AnalysisPipelineRunner(
     ): Pair<Double, Double> {
         val learned = keypoints
             .filter { it.confidence >= 0.50f }
-            .firstOrNull { it.name.lowercase() in setOf("ground_contact", "contact", "footprint", "rear_contact", "front_contact") }
+            .firstOrNull {
+                it.name.lowercase() in setOf(
+                    "ground_contact", "contact", "footprint", "rear_contact", "front_contact",
+                )
+            }
         return if (learned != null) learned.x to learned.y
         else ((detection.left + detection.right) / 2.0) to detection.bottom.toDouble()
     }
 
-    private fun temporalPlateConsensus(readings: List<PlateReading>): List<PlateReading> {
-        if (readings.size < 2) return readings
-        return readings.groupBy { normalizePlate(it.text) }
+    private fun temporalPlateConsensus(readings: List<PlateReading>): List<PlateReading> =
+        readings.groupBy { normalizePlate(it.text) }
             .values
             .map { group -> group.maxBy { it.confidence } }
             .sortedByDescending { it.confidence }
-    }
 
     private fun normalizePlate(text: String): String =
         text.uppercase().replace(" ", "").replace("-", "")
@@ -168,7 +159,3 @@ class AnalysisPipelineRunner(
         var wasOccluded: Boolean = false,
     )
 }
-
-data class FrameSamplingPolicy(
-    val sampleIntervalMs: Long = 100L,
-)
