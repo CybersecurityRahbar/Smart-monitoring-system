@@ -96,6 +96,11 @@ class LocalVideoFrameSource(
 
     private fun fillBatchIfNeeded() {
         if (pendingFrames.isNotEmpty() || finished || !indexDecodeEnabled || frameCount == null) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            // getFramesAtIndex() is API 28+ while the app supports minSdk 26.
+            indexDecodeEnabled = false
+            return
+        }
         if (frameIndex >= frameCount.toLong()) {
             finished = true
             return
