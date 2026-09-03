@@ -42,6 +42,9 @@ import com.smarttraffic.app.core.tr
 fun DashboardScreen(
     paddingValues: PaddingValues,
     onReports: (() -> Unit)? = null,
+    onOpenRadar: (() -> Unit)? = null,
+    onOpenLive: (() -> Unit)? = null,
+    onOpenAnalysis: (() -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
@@ -97,8 +100,9 @@ fun DashboardScreen(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
-                    AssistChip(onClick = {}, label = { Text(tr("openLive"), maxLines = 1) })
-                    AssistChip(onClick = {}, label = { Text(tr("deviceStatus"), maxLines = 1) })
+                    AssistChip(onClick = { onOpenLive?.invoke() }, label = { Text(tr("openLive"), maxLines = 1) })
+                    AssistChip(onClick = { onOpenRadar?.invoke() }, label = { Text(tr("radar"), maxLines = 1) })
+                    AssistChip(onClick = { onOpenAnalysis?.invoke() }, label = { Text(tr("analysisLab"), maxLines = 1) })
                 }
             }
         }
