@@ -248,7 +248,7 @@ fun CalibrationLabScreen(
                                     withContext(Dispatchers.IO) { store.save(profile) }
                                 }
                             }.onSuccess { profile ->
-                                saveMessage = "Saved ${profile.id} v${profile.version}: ${profile.homographyInlierCount ?: 0} inliers, ratio ${"%.3f".format(profile.homographyInlierRatio ?: 0.0)}, target RMSE ${"%.3f m".format(profile.reprojectionErrorTargetUnits ?: Double.NaN)}"
+                                saveMessage = "Saved ${profile.id} v${profile.version}: ${profile.homographyInlierCount ?: 0} inliers, ratio ${"%.3f".format(profile.homographyInlierRatio ?: 0.0)}, mean target reprojection error ${"%.3f m".format(profile.reprojectionErrorTargetUnits ?: Double.NaN)}"
                             }.onFailure {
                                 saveMessage = it.message ?: "Calibration failed quality gates."
                             }
@@ -277,7 +277,7 @@ fun CalibrationLabScreen(
                     Icon(Icons.Filled.Refresh, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text(
-                    "The saved profile contains the camera image dimensions, 3×3 homography, version, reprojection error and inlier ratio. The Analysis Lab can select it; the analysis pipeline still checks that the source dimensions and calibration quality match before publishing physical speed.",
+                    "The saved profile contains the camera image dimensions, 3×3 homography, version, measured reprojection error and inlier ratio. The Analysis Lab can select it; the analysis pipeline still checks that the source dimensions and calibration quality match before publishing physical speed.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
