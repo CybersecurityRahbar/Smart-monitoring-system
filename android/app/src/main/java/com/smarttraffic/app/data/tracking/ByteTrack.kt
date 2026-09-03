@@ -10,10 +10,11 @@ import kotlin.math.min
 
 /**
  * ByteTrack-inspired Android tracker with Kalman prediction, global assignment,
- * two-stage high/low score association, class-aware gating and bounded motion recovery.
+ * two-stage high/low score association, class-aware gating, bounded motion recovery,
+ * and an optional deterministic appearance cue.
  *
- * This is not claimed to be reference-equivalent to official ByteTrack; benchmark it
- * against MOT/vehicle tracking ground truth before treating metrics as production accuracy.
+ * This implementation is not claimed to be reference-equivalent to official ByteTrack.
+ * Its production accuracy must be established on annotated traffic/MOT sequences.
  */
 class ByteTrack(
     private val highThreshold: Float = 0.50f,
@@ -77,11 +78,8 @@ class ByteTrack(
         val iterator = tracks.iterator()
         while (iterator.hasNext()) {
             val track = iterator.next().value
-            if ((track.hits == 1 && track.lostFrames > 0) || track.lostFrames > maxLostFrames) {
-                iterator.remove()
-            } else {
-                track.matched = false
-            }
+            if ((track.hits == 1 && track.lostFrames > 0) || track.lostFrames > maxLostFrames) iterator.remove()
+            else track.matched = false
         }
 
         return tracks.values
@@ -100,8 +98,12 @@ class ByteTrack(
             DoubleArray(detections.size) { column ->
                 val track = trackList[row]
                 val detection = detections[column].value
-                if (track.lastDetection.classId != detection.classId) invalidCost
-                else associationScore(track, detection, minimumIou).let { if (it <= 0.0) invalidCost else 1.0 - it }
+                if (track.lastDetection.classId != detection.classId) {
+                    invalidCost
+                } else {
+                    val score = associationScore(track, detection, minimumIou)
+                    if (score <= 0.0) invalidCost else 1.0 - score
+                }
             }
         }
         return LinearAssignment.solve(costs).mapNotNull { (row, column) ->
@@ -115,7 +117,7 @@ class ByteTrack(
         }
     }
 
-    /** Geometry is mandatory; appearance is only a secondary cue when both crops exist. */
+    /** Geometry is mandatory; deterministic appearance is a secondary cue when available. */
     private fun associationScore(track: InternalTrack, detection: Detection, minimumIou: Float): Double {
         val predictedIou = iou(track.predicted, detection)
         val measuredIou = if (predictedIou < minimumIou) iou(ByteTrackBox(track.lastDetection), detection) else predictedIou
