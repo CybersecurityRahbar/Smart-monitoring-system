@@ -210,8 +210,6 @@ class AnalysisPipelineRunner(
         } else emptyMap()
 
         if (config.enableRules && !calibrationReady) {
-            // Physical traffic rules cannot run on pixel-space or unvalidated geometry.
-            // Keep the result empty instead of generating a false violation.
             require(!config.trafficRules.enabled) {
                 "Traffic rules are enabled but no validated physical calibration is available"
             }
@@ -242,7 +240,7 @@ class AnalysisPipelineRunner(
             detections = allDetections,
             tracks = completedTracks,
             speedEstimates = speedEstimates,
-            plateReadings = temporalPlateConsensus(plateReadings),
+            plateReadings = PlateConsensus.resolve(plateReadings),
             trafficEvents = trafficEvents,
             metrics = AnalysisMetrics(
                 inferenceLatencyMs = inferenceMedian,
@@ -306,29 +304,6 @@ class AnalysisPipelineRunner(
         return if (learned != null) learned.x to learned.y
         else ((detection.left + detection.right) / 2.0) to detection.bottom.toDouble()
     }
-
-    private fun temporalPlateConsensus(readings: List<PlateReading>): List<PlateReading> {
-        if (readings.isEmpty()) return emptyList()
-
-        val trackedConsensus = readings
-            .filter { it.trackId != null }
-            .groupBy { it.trackId!! to normalizePlate(it.text) }
-            .values
-            .map { group ->
-                group.maxWithOrNull(
-                    compareBy<PlateReading> { it.confidence }
-                        .thenByDescending { it.frameIndex },
-                )!!
-            }
-
-        val untrackedReadings = readings.filter { it.trackId == null }
-        return (trackedConsensus + untrackedReadings).sortedWith(
-            compareByDescending<PlateReading> { it.confidence }.thenByDescending { it.frameIndex },
-        )
-    }
-
-    private fun normalizePlate(text: String): String =
-        text.uppercase().filter { it.isLetterOrDigit() }
 
     private data class MutableTrackBuffer(
         val id: Long,
