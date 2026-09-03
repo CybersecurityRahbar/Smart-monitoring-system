@@ -31,12 +31,15 @@ object CalibrationBuilder {
             imageWidth = imageWidth,
             imageHeight = imageHeight,
             homography = estimate.coefficients,
-            reprojectionErrorPixels = estimate.meanError,
+            reprojectionErrorTargetUnits = estimate.meanError,
             version = version,
             homographyInlierCount = estimate.inlierCount,
             homographyInlierRatio = estimate.inlierRatio,
         )
-        val validation = CalibrationValidator.validate(profile)
+        val validation = CalibrationValidator.validate(
+            profile = profile,
+            maxReprojectionErrorTargetUnits = reprojectionThresholdMeters,
+        )
         require(validation.accepted) {
             "Calibration failed quality gates: ${validation.reasons.joinToString("; ")}"
         }
