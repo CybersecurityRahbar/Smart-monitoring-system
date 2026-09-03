@@ -7,14 +7,16 @@ import com.smarttraffic.app.domain.analysis.TrackObservation
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
- * ByteTrack-inspired Android tracker with Kalman prediction, global assignment,
- * two-stage high/low score association, class-aware gating, bounded motion recovery,
- * and an optional deterministic appearance cue.
+ * ByteTrack-inspired Android tracker with Kalman prediction, global assignment, two-stage
+ * high/low score association, class-aware gating, bounded motion recovery and an optional
+ * deterministic appearance cue.
  *
- * This implementation is not claimed to be reference-equivalent to official ByteTrack.
- * Its production accuracy must be established on annotated traffic/MOT sequences.
+ * The motion model is deliberately conservative: empirical velocity is bounded by an
+ * acceleration prior and a short prediction horizon before being blended with Kalman output.
+ * It is not claimed to be reference-equivalent to official ByteTrack.
  */
 class ByteTrack(
     private val highThreshold: Float = 0.50f,
@@ -27,6 +29,8 @@ class ByteTrack(
     private val minimumAppearanceSimilarity: Double = 0.20,
     private val empiricalVelocityHorizonSeconds: Double = 0.25,
     private val empiricalVelocityBlend: Double = 0.75,
+    private val maxAccelerationPixelsPerSecond2: Double = 1_200.0,
+    private val maxAdaptiveGateSeconds: Double = 0.50,
 ) : MultiObjectTracker {
     private val tracks = LinkedHashMap<Long, InternalTrack>()
     private var nextId = 1L
@@ -41,6 +45,8 @@ class ByteTrack(
         require(minimumAppearanceSimilarity in 0.0..1.0 && minimumAppearanceSimilarity.isFinite())
         require(empiricalVelocityHorizonSeconds > 0.0 && empiricalVelocityHorizonSeconds.isFinite())
         require(empiricalVelocityBlend in 0.0..1.0 && empiricalVelocityBlend.isFinite())
+        require(maxAccelerationPixelsPerSecond2 > 0.0 && maxAccelerationPixelsPerSecond2.isFinite())
+        require(maxAdaptiveGateSeconds > 0.0 && maxAdaptiveGateSeconds.isFinite())
     }
 
     override fun reset() {
@@ -80,6 +86,7 @@ class ByteTrack(
                 initialTimestampMs = timestampMs,
                 empiricalVelocityHorizonSeconds = empiricalVelocityHorizonSeconds,
                 empiricalVelocityBlend = empiricalVelocityBlend,
+                maxAccelerationPixelsPerSecond2 = maxAccelerationPixelsPerSecond2,
             )
             track.hits = 1
             track.matched = true
@@ -128,13 +135,13 @@ class ByteTrack(
         }
     }
 
-    /** Geometry is mandatory; deterministic appearance is a secondary cue when available. */
+    /** Geometry is mandatory; deterministic appearance remains a secondary cue. */
     private fun associationScore(track: InternalTrack, detection: Detection, minimumIou: Float): Double {
         val predicted = track.predictedBox()
         val predictedIou = iou(predicted, detection)
         val measuredIou = if (predictedIou < minimumIou) iou(ByteTrackBox(track.lastDetection), detection) else predictedIou
         val motionScore = if (measuredIou >= minimumIou) measuredIou.toDouble()
-        else centerDistanceScore(predicted, detection)
+        else centerDistanceScore(track, predicted, detection)
         if (motionScore <= 0.0) return 0.0
 
         val previousAppearance = track.lastDetection.appearanceSignature
@@ -147,7 +154,11 @@ class ByteTrack(
         return (1.0 - appearanceWeight) * motionScore + appearanceWeight * normalizedAppearance
     }
 
-    private fun centerDistanceScore(predicted: ByteTrackBox, detection: Detection): Double {
+    private fun centerDistanceScore(
+        track: InternalTrack,
+        predicted: ByteTrackBox,
+        detection: Detection,
+    ): Double {
         val detectionCenterX = (detection.left + detection.right) * 0.5
         val detectionCenterY = (detection.top + detection.bottom) * 0.5
         val distance = hypot(
@@ -157,8 +168,10 @@ class ByteTrack(
         if (!distance.isFinite()) return 0.0
         val predictedArea = predicted.width.toDouble() * predicted.height.toDouble()
         val detectionArea = max(0f, detection.right - detection.left).toDouble() * max(0f, detection.bottom - detection.top).toDouble()
-        val referenceScale = max(1.0, kotlin.math.sqrt(max(1.0, min(predictedArea, detectionArea))))
-        val allowedDistance = centerDistanceScale * referenceScale
+        val referenceScale = max(1.0, sqrt(max(1.0, min(predictedArea, detectionArea))))
+        val adaptiveSeconds = min(track.predictionDtSeconds, maxAdaptiveGateSeconds)
+        val temporalMultiplier = 1.0 + min(2.0, adaptiveSeconds / 0.10) * 0.35
+        val allowedDistance = centerDistanceScale * referenceScale * temporalMultiplier
         if (!allowedDistance.isFinite() || allowedDistance <= 0.0 || distance > allowedDistance) return 0.0
         return 1.0 - distance / allowedDistance
     }
@@ -176,10 +189,16 @@ class ByteTrack(
         initialTimestampMs: Long,
         private val empiricalVelocityHorizonSeconds: Double,
         private val empiricalVelocityBlend: Double,
+        private val maxAccelerationPixelsPerSecond2: Double,
     ) {
         var lastDetection = initial
         private var previousDetection: Detection? = null
         var predicted = ByteTrackBox(initial)
+        var predictionDtSeconds = 0.0
+            private set
+        private var velocityX = 0.0
+        private var velocityY = 0.0
+        private var hasVelocity = false
         private val filter = KalmanBoxPredictor(predicted)
         private val history = ArrayList<TrackObservation>()
         var hits = 0
@@ -198,6 +217,7 @@ class ByteTrack(
             matched = false
             val dtMs = timestampMs - lastTimestampMs
             val dtSeconds = dtMs / 1000.0
+            predictionDtSeconds = dtSeconds.coerceAtLeast(0.0)
             val kalmanPrediction = if (dtMs > 0L) filter.predict(dtSeconds) else filter.box()
             predicted = empiricalMotionPrediction(timestampMs, kalmanPrediction, dtSeconds)
         }
@@ -218,13 +238,27 @@ class ByteTrack(
 
             val lastBox = ByteTrackBox(lastDetection)
             val previousBox = ByteTrackBox(previous)
-            val velocityX = (lastBox.centerX - previousBox.centerX) / observedDtSeconds
-            val velocityY = (lastBox.centerY - previousBox.centerY) / observedDtSeconds
-            if (!velocityX.isFinite() || !velocityY.isFinite()) return kalmanPrediction
+            var observedVelocityX = (lastBox.centerX - previousBox.centerX) / observedDtSeconds
+            var observedVelocityY = (lastBox.centerY - previousBox.centerY) / observedDtSeconds
+            if (!observedVelocityX.isFinite() || !observedVelocityY.isFinite()) return kalmanPrediction
+
+            if (hasVelocity) {
+                val maxDelta = maxAccelerationPixelsPerSecond2 * observedDtSeconds
+                observedVelocityX = clamp(observedVelocityX, velocityX - maxDelta, velocityX + maxDelta)
+                observedVelocityY = clamp(observedVelocityY, velocityY - maxDelta, velocityY + maxDelta)
+                val dot = observedVelocityX * velocityX + observedVelocityY * velocityY
+                val currentSpeed = hypot(observedVelocityX, observedVelocityY)
+                val previousSpeed = hypot(velocityX, velocityY)
+                // A full direction reversal in one observation is treated as an unreliable
+                // empirical cue; Kalman prediction remains responsible for that transition.
+                if (dot < 0.0 && currentSpeed > previousSpeed * 0.75) return kalmanPrediction
+            }
 
             val displacementSeconds = min(dtSeconds, empiricalVelocityHorizonSeconds)
-            val displacementX = (velocityX * displacementSeconds).toFloat()
-            val displacementY = (velocityY * displacementSeconds).toFloat()
+            val displacementX = (observedVelocityX * displacementSeconds).toFloat()
+            val displacementY = (observedVelocityY * displacementSeconds).toFloat()
+            if (!displacementX.isFinite() || !displacementY.isFinite()) return kalmanPrediction
+
             val observedPrediction = ByteTrackBox(
                 left = lastBox.left + displacementX,
                 top = lastBox.top + displacementY,
@@ -243,8 +277,27 @@ class ByteTrack(
         fun update(detection: Detection, frameIndex: Long, timestampMs: Long) {
             if (lostFrames > 0) everOccluded = true
             previousDetection = lastDetection
-            val current = ByteTrackBox(detection)
-            filter.update(current)
+            val observedDtSeconds = (timestampMs - lastTimestampMs) / 1000.0
+            val currentBox = ByteTrackBox(detection)
+            if (observedDtSeconds.isFinite() && observedDtSeconds > 0.0 && observedDtSeconds <= empiricalVelocityHorizonSeconds) {
+                val dx = currentBox.centerX - ByteTrackBox(lastDetection).centerX
+                val dy = currentBox.centerY - ByteTrackBox(lastDetection).centerY
+                val nextVelocityX = dx / observedDtSeconds
+                val nextVelocityY = dy / observedDtSeconds
+                if (nextVelocityX.isFinite() && nextVelocityY.isFinite()) {
+                    velocityX = if (hasVelocity) {
+                        val maxDelta = maxAccelerationPixelsPerSecond2 * observedDtSeconds
+                        clamp(nextVelocityX, velocityX - maxDelta, velocityX + maxDelta)
+                    } else nextVelocityX
+                    velocityY = if (hasVelocity) {
+                        val maxDelta = maxAccelerationPixelsPerSecond2 * observedDtSeconds
+                        clamp(nextVelocityY, velocityY - maxDelta, velocityY + maxDelta)
+                    } else nextVelocityY
+                    hasVelocity = true
+                }
+            }
+
+            filter.update(currentBox)
             lastDetection = detection
             predicted = filter.box()
             hits += 1
@@ -270,6 +323,8 @@ class ByteTrack(
         )
     }
 }
+
+private fun clamp(value: Double, lower: Double, upper: Double): Double = value.coerceIn(lower, upper)
 
 private fun lerp(start: Float, end: Float, amount: Float): Float = start + (end - start) * amount
 
