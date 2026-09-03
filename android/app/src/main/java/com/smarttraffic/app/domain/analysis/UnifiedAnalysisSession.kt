@@ -96,9 +96,9 @@ class UnifiedAnalysisSession(
                 runCatching { source.close() }
                 runCatching { runtime?.close() }
                 mutex.withLock {
-                    activeJob = null
-                    activeSource = null
-                    activeCloseable = null
+                    if (activeSource === source) activeSource = null
+                    if (activeCloseable === runtime) activeCloseable = null
+                    if (activeJob === kotlinx.coroutines.currentCoroutineContext()[Job]) activeJob = null
                 }
             }
         }
@@ -114,19 +114,31 @@ class UnifiedAnalysisSession(
         }
     }
 
-    suspend fun stop() = mutex.withLock {
-        val job = activeJob ?: return@withLock
-        runCatching { activeSource?.close() }
+    suspend fun stop() {
+        val job: Job?
+        val source: FrameSource?
+        val runtime: AutoCloseable?
+        mutex.withLock {
+            job = activeJob
+            source = activeSource
+            runtime = activeCloseable
+        }
+        if (job == null) return
+
+        runCatching { source?.close() }
         job.cancel()
         job.join()
-        activeJob = null
-        activeSource = null
-        runCatching { activeCloseable?.close() }
-        activeCloseable = null
-        _state.value = _state.value.copy(
-            phase = AnalysisSessionPhase.STOPPED,
-            message = "Analysis session stopped.",
-        )
+        runCatching { runtime?.close() }
+
+        mutex.withLock {
+            if (activeJob === job) activeJob = null
+            if (activeSource === source) activeSource = null
+            if (activeCloseable === runtime) activeCloseable = null
+            _state.value = _state.value.copy(
+                phase = AnalysisSessionPhase.STOPPED,
+                message = "Analysis session stopped.",
+            )
+        }
     }
 
     suspend fun awaitCompletion() {
