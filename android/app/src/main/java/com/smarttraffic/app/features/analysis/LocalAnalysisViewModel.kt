@@ -10,6 +10,7 @@ import com.smarttraffic.app.core.TrafficRulePreferences
 import com.smarttraffic.app.data.analysis.LocalImageFrameSource
 import com.smarttraffic.app.data.analysis.LocalVideoFrameSource
 import com.smarttraffic.app.data.evidence.FileEvidenceStore
+import com.smarttraffic.app.data.nativecore.NativeFirstSpeedEstimator
 import com.smarttraffic.app.data.nativecore.NativeGroundProjector
 import com.smarttraffic.app.data.tracking.ByteTrack
 import com.smarttraffic.app.data.vision.AppearanceAugmentingDetector
@@ -123,6 +124,7 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                             tracker = ByteTrack(),
                             previewObserver = observer,
                             groundProjector = NativeGroundProjector(),
+                            speedEstimator = NativeFirstSpeedEstimator(),
                         ).analyze(frameSource, effectiveConfig)
                         result to selectedAccelerator.name
                     }
