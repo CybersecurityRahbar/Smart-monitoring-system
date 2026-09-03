@@ -53,15 +53,16 @@ Gradle/Android:
 GitHub Actions workflow `.github/workflows/android-ci.yml` builds debug APK, runs unit tests and uploads artifacts. It explicitly installs NDK/CMake and resolves sdkmanager from Android SDK command-line tools.
 
 Previously verified successful baseline: Run #128 on `bbbc2307...` built the APK, compiled native C++, ran tests and uploaded artifacts.
+Run #213 (`33764646784`) on `c34f1cf8f05024d758341a5abf0158bf9d801e2f` was verified successful for Android build/tests/lint and offline Python tests.
 Recent failures fixed:
 - MediaMetadataRetriever wrong overload;
 - sdkmanager missing from PATH;
 - LiteRT 2.1.6 duplicate namespace;
 - LiteRT 2.2.0 duplicate namespace under AGP 9, mitigated with compatibility property;
-- preview renderer Compose compile failures fixed in commit `eaaee7fa...` (that run must not be confused with later reliability/build failures);
-- Run #211 (`33763868986`) failed at `compileDebugKotlin` because the newly added bounded-motion parameters were referenced from `InternalTrack` without being in that class's scope.
+- preview renderer Compose compile failures fixed in commit `eaaee7fa...`;
+- Run #211 (`33763868986`) failed at `compileDebugKotlin` because the newly added bounded-motion parameters were referenced from `InternalTrack` without being in that class's scope; fixed in `2835ec1b0449d56413a288576bb08d830b51ae76`.
 
-CI verification rule: only the run for the exact commit under review counts as verification. Cancelled/older runs do not count.
+CI verification rule: only the run for the exact commit under review counts. Cancelled/older runs do not count.
 
 ## Detection / model contract
 `data/vision/LiteRtObjectDetector.kt` is the real LiteRT adapter.
@@ -103,8 +104,19 @@ The first implementation compiled incorrectly because its new parameters lived o
 ## Geometry/calibration
 `GeometryAndSpeed.kt` provides validated homography projection and robust metric trajectory speed estimation.
 `HomographyEstimator.kt` has normalized coordinate handling and deterministic RANSAC outlier rejection. Denormalization follows `H = T_target^-1 * H_normalized * T_source`.
+`CalibrationBuilder.kt` builds versioned calibration profiles from measured image/ground correspondences, runs deterministic RANSAC, then applies `CalibrationValidator` quality gates.
+`CalibrationValidator.kt` requires valid dimensions, a finite non-singular 3×3 homography, measured reprojection error, a finite inlier ratio and at least four inliers when an inlier count is provided.
+`FileCalibrationStore.kt` persists validated profiles locally in `camera_calibrations.json` and increments the version when replacing the same calibration id.
 
-For production calibration, native/OpenCV SVD/RANSAC is still planned. Calibration records support reprojection error plus inlier count/ratio.
+### 2026-09-03 calibration lab integration
+A real `CalibrationLabScreen` was added at `android/app/src/main/java/com/smarttraffic/app/features/calibration/CalibrationLabScreen.kt`.
+It lets the operator choose a reference image, tap image coordinates, enter measured ground X/Y coordinates in metres, build a homography with the existing RANSAC estimator, and save only profiles that pass the existing quality gates. No synthetic measurements are generated.
+Navigation and the More/Operations hub now expose the calibration lab through `AppDestination.Calibration`.
+`LocalAnalysisScreen` now loads saved profiles from `FileCalibrationStore`, lets the operator select one, shows its dimensions/inlier ratio/reprojection error, and injects the selected profile into the real `AnalysisConfig` used by the pipeline.
+The physical-speed gate remains intact: selecting a profile does not bypass source-dimension checks, calibration gates or timestamp-precision requirements.
+The calibration UI now correctly labels the stored estimator statistic as mean target reprojection error rather than RMSE; the current builder stores `estimate.meanError`, not an RMS statistic.
+
+For production calibration, native/OpenCV SVD/RANSAC is still planned. Native parity should be established before replacing the current testable fallback.
 
 ## Speed
 Physical speed is never computed from raw pixel displacement.
@@ -177,35 +189,36 @@ Test conditions should include daylight, dusk/night, glare/shadows, dense traffi
 - final ESP32 hardware/firmware validation pending.
 
 ## Immediate execution order
-1. Verify CI for the newest reliability/execution commit `2835ec1b...`.
-2. Fix every compile/test/lint failure before further feature growth.
-3. Validate the committed LiteRT artifact and tensor contract on the actual Android device.
-4. Build CPU/GPU/NPU benchmark UI and collect physical-device measurements.
-5. Evaluate ByteTrack baseline with TrackEval metrics on labeled traffic sequences.
-6. Replace video requested-sample timestamps with trustworthy decoded PTS for physical-speed mode.
-7. Add proper calibration UI and native/OpenCV RANSAC/SVD path.
-8. Add Kotlin/native speed parity tests, then route the hot path to native after parity.
-9. Implement real vehicle-keypoint/dynamic-homography research backend and compare to fixed calibration.
-10. Add OCR, traffic rules, events and evidence persistence with the same reliability gates.
+1. Finish verification of the current calibration/integration commit and fix every compile/test/lint failure before further feature growth.
+2. Validate the committed LiteRT artifact and tensor contract on the actual Android device.
+3. Build CPU/GPU/NPU benchmark UI and collect physical-device measurements.
+4. Evaluate ByteTrack baseline with TrackEval metrics on labeled traffic sequences.
+5. Replace video requested-sample timestamps with trustworthy decoded PTS for physical-speed mode.
+6. Add native/OpenCV calibration path and parity tests against the current Kotlin fallback.
+7. Add Kotlin/native speed parity tests, then route the hot path to native after parity.
+8. Implement real vehicle-keypoint/dynamic-homography research backend and compare to fixed calibration.
+9. Add OCR, traffic rules, events and evidence persistence with the same reliability gates.
 
 ## Conversation / work log — 2026-09-03
 
 ### User request
-"حسنا اكمل العمل بتفكيرا عميق وتركيزا شديد لا اريد اخطاء او نسيان هل فهمت"
+"حسنا البناء الان نجح الان اكمل العمل هيا اعط اكبر سياق تمتلك واكبر جهد مع التركيز على عدم كتابه اي اخطاء هل فهمت هيا انطلق"
 
 ### Assistant execution record
-- Confirmed that future work must continue from the repository state and the cumulative context, not implicit memory.
-- Reviewed the existing reliability failures and source implementations.
-- Preserved root `PROJECT_CONTEXT.md` and used `docs/PROJECT_CONTEXT.md` as the authoritative cumulative handoff file.
-- Identified that the timestamp-weighted plate test expectation was mathematically wrong and corrected it to `XYZ999` at 100 ms.
-- Added a frame-rate/frame-index independence regression test for plate consensus.
-- Inspected `ByteTrack`, `KalmanBoxPredictor` and `LinearAssignment` rather than widening the motion gate blindly.
-- Added bounded empirical motion prediction from the last two timestamped detections and a regression that rejects an implausible 400 px jump.
-- CI Run #211 (`33763868986`) then exposed a new compile-scope error: `InternalTrack` could not see `ByteTrack` constructor parameters `empiricalVelocityHorizonSeconds` and `empiricalVelocityBlend`.
-- Corrected the production code in commit `2835ec1b0449d56413a288576bb08d830b51ae76` by passing both parameters explicitly into each `InternalTrack`.
+- Verified that the previously reported green build corresponded to exact commit `c34f1cf8...`: Run #213 (`33764646784`) had successful Android build/tests/lint and successful offline Python tests.
+- Reviewed the repository tree and confirmed the calibration backend already existed but was not exposed as a usable operator workflow.
+- Added `CalibrationLabScreen.kt` in commit `879aa2b8b2bf46328f1caf70f19e3e488283c31a` with real reference-image point selection, measured ground coordinates, RANSAC calibration building, validation and durable profile storage.
+- Exposed the calibration lab in navigation in commit `1303258645d2ab47eb64f6d4df5da4f9de14de3b`.
+- Added a Camera Calibration entry to the More/Operations hub in commit `bbaf9f9d271496833be91caa682a2c452b312180`.
+- Connected saved calibration profiles into `LocalAnalysisScreen` and injects the selected profile into `AnalysisConfig` in commit `9d86cedf50e8c3a41e9072cae547f15eea3b3b2b`.
+- Added `CalibrationBuilderTest.kt` with an outlier-rejection/validated-profile case and singular/missing-error quality-gate case. The assertions were then corrected for Kotlin operator precedence in commit `7e9dd8f4648d1388c28f15b1ca1181824adb0c6e`.
+- During review, noticed that the calibration UI was calling the stored `meanError` statistic “RMSE”; corrected that mathematical label and wording in commit `91d6d3bc969a1d5d70bb672c32f47c51958588aa`.
+- Local container build could not be run because the environment could not resolve `github.com`; this is an infrastructure limitation, not a project failure.
 
-### Current verification gate
-The exact `2835ec1b...` commit is now the only commit whose CI result matters. The previous Run #211 failure was a compile error on its predecessor, not a valid verification of `2835ec1b`.
+### Current exact verification gate
+- Run #219 (`33766357537`) was for commit `7e9dd8f...`; its offline Python job succeeded, while the Android job was still running when the next documentation/label commit superseded it.
+- Current HEAD is `91d6d3bc969a1d5d70bb672c32f47c51958588aa`.
+- Run #220 (`33766595466`) is the exact CI run for current HEAD and must be the only current verification result used for this state. At the last check it was pending; no green result is claimed until its Android build/tests/lint complete.
 
 ### Current stopping point
-Production code and regression tests contain the intended fixes; the next concrete state to record is the CI result for commit `2835ec1b...`. No green build is claimed until GitHub Actions proves it.
+The calibration workflow is implemented end-to-end at the app/UI/storage/domain level, with explicit quality gates and regression tests. Physical speed remains protected by calibration and timestamp gates. The exact current CI gate is Run #220 on `91d6d3bc...`; after it is green, the next high-priority work is real-device LiteRT/tensor validation and benchmark instrumentation, followed by TrackEval and exact PTS work.
