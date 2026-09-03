@@ -6,12 +6,14 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import com.smarttraffic.app.domain.analysis.AnalysisFrame
 import com.smarttraffic.app.domain.analysis.FrameSource
+import com.smarttraffic.app.domain.analysis.FrameTimestampPrecision
 import com.smarttraffic.app.domain.analysis.MediaSource
 
 /**
  * FrameSource for local video/image URIs selected by the Analysis Lab.
- * Video frames are sampled by presentation timestamps so the analysis engine
- * receives a real monotonic media clock instead of assuming a fixed FPS.
+ * MediaMetadataRetriever samples by requested presentation time; because it does not expose
+ * the exact decoded PTS for the returned Bitmap, physical-speed consumers must treat these
+ * timestamps as approximate rather than silently calling them exact decoder timestamps.
  */
 class LocalVideoFrameSource(
     private val context: Context,
@@ -46,6 +48,7 @@ class LocalVideoFrameSource(
             frameRate = frameRate,
             width = width,
             height = height,
+            timestampPrecision = FrameTimestampPrecision.REQUESTED_SAMPLE_TIME,
         )
     }
 
@@ -96,6 +99,7 @@ class LocalImageFrameSource(
         frameRate = null,
         width = bitmap.width,
         height = bitmap.height,
+        timestampPrecision = FrameTimestampPrecision.EXACT_SOURCE_CLOCK,
     )
 
     override suspend fun nextFrame(): AnalysisFrame? {
