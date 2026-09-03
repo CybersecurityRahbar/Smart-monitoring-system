@@ -5,25 +5,25 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.ai.edge.litert.Accelerator
 import com.smarttraffic.app.core.TrafficRulePreferences
+import com.smarttraffic.app.data.analysis.AnalysisRuntimeFactory
+import com.smarttraffic.app.data.analysis.ExactPtsVideoFrameSource
 import com.smarttraffic.app.data.analysis.LocalImageFrameSource
 import com.smarttraffic.app.data.analysis.LocalVideoFrameSource
 import com.smarttraffic.app.data.evidence.FileEvidenceStore
 import com.smarttraffic.app.data.nativecore.NativeFirstSpeedEstimator
 import com.smarttraffic.app.data.nativecore.NativeGroundProjector
 import com.smarttraffic.app.data.tracking.ByteTrack
-import com.smarttraffic.app.data.vision.AppearanceAugmentingDetector
-import com.smarttraffic.app.data.vision.DetectorModelRegistry
-import com.smarttraffic.app.data.vision.LiteRtObjectDetector
 import com.smarttraffic.app.domain.analysis.AnalysisConfig
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewObserver
 import com.smarttraffic.app.domain.analysis.AnalysisResult
+import com.smarttraffic.app.domain.analysis.AnalysisSessionPhase
 import com.smarttraffic.app.domain.analysis.EvidenceRecord
+import com.smarttraffic.app.domain.analysis.FrameSource
 import com.smarttraffic.app.domain.analysis.ModularAnalysisEngine
+import com.smarttraffic.app.domain.analysis.UnifiedAnalysisSession
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,105 +40,124 @@ data class AnalysisRunState(
     val result: AnalysisResult? = null,
 )
 
-/** Runs the real local-video/image pipeline and streams processed frames to the laboratory preview. */
+/** Local Lab adapter around the same UnifiedAnalysisSession used by live analysis. */
 class LocalAnalysisViewModel(application: Application) : AndroidViewModel(application) {
+    private val session = UnifiedAnalysisSession(viewModelScope)
     private val _state = MutableStateFlow(AnalysisRunState())
     val state: StateFlow<AnalysisRunState> = _state.asStateFlow()
 
     private val _preview = MutableStateFlow<AnalysisPreviewFrame?>(null)
     val preview: StateFlow<AnalysisPreviewFrame?> = _preview.asStateFlow()
 
-    private var activeJob: Job? = null
-
     fun reset() {
-        activeJob?.cancel()
-        activeJob = null
-        _preview.value = null
-        _state.value = AnalysisRunState()
+        viewModelScope.launch {
+            session.stop()
+            session.reset()
+            _preview.value = null
+            _state.value = AnalysisRunState()
+        }
     }
 
     fun run(uri: Uri, mediaType: AnalysisMediaType, config: AnalysisConfig) {
-        if (activeJob?.isActive == true) return
+        if (session.state.value.phase == AnalysisSessionPhase.STARTING ||
+            session.state.value.phase == AnalysisSessionPhase.RUNNING
+        ) return
+
         _preview.value = null
-        activeJob = viewModelScope.launch(Dispatchers.Default) {
-            _state.value = AnalysisRunState(
-                phase = AnalysisRunPhase.RUNNING,
-                message = "Running detector, tracker, geometry, rules and live radar…",
+        viewModelScope.launch(Dispatchers.Default) {
+            val app = getApplication<Application>()
+            val persistedRules = TrafficRulePreferences.load(app)
+            val effectiveConfig = config.copy(
+                enableRules = config.enableRules || persistedRules.enabled,
+                trafficRules = persistedRules,
+                enableEvidence = config.enableEvidence || persistedRules.preserveEvidence,
             )
-            try {
-                val app = getApplication<Application>()
-                val persistedRules = TrafficRulePreferences.load(app)
-                val effectiveConfig = config.copy(
-                    enableRules = config.enableRules || persistedRules.enabled,
-                    trafficRules = persistedRules,
-                    enableEvidence = config.enableEvidence || persistedRules.preserveEvidence,
-                )
-                val spec = DetectorModelRegistry.requireSpec(effectiveConfig.detectorModel)
-                if (!DetectorModelRegistry.isInstalled(app, spec)) {
-                    error("Detector model is not installed: ${spec.assetPath}")
-                }
 
-                val resultAndAccelerator = withContext(Dispatchers.Default) {
-                    var selectedAccelerator = Accelerator.GPU
-                    var detector: LiteRtObjectDetector? = null
-                    try {
-                        detector = LiteRtObjectDetector(
-                            context = app,
-                            assetName = spec.assetPath,
-                            accelerator = Accelerator.GPU,
-                            inputSize = spec.inputSize,
-                            expectedOutput = spec.expectedOutput,
-                        )
-                    } catch (_: Throwable) {
-                        selectedAccelerator = Accelerator.CPU
-                        detector = LiteRtObjectDetector(
-                            context = app,
-                            assetName = spec.assetPath,
-                            accelerator = Accelerator.CPU,
-                            inputSize = spec.inputSize,
-                            expectedOutput = spec.expectedOutput,
-                        )
-                    }
-
-                    detector!!.use { rawDetector ->
-                        val augmentedDetector = if (effectiveConfig.useAppearanceAssociation) {
-                            AppearanceAugmentingDetector(rawDetector)
-                        } else rawDetector
-                        val frameSource = when (mediaType) {
-                            AnalysisMediaType.VIDEO -> LocalVideoFrameSource(app, uri)
-                            AnalysisMediaType.IMAGE -> {
-                                val bitmap = app.contentResolver.openInputStream(uri).use { stream ->
-                                    requireNotNull(stream) { "Unable to open selected image" }
-                                    requireNotNull(BitmapFactory.decodeStream(stream)) { "Unable to decode selected image" }
-                                }
-                                LocalImageFrameSource(bitmap, uri.toString())
-                            }
-                        }
-
-                        val observer = AnalysisPreviewObserver { previewFrame ->
-                            _preview.value = previewFrame
-                        }
-
-                        val result = ModularAnalysisEngine(
-                            detector = augmentedDetector,
-                            tracker = ByteTrack(),
-                            previewObserver = observer,
-                            groundProjector = NativeGroundProjector(),
-                            speedEstimator = NativeFirstSpeedEstimator(),
-                        ).analyze(frameSource, effectiveConfig)
-                        result to selectedAccelerator.name
-                    }
-                }
-
-                val (result, acceleratorName) = resultAndAccelerator
-                if (effectiveConfig.enableEvidence) persistEvidence(app, result)
-
+            val spec = runCatching {
+                com.smarttraffic.app.data.vision.DetectorModelRegistry.requireSpec(effectiveConfig.detectorModel)
+            }.getOrElse { error ->
+                _state.value = AnalysisRunState(AnalysisRunPhase.ERROR, error.message)
+                return@launch
+            }
+            if (!com.smarttraffic.app.data.vision.DetectorModelRegistry.isInstalled(app, spec)) {
                 _state.value = AnalysisRunState(
-                    phase = AnalysisRunPhase.SUCCESS,
-                    message = "Real analysis completed. Results, rules and evidence references came from the same run.",
-                    accelerator = acceleratorName,
-                    result = result,
+                    AnalysisRunPhase.ERROR,
+                    "Detector model is not installed: ${spec.assetPath}",
                 )
+                return@launch
+            }
+
+            try {
+                val runtime = AnalysisRuntimeFactory.createDetector(
+                    context = app,
+                    modelId = spec.id,
+                    useAppearanceAssociation = effectiveConfig.useAppearanceAssociation,
+                )
+                val source: FrameSource = when (mediaType) {
+                    AnalysisMediaType.VIDEO -> runCatching {
+                        ExactPtsVideoFrameSource(app, uri)
+                    }.getOrElse {
+                        // Explicit fallback: precision remains REQUESTED_SAMPLE_TIME, so the
+                        // physical-speed gate will remain closed for this source.
+                        LocalVideoFrameSource(app, uri)
+                    }
+                    AnalysisMediaType.IMAGE -> {
+                        val bitmap = app.contentResolver.openInputStream(uri).use { stream ->
+                            requireNotNull(stream) { "Unable to open selected image" }
+                            requireNotNull(BitmapFactory.decodeStream(stream)) { "Unable to decode selected image" }
+                        }
+                        LocalImageFrameSource(bitmap, uri.toString())
+                    }
+                }
+
+                val observer = AnalysisPreviewObserver { previewFrame ->
+                    session.publishPreview(previewFrame)
+                    _preview.value = previewFrame
+                }
+                val engine = ModularAnalysisEngine(
+                    detector = runtime.detector,
+                    tracker = ByteTrack(),
+                    previewObserver = observer,
+                    groundProjector = NativeGroundProjector(),
+                    speedEstimator = NativeFirstSpeedEstimator(),
+                )
+
+                val started = session.start(
+                    source = source,
+                    engine = engine,
+                    config = effectiveConfig,
+                    accelerator = runtime.accelerator.name,
+                    runtime = runtime,
+                )
+                if (!started) {
+                    source.close()
+                    runtime.close()
+                    return@launch
+                }
+                session.awaitCompletion()
+
+                val finalState = session.state.value
+                _state.value = when (finalState.phase) {
+                    AnalysisSessionPhase.COMPLETED -> AnalysisRunState(
+                        phase = AnalysisRunPhase.SUCCESS,
+                        message = finalState.message,
+                        accelerator = finalState.accelerator,
+                        result = finalState.result,
+                    )
+                    AnalysisSessionPhase.FAILED -> AnalysisRunState(
+                        phase = AnalysisRunPhase.ERROR,
+                        message = finalState.message,
+                        accelerator = finalState.accelerator,
+                        result = finalState.result,
+                    )
+                    else -> _state.value
+                }
+
+                finalState.result?.let { result ->
+                    if (effectiveConfig.enableEvidence) persistEvidence(app, result)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (t: Throwable) {
                 _state.value = AnalysisRunState(
                     phase = AnalysisRunPhase.ERROR,
@@ -181,11 +200,5 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                 ),
             )
         }
-    }
-
-    override fun onCleared() {
-        activeJob?.cancel()
-        activeJob = null
-        super.onCleared()
     }
 }
