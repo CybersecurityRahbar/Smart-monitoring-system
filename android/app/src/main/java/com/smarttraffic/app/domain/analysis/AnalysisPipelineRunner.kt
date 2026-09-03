@@ -2,10 +2,7 @@ package com.smarttraffic.app.domain.analysis
 
 import kotlin.math.min
 
-/**
- * Real frame-to-result coordinator. Every tracker result must carry its own current
- * observation; the runner deliberately does not fall back to an unrelated detection.
- */
+/** Real frame-to-result coordinator. */
 class AnalysisPipelineRunner(
     private val detector: ObjectDetector,
     private val tracker: MultiObjectTracker,
@@ -44,7 +41,7 @@ class AnalysisPipelineRunner(
             "Segmentation refinement is not installed in the current runtime"
         }
         require(!config.useReIdentification) {
-            "Appearance Re-ID is not installed in the current tracker runtime"
+            "Learned appearance Re-ID is not installed; deterministic appearance association is available separately"
         }
 
         tracker.reset()
@@ -106,9 +103,7 @@ class AnalysisPipelineRunner(
                     it.confidence.isFinite() && it.confidence in config.trackerInputMinimumConfidence..1f
                 }
                 trackingDetectionCount += trackingDetections.size.toLong()
-                val reportableDetections = trackingDetections.filter {
-                    it.confidence >= config.minimumDetectionConfidence
-                }
+                val reportableDetections = trackingDetections.filter { it.confidence >= config.minimumDetectionConfidence }
                 allDetections += reportableDetections
 
                 val tracks = tracker.update(trackingDetections, frame.index, frame.timestampMs)
@@ -128,8 +123,7 @@ class AnalysisPipelineRunner(
                     val contact = selectContactPoint(observation.detection, keypoints)
                     val ground = if (calibrationReady) {
                         runCatching {
-                            HomographyProjector(config.calibration!!.homography)
-                                .project(contact.first, contact.second)
+                            HomographyProjector(config.calibration!!.homography).project(contact.first, contact.second)
                         }.getOrElse { error ->
                             throw IllegalStateException(
                                 "Ground-plane projection failed at frame=${frame.index}, track=${track.id}",
@@ -139,9 +133,7 @@ class AnalysisPipelineRunner(
                     } else null
 
                     val enriched = observation.copy(groundPoint = ground, keypoints = keypoints)
-                    val buffer = trackBuffers.getOrPut(track.id) {
-                        MutableTrackBuffer(track.id, track.className)
-                    }
+                    val buffer = trackBuffers.getOrPut(track.id) { MutableTrackBuffer(track.id, track.className) }
                     buffer.wasOccluded = buffer.wasOccluded || track.wasOccluded
                     buffer.confidenceSamples += track.trackConfidence.toDouble()
                     buffer.observations += enriched
@@ -169,7 +161,8 @@ class AnalysisPipelineRunner(
                                 wasOccluded = buffer.wasOccluded,
                             )
                         }
-                        val liveSpeeds = if (calibrationReady) {
+                        val liveSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
+                        val liveSpeeds = if (liveSpeedAllowed) {
                             liveTracks.mapNotNull { liveTrack ->
                                 RobustSpeedEstimator(
                                     minimumSamples = config.minimumSpeedSamples,
@@ -185,7 +178,7 @@ class AnalysisPipelineRunner(
                                 detections = reportableDetections,
                                 tracks = liveTracks,
                                 speedEstimates = liveSpeeds,
-                                calibrated = calibrationReady,
+                                calibrated = liveSpeedAllowed,
                             ),
                         )
                     }
@@ -196,20 +189,18 @@ class AnalysisPipelineRunner(
         }
 
         val completedTracks = trackBuffers.values.map { buffer ->
-            val averageConfidence = if (buffer.confidenceSamples.isEmpty()) 0.0
-            else buffer.confidenceSamples.average()
+            val averageConfidence = if (buffer.confidenceSamples.isEmpty()) 0.0 else buffer.confidenceSamples.average()
             Track(
                 id = buffer.id,
                 className = buffer.className,
-                observations = buffer.observations.sortedWith(
-                    compareBy<TrackObservation> { it.timestampMs }.thenBy { it.frameIndex },
-                ),
+                observations = buffer.observations.sortedWith(compareBy<TrackObservation> { it.timestampMs }.thenBy { it.frameIndex }),
                 trackConfidence = averageConfidence.toFloat().coerceIn(0f, 1f),
                 wasOccluded = buffer.wasOccluded,
             )
         }
 
-        val speedEstimates = if (calibrationReady) {
+        val physicalSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
+        val speedEstimates = if (physicalSpeedAllowed) {
             completedTracks.mapNotNull { track ->
                 RobustSpeedEstimator(
                     minimumSamples = config.minimumSpeedSamples,
@@ -232,13 +223,15 @@ class AnalysisPipelineRunner(
 
         val elapsedMs = (System.nanoTime() - analysisStartNs) / 1_000_000.0
         val elapsedSeconds = elapsedMs / 1000.0
-        val processingFps = frameCount.takeIf { it > 0L && elapsedSeconds > 0.0 }
-            ?.let { it / elapsedSeconds }
+        val processingFps = frameCount.takeIf { it > 0L && elapsedSeconds > 0.0 }?.let { it / elapsedSeconds }
         val e2ePerFrameMs = frameCount.takeIf { it > 0L }?.let { elapsedMs / it }
-
         val sortedInference = inferenceSamples.sorted()
         val inferenceMedian = percentile(sortedInference, 0.50)
         val inferenceP95 = percentile(sortedInference, 0.95)
+
+        val rejectedSpeedEstimates = if (physicalSpeedAllowed) {
+            (completedTracks.size - speedEstimates.size).toLong().coerceAtLeast(0L)
+        } else completedTracks.size.toLong()
 
         return AnalysisResult(
             source = source.source,
@@ -249,6 +242,7 @@ class AnalysisPipelineRunner(
             trafficEvents = trafficEvents,
             metrics = AnalysisMetrics(
                 decodeFps = source.source.frameRate,
+                timestampPrecision = source.source.timestampPrecision,
                 inferenceLatencyMs = inferenceMedian,
                 inferenceMedianLatencyMs = inferenceMedian,
                 inferenceP95LatencyMs = inferenceP95,
@@ -265,9 +259,7 @@ class AnalysisPipelineRunner(
                 peakActiveTracks = peakActiveTracks,
                 completedTracks = completedTracks.size.toLong(),
                 speedEstimates = speedEstimates.size.toLong(),
-                rejectedSpeedEstimates = if (calibrationReady) {
-                    (completedTracks.size - speedEstimates.size).toLong().coerceAtLeast(0L)
-                } else completedTracks.size.toLong(),
+                rejectedSpeedEstimates = rejectedSpeedEstimates,
                 plateReads = plateReadings.size.toLong(),
                 trafficEvents = trafficEvents.size.toLong(),
                 homographyReprojectionError = config.calibration?.reprojectionErrorPixels
@@ -276,30 +268,23 @@ class AnalysisPipelineRunner(
         )
     }
 
-    private fun calibrationAccepted(
-        config: AnalysisConfig,
-        sourceWidth: Int,
-        sourceHeight: Int,
-    ): Boolean {
+    private fun physicalSpeedAllowed(source: FrameSource, config: AnalysisConfig, calibrationReady: Boolean): Boolean {
+        if (!calibrationReady) return false
+        return !config.requireExactTimestampsForPhysicalSpeed ||
+            source.source.timestampPrecision == FrameTimestampPrecision.EXACT_SOURCE_CLOCK
+    }
+
+    private fun calibrationAccepted(config: AnalysisConfig, sourceWidth: Int, sourceHeight: Int): Boolean {
         val calibration = config.calibration ?: return !config.requireValidatedCalibration
-        if (!config.requireValidatedCalibration) {
-            return CalibrationValidator.validate(
-                profile = calibration,
-                expectedWidth = sourceWidth,
-                expectedHeight = sourceHeight,
-                maxReprojectionErrorPixels = Double.POSITIVE_INFINITY,
-                maxReprojectionErrorTargetUnits = Double.POSITIVE_INFINITY,
-                minimumInlierRatio = 0.0,
-            ).reasons.none { it.contains("required") || it.contains("finite") || it.contains("singular") }
-        }
-        return CalibrationValidator.validate(
+        val validation = CalibrationValidator.validate(
             profile = calibration,
             expectedWidth = sourceWidth,
             expectedHeight = sourceHeight,
-            maxReprojectionErrorPixels = config.maxCalibrationReprojectionErrorPixels,
-            maxReprojectionErrorTargetUnits = config.maxCalibrationReprojectionErrorTargetUnits,
-            minimumInlierRatio = config.minimumCalibrationInlierRatio,
-        ).accepted
+            maxReprojectionErrorPixels = if (config.requireValidatedCalibration) config.maxCalibrationReprojectionErrorPixels else Double.POSITIVE_INFINITY,
+            maxReprojectionErrorTargetUnits = if (config.requireValidatedCalibration) config.maxCalibrationReprojectionErrorTargetUnits else Double.POSITIVE_INFINITY,
+            minimumInlierRatio = if (config.requireValidatedCalibration) config.minimumCalibrationInlierRatio else 0.0,
+        )
+        return validation.accepted
     }
 
     private fun percentile(sorted: List<Double>, p: Double): Double? {
@@ -311,16 +296,11 @@ class AnalysisPipelineRunner(
         return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower)
     }
 
-    private fun selectContactPoint(
-        detection: Detection,
-        keypoints: List<VehicleKeypoint>,
-    ): Pair<Double, Double> {
+    private fun selectContactPoint(detection: Detection, keypoints: List<VehicleKeypoint>): Pair<Double, Double> {
         val learned = keypoints
             .filter { it.confidence >= 0.50f && it.x.isFinite() && it.y.isFinite() }
             .firstOrNull {
-                it.name.lowercase() in setOf(
-                    "ground_contact", "contact", "footprint", "rear_contact", "front_contact",
-                )
+                it.name.lowercase() in setOf("ground_contact", "contact", "footprint", "rear_contact", "front_contact")
             }
         return if (learned != null) learned.x to learned.y
         else ((detection.left + detection.right) / 2.0) to detection.bottom.toDouble()
