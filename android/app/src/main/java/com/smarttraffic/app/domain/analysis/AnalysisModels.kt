@@ -71,6 +71,8 @@ data class PlateReading(
     val confidence: Float,
     val frameIndex: Long,
     val trackId: Long? = null,
+    /** Presentation timestamp of the OCR observation. Used for temporal weighting. */
+    val timestampMs: Long = frameIndex,
 )
 
 data class CalibrationProfile(
