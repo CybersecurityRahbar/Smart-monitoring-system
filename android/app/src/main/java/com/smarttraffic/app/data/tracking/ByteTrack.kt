@@ -136,9 +136,11 @@ class ByteTrack(
     }
 
     private fun centerDistanceScore(predicted: ByteTrackBox, detection: Detection): Double {
+        val detectionCenterX = (detection.left + detection.right) * 0.5
+        val detectionCenterY = (detection.top + detection.bottom) * 0.5
         val distance = hypot(
-            predicted.centerX.toDouble() - detection.centerX.toDouble(),
-            predicted.centerY.toDouble() - detection.centerY.toDouble(),
+            predicted.centerX.toDouble() - detectionCenterX.toDouble(),
+            predicted.centerY.toDouble() - detectionCenterY.toDouble(),
         )
         if (!distance.isFinite()) return 0.0
         val predictedArea = predicted.width.toDouble() * predicted.height.toDouble()
