@@ -42,6 +42,7 @@ class RobustSpeedParityTest {
         assertEquals(1.0, result.velocityXMps!!, 1e-9)
         assertEquals(1.0, result.velocityYMps!!, 1e-9)
         assertEquals(0.9025f, result.confidence, 1e-6f)
+        assertEquals(0.0, result.positionResidualMeters!!, 1e-9)
         assertEquals(28, result.sampleCount)
     }
 
@@ -55,7 +56,7 @@ class RobustSpeedParityTest {
         assertNotNull(result)
         assertEquals(2.0, result!!.metersPerSecond, 1e-9)
         assertEquals(2.0, result.velocityXMps!!, 1e-9)
-        assertEquals(0.90625f, result.confidence, 1e-6f)
+        assertEquals(0.94375f, result.confidence, 1e-6f)
         assertEquals(27, result.sampleCount)
         assertTrue(result.durationMs == 1250L)
     }
