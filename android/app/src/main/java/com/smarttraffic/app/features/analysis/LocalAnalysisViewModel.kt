@@ -10,6 +10,7 @@ import com.smarttraffic.app.core.TrafficRulePreferences
 import com.smarttraffic.app.data.analysis.LocalImageFrameSource
 import com.smarttraffic.app.data.analysis.LocalVideoFrameSource
 import com.smarttraffic.app.data.evidence.FileEvidenceStore
+import com.smarttraffic.app.data.nativecore.NativeGroundProjector
 import com.smarttraffic.app.data.tracking.ByteTrack
 import com.smarttraffic.app.data.vision.AppearanceAugmentingDetector
 import com.smarttraffic.app.data.vision.DetectorModelRegistry
@@ -34,6 +35,7 @@ enum class AnalysisMediaType { VIDEO, IMAGE }
 data class AnalysisRunState(
     val phase: AnalysisRunPhase = AnalysisRunPhase.IDLE,
     val message: String? = null,
+    val accelerator: String? = null,
     val result: AnalysisResult? = null,
 )
 
@@ -75,15 +77,30 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                     error("Detector model is not installed: ${spec.assetPath}")
                 }
 
-                val result = withContext(Dispatchers.Default) {
-                    LiteRtObjectDetector(
-                        context = app,
-                        assetName = spec.assetPath,
-                        accelerator = Accelerator.CPU,
-                        inputSize = spec.inputSize,
-                        expectedOutput = spec.expectedOutput,
-                    ).use { rawDetector ->
-                        val detector = if (effectiveConfig.useAppearanceAssociation) {
+                val resultAndAccelerator = withContext(Dispatchers.Default) {
+                    var selectedAccelerator = Accelerator.GPU
+                    var detector: LiteRtObjectDetector? = null
+                    try {
+                        detector = LiteRtObjectDetector(
+                            context = app,
+                            assetName = spec.assetPath,
+                            accelerator = Accelerator.GPU,
+                            inputSize = spec.inputSize,
+                            expectedOutput = spec.expectedOutput,
+                        )
+                    } catch (_: Throwable) {
+                        selectedAccelerator = Accelerator.CPU
+                        detector = LiteRtObjectDetector(
+                            context = app,
+                            assetName = spec.assetPath,
+                            accelerator = Accelerator.CPU,
+                            inputSize = spec.inputSize,
+                            expectedOutput = spec.expectedOutput,
+                        )
+                    }
+
+                    detector!!.use { rawDetector ->
+                        val augmentedDetector = if (effectiveConfig.useAppearanceAssociation) {
                             AppearanceAugmentingDetector(rawDetector)
                         } else rawDetector
                         val frameSource = when (mediaType) {
@@ -101,19 +118,23 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                             _preview.value = previewFrame
                         }
 
-                        ModularAnalysisEngine(
-                            detector = detector,
+                        val result = ModularAnalysisEngine(
+                            detector = augmentedDetector,
                             tracker = ByteTrack(),
                             previewObserver = observer,
+                            groundProjector = NativeGroundProjector(),
                         ).analyze(frameSource, effectiveConfig)
+                        result to selectedAccelerator.name
                     }
                 }
 
+                val (result, acceleratorName) = resultAndAccelerator
                 if (effectiveConfig.enableEvidence) persistEvidence(app, result)
 
                 _state.value = AnalysisRunState(
                     phase = AnalysisRunPhase.SUCCESS,
                     message = "Real analysis completed. Results, rules and evidence references came from the same run.",
+                    accelerator = acceleratorName,
                     result = result,
                 )
             } catch (t: Throwable) {
