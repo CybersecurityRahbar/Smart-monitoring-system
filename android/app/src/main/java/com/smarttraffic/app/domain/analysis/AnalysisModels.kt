@@ -80,7 +80,10 @@ data class CalibrationProfile(
     val homography: List<Double>,
     val intrinsicMatrix: List<Double>? = null,
     val distortionCoefficients: List<Double>? = null,
+    /** Legacy field retained for previously stored camera calibrations. */
     val reprojectionErrorPixels: Double? = null,
+    /** Mean forward reprojection error in target/ground units produced by CalibrationBuilder. */
+    val reprojectionErrorTargetUnits: Double? = null,
     val version: Int = 1,
     val homographyInlierCount: Int? = null,
     val homographyInlierRatio: Double? = null,
@@ -90,18 +93,16 @@ data class AnalysisConfig(
     val detectorModel: String = "yolo26n",
     /** Current Android implementation is the Kalman + Hungarian ByteTrack baseline. */
     val tracker: String = "bytetrack",
-    /** Lowest confidence retained for the tracker so low-score recovery remains possible. */
     val trackerInputMinimumConfidence: Float = 0.10f,
-    /** Confidence threshold for detections considered reportable/primary results. */
     val minimumDetectionConfidence: Float = 0.25f,
     val minimumTrackDurationMs: Long = 500L,
     val minimumSpeedSamples: Int = 8,
     val maxPlausibleSpeedKmh: Double = 250.0,
-    /** Do not publish metric speed from an unvalidated calibration by default. */
     val requireValidatedCalibration: Boolean = true,
-    /** Initial engineering gate; must be tuned against calibration validation data. */
+    /** Legacy pixel gate for older profiles. */
     val maxCalibrationReprojectionErrorPixels: Double = 2.0,
-    /** Initial engineering gate; must be validated on the target camera geometry. */
+    /** Preferred gate when calibration was fitted against metric ground points. */
+    val maxCalibrationReprojectionErrorTargetUnits: Double = 0.25,
     val minimumCalibrationInlierRatio: Double = 0.75,
     val calibration: CalibrationProfile? = null,
     val useGroundPlane: Boolean = true,
@@ -118,7 +119,6 @@ data class AnalysisConfig(
 )
 
 data class AnalysisMetrics(
-    /** Reserved for a source that can report pure decode timing. */
     val decodeFps: Double? = null,
     val inferenceLatencyMs: Double? = null,
     val inferenceMedianLatencyMs: Double? = null,
