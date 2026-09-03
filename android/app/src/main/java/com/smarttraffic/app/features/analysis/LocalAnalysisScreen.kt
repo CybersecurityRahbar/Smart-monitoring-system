@@ -29,6 +29,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,9 +40,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.smarttraffic.app.core.tr
+import com.smarttraffic.app.data.analysis.FileCalibrationStore
 import com.smarttraffic.app.data.vision.DetectorModelRegistry
 import com.smarttraffic.app.domain.analysis.AnalysisConfig
 import com.smarttraffic.app.domain.analysis.AnalysisResult
+import com.smarttraffic.app.domain.analysis.CalibrationProfile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private enum class AnalysisSource { VIDEO, IMAGE }
 private enum class AnalysisTestMode { DETECTION_TRACKING, SPEED_CALIBRATION, PLATE_READ }
@@ -57,12 +62,24 @@ fun LocalAnalysisScreen(
     var useCalibratedHomography by remember { mutableStateOf(false) }
     var confidenceText by remember { mutableStateOf("25") }
     var referenceFramesText by remember { mutableStateOf("8") }
+    var calibrationProfiles by remember { mutableStateOf<List<CalibrationProfile>>(emptyList()) }
+    var selectedCalibrationId by remember { mutableStateOf<String?>(null) }
 
     val state by viewModel.state.collectAsStateWithLifecycle()
     val preview by viewModel.preview.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
     val modelSpec = remember { DetectorModelRegistry.requireSpec("yolo26n") }
     val modelInstalled = remember { DetectorModelRegistry.isInstalled(context, modelSpec) }
+    val selectedCalibration = calibrationProfiles.firstOrNull { it.id == selectedCalibrationId }
+
+    LaunchedEffect(Unit) {
+        calibrationProfiles = withContext(Dispatchers.IO) {
+            FileCalibrationStore(context).list()
+        }
+        if (selectedCalibrationId == null) {
+            selectedCalibrationId = calibrationProfiles.firstOrNull()?.id
+        }
+    }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         selectedUri = uri
@@ -74,7 +91,8 @@ fun LocalAnalysisScreen(
         tracker = "bytetrack",
         minimumDetectionConfidence = (confidenceText.toFloatOrNull() ?: 25f).coerceIn(1f, 100f) / 100f,
         minimumSpeedSamples = (referenceFramesText.toIntOrNull() ?: 8).coerceIn(4, 300),
-        useGroundPlane = useCalibratedHomography,
+        calibration = selectedCalibration,
+        useGroundPlane = useCalibratedHomography && selectedCalibration != null,
         showRadarOverlay = true,
     )
 
@@ -119,12 +137,52 @@ fun LocalAnalysisScreen(
                 MetricRow("Detector", "${modelSpec.id} • ${if (modelInstalled) "installed" else "MISSING"}")
                 MetricRow("Tracker", "ByteTrack + Kalman + global assignment")
                 MetricRow("Live laboratory", if (source == AnalysisSource.VIDEO) "frame-by-frame preview enabled" else "single-frame preview")
-                MetricRow("Physical speed", if (useCalibratedHomography) "requires validated calibration" else "blocked until calibration")
+                MetricRow(
+                    "Physical speed",
+                    when {
+                        !useCalibratedHomography -> "blocked until calibration"
+                        selectedCalibration == null -> "blocked: no calibration selected"
+                        else -> "requires source-dimension and quality validation",
+                    },
+                )
                 Text(
                     "The preview is driven by the same detector/tracker pipeline used for the final metrics; it is not a separate mock animation.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+
+        Surface(shape = RoundedCornerShape(24.dp), tonalElevation = 2.dp) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Calibration profile", style = MaterialTheme.typography.titleMedium)
+                if (calibrationProfiles.isEmpty()) {
+                    Text(
+                        "No saved calibration profile. Create one in More → Camera Calibration before enabling physical speed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "Select a validated profile produced by the calibration lab. The analysis pipeline will still validate its dimensions and quality against the selected media.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        calibrationProfiles.forEach { profile ->
+                            FilterChip(
+                                selected = profile.id == selectedCalibrationId,
+                                onClick = { selectedCalibrationId = profile.id },
+                                label = { Text("${profile.id} v${profile.version}") },
+                            )
+                        }
+                    }
+                    selectedCalibration?.let { profile ->
+                        MetricRow("Calibration dimensions", "${profile.imageWidth} × ${profile.imageHeight}")
+                        MetricRow("Inlier ratio", "%.3f".format(profile.homographyInlierRatio ?: 0.0))
+                        MetricRow("Target reprojection error", "%.3f m".format(profile.reprojectionErrorTargetUnits ?: Double.NaN))
+                    }
+                }
             }
         }
 
@@ -153,9 +211,13 @@ fun LocalAnalysisScreen(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Validated road homography", style = MaterialTheme.typography.bodyMedium)
-                        Text("Unlocks metric-plane projection and robust speed only after calibration gates pass.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Requires a selected saved calibration profile. Source dimensions and quality gates are checked by the real analysis pipeline.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Switch(checked = useCalibratedHomography, onCheckedChange = { useCalibratedHomography = it })
+                    Switch(
+                        checked = useCalibratedHomography,
+                        enabled = selectedCalibration != null,
+                        onCheckedChange = { useCalibratedHomography = it },
+                    )
                 }
             }
         }
