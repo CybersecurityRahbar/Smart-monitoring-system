@@ -112,6 +112,7 @@ data class AnalysisConfig(
     val useReIdentification: Boolean = false,
     val enablePlateRecognition: Boolean = false,
     val enableRules: Boolean = false,
+    val trafficRules: TrafficRuleConfig = TrafficRuleConfig(),
     val enableEvidence: Boolean = false,
     val showRadarOverlay: Boolean = true,
 )
@@ -137,6 +138,7 @@ data class AnalysisMetrics(
     val speedEstimates: Long = 0,
     val rejectedSpeedEstimates: Long = 0,
     val plateReads: Long = 0,
+    val trafficEvents: Long = 0,
     val homographyReprojectionError: Double? = null,
 )
 
@@ -146,5 +148,6 @@ data class AnalysisResult(
     val tracks: List<Track> = emptyList(),
     val speedEstimates: Map<Long, SpeedEstimate> = emptyMap(),
     val plateReadings: List<PlateReading> = emptyList(),
+    val trafficEvents: List<TrafficEvent> = emptyList(),
     val metrics: AnalysisMetrics = AnalysisMetrics(),
 )
