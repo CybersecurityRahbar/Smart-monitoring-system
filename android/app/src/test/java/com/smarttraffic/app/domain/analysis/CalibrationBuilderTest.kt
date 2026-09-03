@@ -35,8 +35,8 @@ class CalibrationBuilderTest {
         )
 
         assertEquals(5, profile.homographyInlierCount)
-        assertTrue(profile.homographyInlierRatio ?: 0.0 >= 5.0 / 6.0)
-        assertTrue(profile.reprojectionErrorTargetUnits ?: Double.POSITIVE_INFINITY <= 0.05)
+        assertTrue((profile.homographyInlierRatio ?: 0.0) >= 5.0 / 6.0)
+        assertTrue((profile.reprojectionErrorTargetUnits ?: Double.POSITIVE_INFINITY) <= 0.05)
         assertEquals(1, profile.version)
         assertEquals(9, profile.homography.size)
     }
