@@ -80,6 +80,23 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  native-parity:
+    name: Native C++ Parity Vectors
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure and build native parity harness
+        shell: bash
+        run: |
+          cmake -S tools/native-parity -B tools/native-parity/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build tools/native-parity/build --config Release --parallel
+
+      - name: Run native parity tests
+        shell: bash
+        run: ctest --test-dir tools/native-parity/build --output-on-failure
+
   research-tests:
     name: Validate Offline Research Math
     runs-on: ubuntu-latest
