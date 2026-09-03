@@ -46,9 +46,6 @@ class AnalysisPipelineRunner(
         require(!config.useReIdentification) {
             "Appearance Re-ID is not installed in the current tracker runtime"
         }
-        require(!config.enableEvidence) {
-            "Evidence persistence is not installed in the current runtime"
-        }
 
         tracker.reset()
         val allDetections = mutableListOf<Detection>()
