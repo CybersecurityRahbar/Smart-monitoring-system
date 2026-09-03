@@ -1,5 +1,15 @@
 package com.smarttraffic.app.domain.analysis
 
+/** Timestamp provenance for physical measurements. */
+enum class FrameTimestampPrecision {
+    /** Source timestamps come from the actual media/camera presentation clock. */
+    EXACT_SOURCE_CLOCK,
+    /** Timestamp identifies the requested/nominal sample time, not the decoded PTS. */
+    REQUESTED_SAMPLE_TIME,
+    /** The source did not establish a sufficient timestamp contract. */
+    UNKNOWN,
+}
+
 /** Stable identity of the media/camera source entering the analysis engine. */
 data class MediaSource(
     val id: String,
@@ -7,6 +17,7 @@ data class MediaSource(
     val frameRate: Double? = null,
     val width: Int? = null,
     val height: Int? = null,
+    val timestampPrecision: FrameTimestampPrecision = FrameTimestampPrecision.UNKNOWN,
 )
 
 data class Detection(
@@ -71,7 +82,6 @@ data class PlateReading(
     val confidence: Float,
     val frameIndex: Long,
     val trackId: Long? = null,
-    /** Presentation timestamp of the OCR observation. Used for temporal weighting. */
     val timestampMs: Long = frameIndex,
 )
 
@@ -82,9 +92,7 @@ data class CalibrationProfile(
     val homography: List<Double>,
     val intrinsicMatrix: List<Double>? = null,
     val distortionCoefficients: List<Double>? = null,
-    /** Legacy field retained for previously stored camera calibrations. */
     val reprojectionErrorPixels: Double? = null,
-    /** Mean forward reprojection error in target/ground units produced by CalibrationBuilder. */
     val reprojectionErrorTargetUnits: Double? = null,
     val version: Int = 1,
     val homographyInlierCount: Int? = null,
@@ -93,7 +101,6 @@ data class CalibrationProfile(
 
 data class AnalysisConfig(
     val detectorModel: String = "yolo26n",
-    /** Current Android implementation is the Kalman + Hungarian ByteTrack baseline. */
     val tracker: String = "bytetrack",
     val trackerInputMinimumConfidence: Float = 0.10f,
     val minimumDetectionConfidence: Float = 0.25f,
@@ -101,9 +108,8 @@ data class AnalysisConfig(
     val minimumSpeedSamples: Int = 8,
     val maxPlausibleSpeedKmh: Double = 250.0,
     val requireValidatedCalibration: Boolean = true,
-    /** Legacy pixel gate for older profiles. */
+    val requireExactTimestampsForPhysicalSpeed: Boolean = true,
     val maxCalibrationReprojectionErrorPixels: Double = 2.0,
-    /** Preferred gate when calibration was fitted against metric ground points. */
     val maxCalibrationReprojectionErrorTargetUnits: Double = 0.25,
     val minimumCalibrationInlierRatio: Double = 0.75,
     val calibration: CalibrationProfile? = null,
@@ -122,6 +128,7 @@ data class AnalysisConfig(
 
 data class AnalysisMetrics(
     val decodeFps: Double? = null,
+    val timestampPrecision: FrameTimestampPrecision = FrameTimestampPrecision.UNKNOWN,
     val inferenceLatencyMs: Double? = null,
     val inferenceMedianLatencyMs: Double? = null,
     val inferenceP95LatencyMs: Double? = null,
