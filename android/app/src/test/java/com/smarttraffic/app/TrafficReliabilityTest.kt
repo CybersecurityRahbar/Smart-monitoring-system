@@ -181,7 +181,7 @@ class TrafficReliabilityTest {
     fun pipelineRefusesUnvalidatedCalibrationForPhysicalSpeed() = runBlocking {
         val detector = object : ObjectDetector {
             override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> =
-                listOf(detection(frameIndex, frameIndex * 10f, confidence = 0.95f))
+                listOf(detection(frameIndex, frameIndex * 10f, confidence = 0.95f, width = 40f))
         }
         val source = SyntheticFrameSource((0L..19L).map { index ->
             AnalysisFrame(index, index * 100L, index, 1920, 1080)
@@ -203,6 +203,19 @@ class TrafficReliabilityTest {
 
         assertTrue(result.speedEstimates.isEmpty())
         assertEquals(1L, result.metrics.rejectedSpeedEstimates)
+    }
+
+    @Test
+    fun byteTrackDoesNotConfirmTrackWhenBoxesHaveNoOverlap() {
+        val tracker = ByteTrack()
+        tracker.update(listOf(detection(0, 0f, width = 10f, confidence = 0.95f)), 0L, 0L)
+        val tracks = tracker.update(
+            listOf(detection(1, 10f, width = 10f, confidence = 0.95f)),
+            1L,
+            100L,
+        )
+
+        assertTrue(tracks.isEmpty())
     }
 
     private fun detection(
