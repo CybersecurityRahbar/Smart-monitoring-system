@@ -126,6 +126,11 @@ fun LocalAnalysisScreen(
                     Text("Analysis media", style = MaterialTheme.typography.titleMedium)
                 }
                 Text(selectedUri?.toString() ?: "No media selected", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "Video analysis is uncapped: frames are decoded in source order without an artificial 100 ms sampling delay. The lab reports processing FPS separately from the source FPS.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = source == AnalysisSource.VIDEO, onClick = { source = AnalysisSource.VIDEO }, label = { Text("Video") })
                     FilterChip(selected = source == AnalysisSource.IMAGE, onClick = { source = AnalysisSource.IMAGE }, label = { Text("Image") })
@@ -141,10 +146,11 @@ fun LocalAnalysisScreen(
                 Text("Runtime readiness", style = MaterialTheme.typography.titleMedium)
                 MetricRow("Detector", "${modelSpec.id} • ${if (modelInstalled) "installed" else "MISSING"}")
                 MetricRow("Tracker", "ByteTrack + Kalman + global assignment")
+                MetricRow("Inference backend", state.accelerator ?: "Auto: GPU → CPU")
                 MetricRow("Live laboratory", if (source == AnalysisSource.VIDEO) "frame-by-frame preview enabled" else "single-frame preview")
                 MetricRow("Physical speed", physicalSpeedStatus)
                 Text(
-                    "The preview is driven by the same detector/tracker pipeline used for the final metrics; it is not a separate mock animation.",
+                    "The preview is driven by the same detector/tracker pipeline used for final metrics; there is no separate mock animation.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -245,7 +251,7 @@ fun LocalAnalysisScreen(
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Analysis running", style = MaterialTheme.typography.titleMedium)
-                    Text("The video frame and tracking radar below update as the real pipeline processes the file.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("The newest decoded frame and the tracking radar are shown as processing progresses. Playback is never intentionally delayed to match a slower analysis speed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -261,16 +267,18 @@ fun LocalAnalysisScreen(
             }
         }
 
-        state.result?.let { result -> AnalysisResultCard(result) }
+        state.result?.let { result -> AnalysisResultCard(result, state.accelerator) }
     }
 }
 
 @Composable
-private fun AnalysisResultCard(result: AnalysisResult) {
+private fun AnalysisResultCard(result: AnalysisResult, accelerator: String?) {
     Surface(shape = RoundedCornerShape(24.dp), tonalElevation = 3.dp) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Executed metrics", style = MaterialTheme.typography.titleMedium)
             val m = result.metrics
+            MetricRow("Inference backend", accelerator ?: "—")
+            MetricRow("Source FPS", m.decodeFps?.let { "%.2f".format(it) } ?: "—")
             MetricRow("Frames", m.framesProcessed.toString())
             MetricRow("Detections", m.detections.toString())
             MetricRow("Tracks", result.tracks.size.toString())
@@ -278,6 +286,7 @@ private fun AnalysisResultCard(result: AnalysisResult) {
             MetricRow("Inference median", formatMs(m.inferenceMedianLatencyMs))
             MetricRow("Inference P95", formatMs(m.inferenceP95LatencyMs))
             MetricRow("Processing FPS", m.processingFps?.let { "%.2f".format(it) } ?: "—")
+            MetricRow("End-to-end / frame", formatMs(m.endToEndLatencyMs))
             MetricRow("Dropped frame gaps", m.droppedFrames.toString())
             MetricRow("Tracking misses", m.trackingAssociationMisses.toString())
             MetricRow("Speed estimates", m.speedEstimates.toString())
