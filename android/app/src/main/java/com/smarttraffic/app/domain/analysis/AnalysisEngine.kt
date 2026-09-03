@@ -27,8 +27,6 @@ fun interface FrameSourceFactory {
 
 interface AnalysisEngine {
     suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult
-
-    /** Executes the real frame pipeline over a transport-independent source. */
     suspend fun analyze(source: FrameSource, config: AnalysisConfig): AnalysisResult
 }
 
@@ -42,12 +40,14 @@ class ModularAnalysisEngine(
     private val keypoints: VehicleKeypointEstimator? = null,
     private val plateRecognizer: PlateRecognizer? = null,
     private val frameSourceFactory: FrameSourceFactory? = null,
+    private val previewObserver: AnalysisPreviewObserver? = null,
 ) : AnalysisEngine {
     private val runner = AnalysisPipelineRunner(
         detector = detector,
         tracker = tracker,
         keypointEstimator = keypoints,
         plateRecognizer = plateRecognizer,
+        previewObserver = previewObserver,
     )
 
     override suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult {
