@@ -27,6 +27,7 @@ class LocalVideoFrameSource(
     private var frameIndex = 0L
     private var nextTimestampUs = 0L
     private var finished = false
+    private var indexDecodeEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
 
     private val durationMs: Long
     private val width: Int
@@ -68,35 +69,33 @@ class LocalVideoFrameSource(
     override suspend fun nextFrame(): AnalysisFrame? {
         if (finished) return null
 
+        val currentIndex = frameIndex
         val bitmap: Bitmap?
         val timestampMs: Long
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && frameCount != null) {
-            if (frameIndex >= frameCount.toLong()) {
+
+        if (indexDecodeEnabled && frameCount != null) {
+            if (currentIndex >= frameCount.toLong()) {
                 finished = true
                 return null
             }
-            bitmap = retriever.getFrameAtIndex(frameIndex.toInt())
+
+            bitmap = try {
+                retriever.getFrameAtIndex(currentIndex.toInt())
+            } catch (_: RuntimeException) {
+                // A few codecs expose frame-count metadata but cannot seek by index. Once this
+                // happens, fall back to timestamp sampling rather than aborting the whole lab run.
+                indexDecodeEnabled = false
+                null
+            }
+
+            if (!indexDecodeEnabled) {
+                return nextFrameFromTimestamp(currentIndex)
+            }
             timestampMs = sequentialFrameRate?.let {
-                (frameIndex.toDouble() * 1000.0 / it).roundToLong().coerceAtLeast(0L)
+                (currentIndex.toDouble() * 1000.0 / it).roundToLong().coerceAtLeast(0L)
             } ?: nextTimestampUs / 1000L
-            frameIndex++
         } else {
-            if (durationMs > 0L && nextTimestampUs / 1000L >= durationMs) {
-                finished = true
-                return null
-            }
-            timestampMs = nextTimestampUs / 1000L
-            bitmap = retriever.getFrameAtTime(
-                nextTimestampUs,
-                MediaMetadataRetriever.OPTION_CLOSEST,
-            )
-            if (bitmap != null) {
-                val intervalMs = sequentialFrameRate?.let {
-                    (1000.0 / it).coerceAtLeast(1.0)
-                } ?: 33.333
-                nextTimestampUs += (intervalMs * 1000.0).roundToLong()
-                frameIndex++
-            }
+            return nextFrameFromTimestamp(currentIndex)
         }
 
         if (bitmap == null) {
@@ -104,8 +103,36 @@ class LocalVideoFrameSource(
             return null
         }
 
+        frameIndex++
         return AnalysisFrame(
-            index = frameIndex - 1L,
+            index = currentIndex,
+            timestampMs = timestampMs,
+            payload = bitmap,
+            width = bitmap.width,
+            height = bitmap.height,
+        )
+    }
+
+    private fun nextFrameFromTimestamp(currentIndex: Long): AnalysisFrame? {
+        if (durationMs > 0L && nextTimestampUs / 1000L >= durationMs) {
+            finished = true
+            return null
+        }
+        val timestampMs = nextTimestampUs / 1000L
+        val bitmap = retriever.getFrameAtTime(
+            nextTimestampUs,
+            MediaMetadataRetriever.OPTION_CLOSEST,
+        ) ?: run {
+            finished = true
+            return null
+        }
+        val intervalMs = sequentialFrameRate?.let {
+            (1000.0 / it).coerceAtLeast(1.0)
+        } ?: 33.333
+        nextTimestampUs += (intervalMs * 1000.0).roundToLong()
+        frameIndex++
+        return AnalysisFrame(
+            index = currentIndex,
             timestampMs = timestampMs,
             payload = bitmap,
             width = bitmap.width,
