@@ -1,5 +1,7 @@
 package com.smarttraffic.app.domain.analysis
 
+import kotlin.math.min
+
 /**
  * Real frame-to-result coordinator. Every tracker result must carry its own current
  * observation; the runner deliberately does not fall back to an unrelated detection.
@@ -42,9 +44,6 @@ class AnalysisPipelineRunner(
         }
         require(!config.useReIdentification) {
             "Appearance Re-ID is not installed in the current tracker runtime"
-        }
-        require(!config.enableRules) {
-            "Traffic-rule evaluation is not installed in the current runtime"
         }
         require(!config.enableEvidence) {
             "Evidence persistence is not installed in the current runtime"
@@ -210,6 +209,24 @@ class AnalysisPipelineRunner(
             }.toMap()
         } else emptyMap()
 
+        if (config.enableRules && !calibrationReady) {
+            // Physical traffic rules cannot run on pixel-space or unvalidated geometry.
+            // Keep the result empty instead of generating a false violation.
+            require(!config.trafficRules.enabled) {
+                "Traffic rules are enabled but no validated physical calibration is available"
+            }
+        }
+        val trafficEvents = if (config.enableRules) {
+            TrafficRuleEngine.evaluate(
+                tracks = completedTracks,
+                speedEstimates = speedEstimates,
+                config = config.trafficRules.copy(enabled = true),
+                detectorModel = config.detectorModel,
+                tracker = config.tracker,
+                calibration = config.calibration,
+            )
+        } else emptyList()
+
         val elapsedMs = (System.nanoTime() - analysisStartNs) / 1_000_000.0
         val elapsedSeconds = elapsedMs / 1000.0
         val processingFps = frameCount.takeIf { it > 0L && elapsedSeconds > 0.0 }
@@ -226,6 +243,7 @@ class AnalysisPipelineRunner(
             tracks = completedTracks,
             speedEstimates = speedEstimates,
             plateReadings = temporalPlateConsensus(plateReadings),
+            trafficEvents = trafficEvents,
             metrics = AnalysisMetrics(
                 inferenceLatencyMs = inferenceMedian,
                 inferenceMedianLatencyMs = inferenceMedian,
@@ -245,6 +263,7 @@ class AnalysisPipelineRunner(
                 speedEstimates = speedEstimates.size.toLong(),
                 rejectedSpeedEstimates = (completedTracks.size - speedEstimates.size).toLong().coerceAtLeast(0L),
                 plateReads = plateReadings.size.toLong(),
+                trafficEvents = trafficEvents.size.toLong(),
                 homographyReprojectionError = config.calibration?.reprojectionErrorPixels,
             ),
         )
@@ -268,7 +287,7 @@ class AnalysisPipelineRunner(
         if (sorted.isEmpty()) return null
         val position = p.coerceIn(0.0, 1.0) * sorted.lastIndex
         val lower = position.toInt()
-        val upper = minOf(sorted.lastIndex, lower + 1)
+        val upper = min(sorted.lastIndex, lower + 1)
         if (lower == upper) return sorted[lower]
         return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower)
     }
