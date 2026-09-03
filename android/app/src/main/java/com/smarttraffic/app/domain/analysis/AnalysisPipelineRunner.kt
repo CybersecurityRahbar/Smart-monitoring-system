@@ -151,7 +151,10 @@ class AnalysisPipelineRunner(
 
                     if (config.enablePlateRecognition) {
                         plateRecognizer!!.recognize(frame.payload, observation.detection)?.let { reading ->
-                            plateReadings += reading.copy(trackId = reading.trackId ?: track.id)
+                            plateReadings += reading.copy(
+                                trackId = reading.trackId ?: track.id,
+                                timestampMs = frame.timestampMs,
+                            )
                         }
                     }
                 }
@@ -282,15 +285,24 @@ class AnalysisPipelineRunner(
         sourceHeight: Int,
     ): Boolean {
         val calibration = config.calibration ?: return !config.requireValidatedCalibration
-        val validation = CalibrationValidator.validate(
+        if (!config.requireValidatedCalibration) {
+            return CalibrationValidator.validate(
+                profile = calibration,
+                expectedWidth = sourceWidth,
+                expectedHeight = sourceHeight,
+                maxReprojectionErrorPixels = Double.POSITIVE_INFINITY,
+                maxReprojectionErrorTargetUnits = Double.POSITIVE_INFINITY,
+                minimumInlierRatio = 0.0,
+            ).reasons.none { it.contains("required") || it.contains("finite") || it.contains("singular") }
+        }
+        return CalibrationValidator.validate(
             profile = calibration,
             expectedWidth = sourceWidth,
             expectedHeight = sourceHeight,
             maxReprojectionErrorPixels = config.maxCalibrationReprojectionErrorPixels,
             maxReprojectionErrorTargetUnits = config.maxCalibrationReprojectionErrorTargetUnits,
             minimumInlierRatio = config.minimumCalibrationInlierRatio,
-        )
-        return validation.accepted
+        ).accepted
     }
 
     private fun percentile(sorted: List<Double>, p: Double): Double? {
