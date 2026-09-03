@@ -10,6 +10,7 @@ class AnalysisPipelineRunner(
     private val plateRecognizer: PlateRecognizer? = null,
     private val previewObserver: AnalysisPreviewObserver? = null,
     private val groundProjector: GroundProjector = KotlinGroundProjector,
+    private val speedEstimator: SpeedEstimatorBackend = KotlinSpeedEstimatorBackend,
 ) {
     suspend fun run(source: FrameSource, config: AnalysisConfig): AnalysisResult {
         require(config.trackerInputMinimumConfidence in 0f..1f) { "trackerInputMinimumConfidence must be within [0,1]" }
@@ -175,11 +176,12 @@ class AnalysisPipelineRunner(
                         val liveSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
                         val liveSpeeds = if (liveSpeedAllowed) {
                             liveTracks.mapNotNull { liveTrack ->
-                                RobustSpeedEstimator(
+                                speedEstimator.estimate(
+                                    observations = liveTrack.observations,
                                     minimumSamples = config.minimumSpeedSamples,
                                     minimumDurationMs = config.minimumTrackDurationMs,
                                     maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
-                                ).estimate(liveTrack.observations)?.let { liveTrack.id to it }
+                                )?.let { liveTrack.id to it }
                             }.toMap()
                         } else emptyMap()
                         previewObserver.onFrame(
@@ -213,11 +215,12 @@ class AnalysisPipelineRunner(
         val physicalSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
         val speedEstimates = if (physicalSpeedAllowed) {
             completedTracks.mapNotNull { track ->
-                RobustSpeedEstimator(
+                speedEstimator.estimate(
+                    observations = track.observations,
                     minimumSamples = config.minimumSpeedSamples,
                     minimumDurationMs = config.minimumTrackDurationMs,
                     maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
-                ).estimate(track.observations)?.let { speed -> track.id to speed }
+                )?.let { speed -> track.id to speed }
             }.toMap()
         } else emptyMap()
 
