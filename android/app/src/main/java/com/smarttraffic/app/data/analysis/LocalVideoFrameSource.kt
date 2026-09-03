@@ -9,15 +9,16 @@ import com.smarttraffic.app.domain.analysis.AnalysisFrame
 import com.smarttraffic.app.domain.analysis.FrameSource
 import com.smarttraffic.app.domain.analysis.FrameTimestampPrecision
 import com.smarttraffic.app.domain.analysis.MediaSource
+import kotlin.math.min
 import kotlin.math.roundToLong
 
 /**
  * FrameSource for local video/image URIs selected by the Analysis Lab.
  *
- * API 28+ videos are decoded by frame index rather than repeatedly seeking by timestamp.
- * This avoids the expensive random-seek behaviour of getFrameAtTime() and keeps analysis
- * playback much closer to the source cadence. Timestamps are still marked as requested/sample
- * time because MediaMetadataRetriever does not expose the exact decoded PTS here.
+ * API 28+ videos with frame-count metadata are decoded in small sequential batches. Android
+ * recommends getFramesAtIndex() when several consecutive frames are required; this reduces
+ * repeated decoder/indexing overhead while keeping frame order deterministic.
+ * Timestamps remain REQUESTED_SAMPLE_TIME because indexed frame position is not proof of decoded PTS.
  */
 class LocalVideoFrameSource(
     private val context: Context,
@@ -28,6 +29,7 @@ class LocalVideoFrameSource(
     private var nextTimestampUs = 0L
     private var finished = false
     private var indexDecodeEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+    private val pendingFrames = ArrayDeque<Bitmap>()
 
     private val durationMs: Long
     private val width: Int
@@ -35,6 +37,7 @@ class LocalVideoFrameSource(
     private val frameRate: Double?
     private val frameCount: Int?
     private val sequentialFrameRate: Double?
+    private val batchSize = 4
 
     override val source: MediaSource
 
@@ -69,51 +72,47 @@ class LocalVideoFrameSource(
     override suspend fun nextFrame(): AnalysisFrame? {
         if (finished) return null
 
-        val currentIndex = frameIndex
-        val bitmap: Bitmap?
-        val timestampMs: Long
-
         if (indexDecodeEnabled && frameCount != null) {
-            if (currentIndex >= frameCount.toLong()) {
-                finished = true
-                return null
+            fillBatchIfNeeded()
+            if (pendingFrames.isNotEmpty()) {
+                val currentIndex = frameIndex++
+                val bitmap = pendingFrames.removeFirst()
+                val timestampMs = sequentialFrameRate?.let {
+                    (currentIndex.toDouble() * 1000.0 / it).roundToLong().coerceAtLeast(0L)
+                } ?: nextTimestampUs / 1000L
+                return AnalysisFrame(
+                    index = currentIndex,
+                    timestampMs = timestampMs,
+                    payload = bitmap,
+                    width = bitmap.width,
+                    height = bitmap.height,
+                )
             }
-
-            bitmap = try {
-                retriever.getFrameAtIndex(currentIndex.toInt())
-            } catch (_: RuntimeException) {
-                // Some codecs expose frame-count metadata but cannot decode by index. Continue
-                // from this same source position using timestamp sampling rather than failing.
-                indexDecodeEnabled = false
-                nextTimestampUs = sequentialFrameRate?.let {
-                    (currentIndex.toDouble() * 1_000_000.0 / it).roundToLong().coerceAtLeast(0L)
-                } ?: nextTimestampUs
-                null
-            }
-
-            if (!indexDecodeEnabled) {
-                return nextFrameFromTimestamp(currentIndex)
-            }
-            timestampMs = sequentialFrameRate?.let {
-                (currentIndex.toDouble() * 1000.0 / it).roundToLong().coerceAtLeast(0L)
-            } ?: nextTimestampUs / 1000L
-        } else {
-            return nextFrameFromTimestamp(currentIndex)
+            if (finished) return null
         }
 
-        if (bitmap == null) {
+        return nextFrameFromTimestamp(frameIndex)
+    }
+
+    private fun fillBatchIfNeeded() {
+        if (pendingFrames.isNotEmpty() || finished || !indexDecodeEnabled || frameCount == null) return
+        if (frameIndex >= frameCount.toLong()) {
             finished = true
-            return null
+            return
         }
 
-        frameIndex++
-        return AnalysisFrame(
-            index = currentIndex,
-            timestampMs = timestampMs,
-            payload = bitmap,
-            width = bitmap.width,
-            height = bitmap.height,
-        )
+        val startIndex = frameIndex.toInt()
+        val count = min(batchSize.toLong(), frameCount.toLong() - frameIndex).toInt()
+        try {
+            val decoded = retriever.getFramesAtIndex(startIndex, count)
+            if (decoded.isEmpty()) throw IllegalStateException("No frames decoded from indexed batch")
+            pendingFrames.addAll(decoded)
+        } catch (_: RuntimeException) {
+            indexDecodeEnabled = false
+            nextTimestampUs = sequentialFrameRate?.let {
+                (frameIndex.toDouble() * 1_000_000.0 / it).roundToLong().coerceAtLeast(0L)
+            } ?: nextTimestampUs
+        }
     }
 
     private fun nextFrameFromTimestamp(currentIndex: Long): AnalysisFrame? {
@@ -133,7 +132,7 @@ class LocalVideoFrameSource(
             (1000.0 / it).coerceAtLeast(1.0)
         } ?: 33.333
         nextTimestampUs += (intervalMs * 1000.0).roundToLong()
-        frameIndex++
+        frameIndex = currentIndex + 1L
         return AnalysisFrame(
             index = currentIndex,
             timestampMs = timestampMs,
@@ -145,6 +144,7 @@ class LocalVideoFrameSource(
 
     override suspend fun close() {
         finished = true
+        pendingFrames.clear()
         retriever.release()
     }
 }
