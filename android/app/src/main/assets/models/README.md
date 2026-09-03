@@ -1,14 +1,19 @@
 # Smart Traffic on-device models
 
-Place validated LiteRT `.tflite` detector assets in this directory when testing on Android.
+The first Android detector is now checked into this directory:
 
-Expected first baseline:
-- `yolo26n.tflite` exported from a validated Ultralytics YOLO26n checkpoint with `imgsz=640`.
-- Current adapter expects a single float input and the current Ultralytics end-to-end `[N, 6]` output: `x1,y1,x2,y2,confidence,classId`.
+- `yolo26n.tflite` — official Ultralytics Android LiteRT `yolo26n_w8a32.tflite` asset from release `v0.6.6`.
+- Runtime input contract: `1 x 3 x 640 x 640`, FP32 values, NCHW.
+- Runtime output contract: `1 x 84 x 8400`, the traditional one-to-many YOLO detection layout.
+- The 4 box channels are normalized `xywh`; the remaining 80 channels are COCO class scores.
+- The Android adapter restricts traffic detections to COCO classes: car (2), motorcycle (3), bus (5), truck (7), then restores letterboxed coordinates and performs class-aware NMS.
 
-Do not commit large/private/custom weights without an explicit decision on repository size and licensing. Model cards, export commands, checksums, and benchmark results should be recorded separately.
+Pinned SHA-256:
+`d9cef07ce652ccfa9ce58e4ac8a4df98ff037739a9dad20a8afcae21b545df73`
 
-Suggested export command from the research environment:
-`yolo export model=yolo26n.pt format=litert imgsz=640`
+Official source:
+`https://github.com/ultralytics/yolo-flutter-app/releases/download/v0.6.6/yolo26n_w8a32.tflite`
 
-For quantized candidates, export and benchmark separately; do not compare quantized and float models using only latency. Record detection metrics and thermal/runtime behavior on the same phone.
+The Android Gradle build verifies the local asset checksum before `preBuild`. A checksum failure or missing model is a hard build failure; the application does not silently fall back to a missing or incompatible detector.
+
+Licensing: verify Ultralytics YOLO26/asset licensing against the intended distribution model before publishing or commercial deployment. The model/framework documentation identifies the default YOLO license as AGPL-3.0, with separate enterprise licensing for other use cases.
