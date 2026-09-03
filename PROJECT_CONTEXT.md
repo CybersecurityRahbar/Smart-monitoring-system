@@ -1,143 +1,116 @@
 # Smart Traffic Monitoring System — Persistent Conversation / Engineering Context
 
 Last updated: 2026-09-03
-Current HEAD: 42190a49ce8a49bc0780557432d30617eccb9fe4
+Current HEAD before checkpoint commit: 15f2739894f9dd316d4b29522074e8d95731aa84
 Branch: main
 
 ## Mission
-Build a reliable Smart Traffic Monitoring System for Android + ESP32 camera sources. The system must prefer measured/validated results over plausible-looking numbers. No fake algorithms, no silent no-op fallbacks, and no accuracy claims without ground truth.
+Build a reliable Smart Traffic Monitoring System for Android + ESP32 camera sources. Prefer measured and validated results over plausible-looking numbers. No fake algorithms, no silent no-op fallbacks, and no accuracy claims without ground truth.
 
-## Runtime architecture
-Compose UI -> ViewModel/StateFlow -> Use Cases/Domain -> Repositories/Data Sources -> FrameSource -> AnalysisPipelineRunner -> detector -> tracker -> geometry/speed -> plate/OCR -> rules -> evidence.
+## Architecture
+Compose UI -> ViewModel/StateFlow -> Domain/use cases -> repositories/data sources -> FrameSource -> AnalysisPipelineRunner -> detector -> tracker -> geometry/speed -> plate/OCR -> rules -> evidence.
 
-Runtime split:
-- Kotlin/Compose: UI, orchestration, configuration and persistence.
-- LiteRT: on-device ML inference.
-- C++/NDK: performance-sensitive CV/numerical paths.
-- Python: offline research, datasets and reproducible experiments.
+Runtime split: Kotlin/Compose for UI/orchestration/persistence; LiteRT for on-device ML inference; C++/NDK for performance-sensitive numerical/CV paths; Python for offline research and reproducible experiments.
 
-## Hardware target
-Initial: ESP32-CAM + OV2640 -> local Wi-Fi -> Android MJPEG stream.
-Endpoints intended: /status, /capture, /stream.
-A second board was found: ESP32-S3-CAM N16R8 with OV5640CSP; physical pin mapping still requires board-specific verification before firmware is claimed ready.
+## Hardware
+Initial target: ESP32-CAM + OV2640 -> local Wi-Fi -> Android MJPEG (/status, /capture, /stream).
+Also identified: ESP32-S3-CAM N16R8 + OV5640CSP. Exact board pin mapping remains unverified and must not be claimed ready until physically confirmed.
 
-## Android toolchain
-- AGP 9.3.2
-- Gradle 9.5.0
-- Built-in Kotlin support; org.jetbrains.kotlin.android was removed.
-- Compose plugin 2.2.10
-- compileSdk/targetSdk 37, minSdk 26
-- Java 17
-- NDK 27.2.12479018
-- CMake 3.22.1
-- Compose BOM 2026.08.00
-- LiteRT 2.2.0
-- android.uniquePackageNames=false retained as compatibility workaround for LiteRT 2.2.0 duplicate namespace packaging.
+## Android build
+AGP 9.3.2; Gradle 9.5.0; Built-in Kotlin; Compose plugin 2.2.10; compileSdk/targetSdk 37; minSdk 26; Java 17; NDK 27.2.12479018; CMake 3.22.1; Compose BOM 2026.08.00; LiteRT 2.2.0. `android.uniquePackageNames=false` is retained as a LiteRT 2.2.0 namespace compatibility workaround.
 
 ## Detector
-Official YOLO26n LiteRT asset is committed at android/app/src/main/assets/models/yolo26n.tflite.
+Committed asset: android/app/src/main/assets/models/yolo26n.tflite
 SHA-256: d9cef07ce652ccfa9ce58e4ac8a4df98ff037739a9dad20a8afcae21b545df73
 Size: 2,875,553 bytes.
-Registry contract: 640x640 NCHW RGB, FP32 activations, classic YOLO output [1,84,8400], COCO traffic classes car=2, motorcycle=3, bus=5, truck=7. Build task verifyYolo26nModel verifies the exact SHA-256.
+Contract: 640x640 NCHW RGB; classic YOLO [1,84,8400]; COCO traffic classes car=2, motorcycle=3, bus=5, truck=7. Build task verifies the exact hash.
 
-## Analysis pipeline — implemented
-- strict frame index ordering and gap metrics
-- detector error propagation (no silent inference fallback)
-- two-stage high/low-confidence tracking
-- Kalman box prediction
+## Implemented pipeline
+- strict frame index ordering/gap accounting
+- detector exception propagation
+- Kalman prediction
 - global linear assignment
+- high/low-confidence association
 - class-aware matching
-- confirmation/lost-track handling
-- bounded center-distance recovery for temporary non-overlap
-- deterministic appearance signature as a secondary association cue (NOT learned Re-ID)
-- homography projection to metric ground plane
-- RANSAC homography fitting
+- track confirmation/lost handling
+- bounded motion recovery
+- deterministic appearance histogram as a secondary cue (NOT learned Re-ID)
+- homography projection and RANSAC fitting
 - robust median/MAD speed estimator
 - calibration quality gates
-- timestamp provenance and physical-speed timestamp gate
-- temporal plate consensus using timestamps
-- traffic rule evaluation from measured speed
-- persistent evidence records
-- live processed-frame preview and radar in Analysis Lab
-- shared persisted traffic-rule configuration
+- timestamp provenance and exact-timestamp speed gate
+- timestamp-aware plate consensus
+- traffic-rule evaluation from validated speed
+- persistent evidence metadata store
+- live processed video preview + radar
+- shared traffic-rule preferences
 
-## Explicitly NOT installed as production backends
-- learned appearance Re-ID
-- optical-flow refinement
-- vehicle keypoint/pose model
-- dynamic keypoint homography
-- segmentation refinement
+## Not yet production-installed
+- learned Re-ID model
+- optical-flow refinement backend
+- learned vehicle pose/keypoint backend
+- dynamic keypoint homography backend
+- segmentation refinement backend
 - Android plate detector + OCR backend
-- true decoder PTS-preserving video source
-- production evidence image/crop extraction/export
+- true PTS-preserving decoder FrameSource
+- actual evidence image/crop extraction/export
 
-## Reliability rules
+## Reliability invariants
 1. Pixel displacement is never physical speed.
 2. Physical speed requires validated metric calibration.
-3. Physical speed requires exact source timestamps when requireExactTimestampsForPhysicalSpeed=true.
-4. A computed number is not a trusted measurement until all quality gates pass.
-5. Calibration must have finite non-singular homography, measured reprojection error, and sufficient inlier ratio.
-6. Detector/tracker failure must surface as an error or explicit rejection.
-7. Appearance is only a secondary cue; geometry remains mandatory.
-8. Accuracy claims require annotated ground truth; tracking should use IDF1/HOTA/MOTA/ID switches and speed requires reference measurements.
+3. With requireExactTimestampsForPhysicalSpeed=true, physical speed requires EXACT_SOURCE_CLOCK.
+4. Missing calibration never enables projection.
+5. Calibration requires finite non-singular homography, measured reprojection error and sufficient inlier ratio.
+6. Failures must surface; they must not become silent empty success.
+7. Appearance is secondary; geometric plausibility remains mandatory.
+8. Accuracy claims require independent annotated/reference measurements.
 
 ## Timestamp provenance
-FrameTimestampPrecision values: EXACT_SOURCE_CLOCK, REQUESTED_SAMPLE_TIME, UNKNOWN.
-LocalVideoFrameSource currently uses MediaMetadataRetriever sampling and must not be treated as exact PTS. Therefore exact-timestamp physical-speed runs are blocked for this source until a MediaExtractor/MediaCodec-style source supplies actual presentation timestamps.
+FrameTimestampPrecision = EXACT_SOURCE_CLOCK | REQUESTED_SAMPLE_TIME | UNKNOWN.
+LocalVideoFrameSource currently uses MediaMetadataRetriever sampling and is not exact PTS. Exact physical speed is intentionally blocked for this source until a PTS-preserving MediaExtractor/MediaCodec-style source is implemented.
 
 ## Calibration
-CalibrationBuilder creates versioned profiles from image/ground correspondences to metric ground points using RANSAC homography and stores target-unit reprojection error + inlier statistics.
-CalibrationStore persists profiles locally.
-CalibrationValidator checks dimensions, homography validity, reprojection error, inlier ratio and minimum inlier count.
+CalibrationBuilder fits image-to-ground correspondences with RANSAC and records target-unit reprojection error, inlier count and ratio. CalibrationValidator checks dimensions, homography validity, measured error and inlier quality. FileCalibrationStore persists profiles.
+
+A hidden bug was fixed where relaxed calibration validation could allow a null calibration to reach `calibration!!`; missing profiles now always disable projection.
 
 ## Tracking
-ByteTrack.kt is ByteTrack-inspired, not reference-equivalent. Association uses predicted/measured IoU, bounded motion recovery, and optional deterministic appearance similarity. No learned Re-ID claim is allowed until a real embedding model/backend is installed and benchmarked.
+ByteTrack.kt is explicitly ByteTrack-inspired, not reference-equivalent. Association uses predicted/measured IoU, bounded center-distance recovery and optional deterministic appearance similarity.
+CI Run #200 exposed nonexistent Detection.centerX/centerY references; fixed in ddeb1f29596b11caa769b2d2e6d88f0c6fea2e32 by deriving centers from box edges.
 
-## Appearance signature
-AppearanceSignature is a deterministic 2x2 spatial RGB histogram with 8 bins/channel. AppearanceAugmentingDetector can compute it from Bitmap crops. It is not a neural Re-ID embedding.
+## Appearance
+AppearanceSignature is a deterministic 2x2 spatial RGB histogram with 8 bins/channel. AppearanceAugmentingDetector attaches the signature to Bitmap detections. Current LocalAnalysisViewModel wraps the LiteRT detector with this augmentation when useAppearanceAssociation=true. This is not neural Re-ID.
 
 ## Plates / OCR
-PlateReading contains timestampMs. PlateConsensus uses temporal aggregation. Android still lacks a real plate detector + OCR backend; enabling plate recognition must remain rejected until such a backend exists.
+PlateReading contains timestampMs and PlateConsensus performs temporal aggregation. No Android plate detector/OCR backend is installed; enabling plate recognition must still fail explicitly.
 
-## Rules / evidence
-TrafficRulePreferences is shared between the Rules screen and analysis configuration.
-TrafficRuleEngine evaluates rules from completed tracks + validated speed estimates.
-EvidenceRecord stores event/source/frame/time/speed/threshold/confidence/track/plate/calibration/model/tracker metadata. FileEvidenceStore persists locally. Evidence UI reads the persisted records.
+## Rules
+TrafficRulePreferences is shared by Rules UI and runtime. TrafficRuleEngine produces SPEEDING events only from validated speed estimates above configured threshold and preserves model/tracker/calibration metadata.
 
-## Latest failure and repair
-CI Run #200 failed at Kotlin compilation in ByteTrack.kt because Detection has no centerX/centerY properties. The repair derives the detection center from left/right/top/bottom in commit ddeb1f29596b11caa769b2d2e6d88f0c6fea2e32.
-The persistent context document was then created and the shared-rule/evidence work was preserved. Current HEAD after restoring this checkpoint is 42190a49ce8a49bc0780557432d30617eccb9fe4; the latest post-fix CI must still be checked and never assumed green.
+## Evidence
+EvidenceRecord stores event/source/frame/time/speed/threshold/confidence/track/plate/calibration/model/tracker metadata. FileEvidenceStore is durable local JSON. A hidden reliability issue was fixed: corrupted JSON, invalid records, write failures and delete failures are surfaced instead of becoming silent empty state.
 
-## Recent milestones
-- eaaee7fa... valid Compose drawing APIs for Analysis Lab preview.
-- bb1428c5... detector registry and exact letterbox/model hardening.
-- d349ad7f... temporal plate consensus + traffic rules tests.
-- 24b04f09... persisted traffic evidence UI.
-- e174c181... shared persisted traffic rule configuration.
-- a0d66871... appearance-assisted bounded vehicle tracking integration.
-- 00cd878f... timestamp provenance / physical-speed gating tests.
-- ddeb1f29... fix Detection center calculation after Run #200.
-- 42190a49... persistent PROJECT_CONTEXT.md restored.
+## Recent CI / fixes
+Run #200 failed compiling ByteTrack due Detection.centerX/centerY. Fixed in ddeb1f29.
+Run #204 covered calibration/timestamp hardening.
+Run #205 covered missing-calibration safety.
+Run #206 introduced evidence-store fail-fast hardening.
+Current latest code before this checkpoint is commit 15f2739894f9dd316d4b29522074e8d95731aa84.
+The latest CI run for the current branch must be checked to completion; queued/cancelled is never equivalent to success.
 
-## UI state
-Analysis Lab supports real local video/image selection, model readiness, detector/tracker status, live processed preview, tracking radar and execution metrics. Speed is intentionally blocked unless calibration/timestamp gates pass. Rules screen persists configuration. Evidence screen lists persisted evidence records.
+## UI
+Analysis Lab: real local media selection, model readiness, live processed preview, tracking radar and execution metrics. Speed remains intentionally blocked until calibration/timestamp gates pass. Rules UI persists policy. Evidence UI displays durable evidence records.
 
 ## Current priorities
-P0: Verify current HEAD in CI; fix every build/test/lint issue before adding another backend.
-P1: Add a true PTS-preserving video FrameSource and exact timestamp tests.
-P2: Build an in-app Calibration Lab: choose source frame, tap image correspondences, enter measured ground distances, fit/validate homography, persist/load profile, and feed Analysis Lab.
-P3: Produce real evidence frames/crops from source media instead of metadata-only records.
-P4: Integrate bounded optical-flow refinement with independent tests and benchmarks.
-P5: Integrate a real learned vehicle pose/keypoint model and dynamic homography only after model-contract validation.
-P6: Integrate plate detector + OCR backend, then temporal consensus + regional plate-format validation.
-P7: Integrate learned Re-ID and benchmark IDF1/HOTA/MOTA/ID switches on annotated traffic sequences.
-P8: Add real-device preprocessing/inference/postprocessing/E2E benchmarks and verify accelerator placement on hardware.
+P0: Verify current HEAD with complete Android build + unit tests + lint.
+P1: Implement true PTS-preserving FrameSource and exact timestamp tests.
+P2: Build in-app Calibration Lab with frame selection, point annotation, measured ground distances, RANSAC fit, validation, persistence and Analysis Lab loading.
+P3: Generate actual evidence frames/crops from source media.
+P4: Integrate bounded optical flow with correctness/performance tests.
+P5: Integrate real vehicle pose/keypoints and dynamic homography after model contract validation.
+P6: Integrate plate detector + OCR, temporal consensus and regional format validation.
+P7: Integrate learned Re-ID and benchmark IDF1/HOTA/MOTA/ID switches.
+P8: Add real-device preprocessing/inference/postprocessing/E2E benchmarks and verify accelerator placement.
 
 ## Context checkpoint protocol
-This file is the persistent handoff source for this project. After every significant implementation stage, and at minimum every 2-3 tool operations during long work, update:
-- current HEAD commit
-- what changed and why
-- tests/CI status
-- newly discovered issues
-- next P0/P1 task
-Never mark a cancelled CI run as success. Never state that a feature exists unless it is actually connected to the runtime path and covered by an appropriate test.
+This file is the persistent handoff source for the project. During long work, update it at least every 2-3 tool operations and after every significant implementation stage with current HEAD, changes/rationale, tests/CI status, discovered issues, and next P0/P1 task. Never mark a queued or cancelled CI run as successful. Never state a feature exists unless it is wired into the runtime and appropriately tested.
