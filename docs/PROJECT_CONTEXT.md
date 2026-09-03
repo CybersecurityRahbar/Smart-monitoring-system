@@ -54,6 +54,7 @@ GitHub Actions workflow `.github/workflows/android-ci.yml` builds debug APK, run
 
 Previously verified successful baseline: Run #128 on `bbbc2307...` built the APK, compiled native C++, ran tests and uploaded artifacts.
 Run #213 (`33764646784`) on `c34f1cf8f05024d758341a5abf0158bf9d801e2f` was verified successful for Android build/tests/lint and offline Python tests.
+Run #225 (`33778931309`) on `28591789cf9bfaf4da656e06ec303c6d227e5c4f` verified the JUnit test dependency fix: Android build/tests/lint and offline Python tests completed successfully. This is the latest fully verified green baseline before the subsequent feature commits in this work log.
 Recent failures fixed:
 - MediaMetadataRetriever wrong overload;
 - sdkmanager missing from PATH;
@@ -61,6 +62,7 @@ Recent failures fixed:
 - LiteRT 2.2.0 duplicate namespace under AGP 9, mitigated with compatibility property;
 - preview renderer Compose compile failures fixed in commit `eaaee7fa...`;
 - Run #211 (`33763868986`) failed at `compileDebugKotlin` because the newly added bounded-motion parameters were referenced from `InternalTrack` without being in that class's scope; fixed in `2835ec1b0449d56413a288576bb08d830b51ae76`.
+- Run #224 (`33778165424`) failed only in `CalibrationBuilderTest.kt` because it imported `kotlin.test.*` while the module only declared JUnit 4; fixed by changing that test to JUnit 4 assertions in commit `28591789cf9bfaf4da656e06ec303c6d227e5c4f`.
 
 CI verification rule: only the run for the exact commit under review counts. Cancelled/older runs do not count.
 
@@ -125,7 +127,7 @@ It reports m/s, km/h, velocity components, direction, trajectory residual and an
 The quality/confidence score is not a calibrated probability; `errorKmh` is not ground-truth error.
 Independent reference-speed measurements are required for accuracy claims.
 
-A current data-quality limitation remains: `LocalVideoFrameSource` samples requested timestamps with `MediaMetadataRetriever`; these requested sample times are not guaranteed to be exact decoded presentation timestamps. Exact timestamp provenance is therefore explicitly tracked, and production physical-speed mode must require exact timestamps until a sequential decoder/source with trustworthy PTS is integrated.
+`LocalVideoFrameSource` still marks video timestamps as `REQUESTED_SAMPLE_TIME`, because indexed frame position does not itself prove exact decoded PTS. Physical-speed mode remains blocked by the exact-timestamp gate until a trustworthy PTS-preserving source is integrated.
 
 ## Pipeline
 `AnalysisPipelineRunner.kt`:
@@ -133,15 +135,57 @@ A current data-quality limitation remains: `LocalVideoFrameSource` samples reque
 - refuses unrelated detection fallback when a track has no current-frame observation;
 - records inference median/P95, processing FPS, total time, frame gaps, tracking input count, association misses and peak active tracks;
 - refuses physical speed unless calibration validation gates pass;
-- rejects unsupported keypoints/OCR/Re-ID/segmentation/optical-flow/rules/evidence requests instead of silently doing nothing.
+- rejects unsupported keypoints/OCR/Re-ID/segmentation/optical-flow requests instead of silently doing nothing;
+- accepts injectable geometry and speed backends. The default remains the Kotlin reference implementation for tests.
 
-`AnalysisEngine.kt` no longer returns an empty fake result for `MediaSource`: a `FrameSourceFactory` is required to create a real source; direct `FrameSource` execution is real.
+`AnalysisEngine.kt` exposes injectable `GroundProjector` and `SpeedEstimatorBackend` implementations while preserving the same shared frame pipeline.
 
-`LocalAnalysisViewModel.kt` and `LocalAnalysisScreen.kt` execute the actual local image/video detector+tracker pipeline. The Lab shows executed metrics and explicit runtime failures. Missing model assets disable real execution.
+## Local video laboratory playback — 2026-09-03
+The original Local Analysis video source used repeated timestamp seeks at a fixed 100 ms interval. That could make a phone video appear to move unusually slowly because every processed frame was obtained through repeated timestamp lookup rather than sequential decoding.
 
-## Live analysis preview
-The Lab now has an `AnalysisPreviewFrame` observer/state path that exposes the actual decoded bitmap, detections, current tracks and live speed estimates to `AnalysisRadarPreview`.
-The preview renderer compile defects were fixed in commit `eaaee7fa...`; the preview must still be validated on a green CI run and a real device. Display throttling may be added later without changing analysis metrics.
+`LocalVideoFrameSource.kt` was changed to use `MediaMetadataRetriever.getFrameAtIndex()` on API 28+ when frame-count metadata is available. The effective source FPS is taken from capture metadata or derived from frame count/duration. The source no longer inserts an artificial 100 ms sampling delay. API 26/27 and codecs that reject indexed decoding retain a timestamp-based fallback, with the fallback timestamp anchored to the current frame index/FPS rather than restarting from zero.
+
+This change deliberately does not label the resulting timestamps as exact PTS. It improves decoding/processing throughput without weakening measurement provenance.
+
+The Local Analysis UI now explicitly reports source FPS separately from processing FPS and tells the operator that visualization is driven by the real processed frames without an intentional playback sleep. A green CI result for the latest commit is still required before treating the implementation as build-verified, and real-device timing must still be measured because detector inference can remain slower than source playback on some phones.
+
+## Live analysis preview and radar — 2026-09-03
+`AnalysisRadarPreview.kt` was upgraded from a basic bounded preview into a video-first operator surface:
+- true full-window analysis dialog with a clear close button;
+- `ContentScale.Fit` video presentation with overlay coordinates computed from the same fit rectangle, preventing bbox drift when the video is enlarged or aspect ratio differs;
+- current track boxes and speed labels at the video layer;
+- tracking-radar visualization with a short history trail per track so motion is visually continuous rather than a set of isolated dots;
+- explicit visual-radar versus metric-radar labeling;
+- full-screen mode reuses the exact current processed frame and track state rather than starting a second analysis process.
+
+This was inspired by the reference project's video-first dashboard philosophy, but no reference code was imported and the project remains Android-only at this stage. The reference repository's demo video URL could not be directly fetched in this environment, so no claim is made that its demo was visually inspected frame-by-frame.
+
+## Native C++/JNI — 2026-09-03
+The native layer remains C++20 and contains robust homography projection and robust speed math exposed through JNI.
+
+New production wiring:
+- `GroundProjector` is injectable in the domain pipeline.
+- `NativeGroundProjector.kt` routes calibrated image-to-road projection through `NativeTrafficCore.projectHomography()` in the Android production Lab path.
+- `SpeedEstimatorBackend` is injectable in the domain pipeline.
+- `NativeFirstSpeedEstimator.kt` routes the calibrated speed hot path through `NativeTrafficCore.estimateRobustSpeed()` and falls back to the Kotlin reference estimator if the native call/linker/result validation fails.
+- Native speed results are range-checked against configured maximum speed and retain explicit duration/sample/confidence/error information; direction is derived from the first/last valid metric points because the existing JNI result contract does not return velocity components.
+- `AnalysisMetrics.speedEstimatorBackend` records the chosen backend name so native use is visible in executed results rather than silent.
+
+The current C++ robust speed algorithm and Kotlin reference algorithm intentionally remain structurally aligned: timestamped metric points, bounded pair gaps, pairwise vector velocities, MAD rejection, robust median velocity and residual/stability confidence. Formal Kotlin/native numerical parity tests are still required before claiming byte-for-byte numerical equivalence.
+
+## Inference acceleration — 2026-09-03
+`LocalAnalysisViewModel.kt` no longer forces CPU for every Lab run. It attempts LiteRT `Accelerator.GPU` first and explicitly constructs a CPU detector if GPU model construction is unsupported. The selected accelerator is shown in the runtime and executed-metrics panels.
+
+This is a performance optimization, not an accuracy claim. GPU success on one device does not imply it will be available or faster on every Android device; a final benchmark must compare CPU/GPU/NPU on the same frames and report median/P95 and end-to-end throughput.
+
+## UI/runtime cleanup — 2026-09-03
+Removed build warnings for direction-sensitive/deprecated Compose APIs:
+- `Icons.Filled.Assignment` → `Icons.AutoMirrored.Filled.Assignment`;
+- `Icons.Filled.Rule` → `Icons.AutoMirrored.Filled.Rule`;
+- `Icons.Filled.ArrowBack` → `Icons.AutoMirrored.Filled.ArrowBack`;
+- old `menuAnchor()` call → current `menuAnchor(ExposedDropdownMenuAnchorType..., enabled = true)` overload.
+
+These changes are non-functional cleanup and should remain separate conceptually from the vision algorithm changes.
 
 ## Plate/OCR
 Current `PlateConsensus` groups OCR readings by track and normalized text and uses exponential recency weighting based on actual timestamps.
@@ -150,9 +194,6 @@ Temporal consensus is not yet a full production plate detector/OCR backend; thos
 
 ## Benchmarks
 `DetectorBenchmark.kt` measures model-run latency with warmup, median and P95. It is not yet a complete device benchmark. Final benchmark must compare CPU/GPU/NPU on the same physical phone, same model, same input frames, and record preprocessing, inference, postprocessing, end-to-end throughput, memory and thermal state.
-
-## C++/JNI
-`android/app/src/main/cpp/` contains C++20 native homography projection and speed primitives plus JNI facade. Native speed is not yet routed into production pipeline because parity with the improved Kotlin estimator has not been proven. Native/OpenCV work comes after parity tests.
 
 ## Offline Python
 `ai/robust_speed.py` mirrors the Android robust speed method and has unit tests.
@@ -177,48 +218,70 @@ Runtime: decode FPS, inference latency, E2E latency, dropped frames, memory and 
 Test conditions should include daylight, dusk/night, glare/shadows, dense traffic, occlusion, multiple lanes, approaching/receding vehicles and varied camera geometry.
 
 ## Current blockers / not yet claimed
-- committed model behavior must be tested on the actual phone;
-- CPU/GPU/NPU real-device benchmark pending;
+- current post-upgrade commit still needs exact CI verification;
+- LiteRT model behavior and GPU acceleration must be tested on the actual phone;
+- GPU fallback currently protects model-construction failures, but runtime GPU failure during inference is surfaced as an analysis error rather than silently replaying with another backend;
+- local video timestamps are still requested/sample time, not proven exact decoded PTS;
+- indexed video decoding improves throughput but does not by itself guarantee realtime analysis on a low-end device;
 - labeled traffic clips and TrackEval report pending;
 - independent physical-speed validation pending;
-- exact decoded PTS source for physical-speed video pending;
-- native/OpenCV production calibration pending;
+- native/OpenCV calibration pending;
+- formal Kotlin/native speed parity tests pending;
 - trained vehicle-keypoint backend and dynamic homography pending;
 - optical flow/segmentation/Re-ID backends pending;
 - plate detector/OCR/rules/evidence persistence pending;
 - final ESP32 hardware/firmware validation pending.
 
 ## Immediate execution order
-1. Finish verification of the current calibration/integration commit and fix every compile/test/lint failure before further feature growth.
-2. Validate the committed LiteRT artifact and tensor contract on the actual Android device.
-3. Build CPU/GPU/NPU benchmark UI and collect physical-device measurements.
-4. Evaluate ByteTrack baseline with TrackEval metrics on labeled traffic sequences.
-5. Replace video requested-sample timestamps with trustworthy decoded PTS for physical-speed mode.
-6. Add native/OpenCV calibration path and parity tests against the current Kotlin fallback.
-7. Add Kotlin/native speed parity tests, then route the hot path to native after parity.
-8. Implement real vehicle-keypoint/dynamic-homography research backend and compare to fixed calibration.
-9. Add OCR, traffic rules, events and evidence persistence with the same reliability gates.
+1. Verify the exact latest feature commit with Android build/tests/lint and Python tests; fix any compiler/API regressions before adding further scope.
+2. Run the Local Analysis Lab on a real phone with a representative phone-recorded traffic clip and record source FPS, processing FPS, inference median/P95 and dropped-frame gaps. Confirm the old slow-motion symptom is removed.
+3. Compare CPU versus GPU on the same phone and source frames; keep whichever is actually faster/stabler, not whichever sounds faster.
+4. Add native/Kotlin numerical parity tests for homography and speed, then tighten the native result contract to include velocity components/residuals if parity supports it.
+5. Improve tracker evaluation on labeled traffic sequences with HOTA/IDF1/MOTA, ID switches and fragmentation. Use the reference repository only for presentation/architecture lessons, not as an algorithmic authority.
+6. Replace requested-sample video timing with a trustworthy decoded PTS source before enabling physical speed on video.
+7. Add native/OpenCV calibration path and parity tests.
+8. Implement real vehicle-keypoint/dynamic-homography research backend and compare it empirically to fixed calibration.
+9. Add plate detector/OCR, rule thresholds, alert feed and evidence image/crop persistence with the existing quality gates.
+10. Implement and validate the ESP32 camera firmware/endpoints and wire the live MJPEG source into the same `FrameSource → AnalysisEngine` path.
 
 ## Conversation / work log — 2026-09-03
 
-### User request
-"حسنا البناء الان نجح الان اكمل العمل هيا اعط اكبر سياق تمتلك واكبر جهد مع التركيز على عدم كتابه اي اخطاء هل فهمت هيا انطلق"
+### User request — integrated build continuation
+User confirmed the Android build now succeeds and requested continued development of the integrated traffic system, especially stronger C++ algorithms, richer radar/tracking, a full-screen Local Analysis video view with an exit button, and a fix for a phone-recorded car video appearing to play extremely slowly in the lab. User also provided `https://github.com/vietanhlee/Smart-Traffic-Monitoring-System.git` as a design/engineering reference, explicitly asking to learn from it without replacing our project architecture.
 
-### Assistant execution record
-- Verified that the previously reported green build corresponded to exact commit `c34f1cf8...`: Run #213 (`33764646784`) had successful Android build/tests/lint and successful offline Python tests.
-- Reviewed the repository tree and confirmed the calibration backend already existed but was not exposed as a usable operator workflow.
-- Added `CalibrationLabScreen.kt` in commit `879aa2b8b2bf46328f1caf70f19e3e488283c31a` with real reference-image point selection, measured ground coordinates, RANSAC calibration building, validation and durable profile storage.
-- Exposed the calibration lab in navigation in commit `1303258645d2ab47eb64f6d4df5da4f9de14de3b`.
-- Added a Camera Calibration entry to the More/Operations hub in commit `bbaf9f9d271496833be91caa682a2c452b312180`.
-- Connected saved calibration profiles into `LocalAnalysisScreen` and injects the selected profile into `AnalysisConfig` in commit `9d86cedf50e8c3a41e9072cae547f15eea3b3b2b`.
-- Added `CalibrationBuilderTest.kt` with an outlier-rejection/validated-profile case and singular/missing-error quality-gate case. The assertions were then corrected for Kotlin operator precedence in commit `7e9dd8f4648d1388c28f15b1ca1181824adb0c6e`.
-- During review, noticed that the calibration UI was calling the stored `meanError` statistic “RMSE”; corrected that mathematical label and wording in commit `91d6d3bc969a1d5d70bb672c32f47c51958588aa`.
-- Local container build could not be run because the environment could not resolve `github.com`; this is an infrastructure limitation, not a project failure.
+### Reference repository review
+- Inspected the reference repository README/tree and its dashboard/frontend structure.
+- The reference project emphasizes YOLO + ByteTrack, realtime/multi-camera monitoring, video-first dashboards and low-latency streaming architecture.
+- Its linked demo video could not be directly fetched in this environment, so it is not represented as a frame-by-frame visual audit.
+- Adopted only the useful presentation/system lessons: video should dominate the operator surface, tracks and telemetry should remain visually coupled to the processed frame, and realtime metrics should distinguish source cadence from actual processing throughput.
+- No source code was copied into Smart-monitoring-system and no backend/WebRTC stack was added merely because the reference repo has one.
 
-### Current exact verification gate
-- Run #219 (`33766357537`) was for commit `7e9dd8f...`; its offline Python job succeeded, while the Android job was still running when the next documentation/label commit superseded it.
-- Current HEAD is `91d6d3bc969a1d5d70bb672c32f47c51958588aa`.
-- Run #220 (`33766595466`) is the exact CI run for current HEAD and must be the only current verification result used for this state. At the last check it was pending; no green result is claimed until its Android build/tests/lint complete.
+### Local video performance work
+- Commit `2a336c9bcfbe9e8c6a73225748bd28fe9d00a7e2`: changed `LocalVideoFrameSource` from fixed 100 ms timestamp sampling to indexed sequential frame decoding on API 28+ and derived source FPS where possible.
+- Commit `736bd038b7eb98f9f872626f933aa411e747031c`: added robust codec fallback from indexed decoding to timestamp sampling and preserved the fallback timeline relative to the current frame index rather than resetting timestamps.
+- The key design decision is to remove the artificial sample interval and avoid repeated random timestamp lookup in the common Android 12+ path, while preserving the existing `REQUESTED_SAMPLE_TIME` provenance gate for physical speed.
+
+### Lab/UI work
+- Commit `9e8692c1a31bb259a50bbaa206b2f59674d11e88`: upgraded `AnalysisRadarPreview` with an immersive full-window dialog, explicit close action, fit-aware bbox overlay mapping and radar history trails.
+- Commit `2bb20706fffec27a660a1f096cf27e1d109f23ef`: expanded `LocalAnalysisScreen` with explicit runtime readiness, source-vs-processing FPS explanation and executed metric panels.
+- Commit `96c2d4027d5714fa278a40fe17744e2bbe825490`: exposed the speed estimator backend and timestamp precision in executed results.
+
+### C++/native production wiring
+- Commit `143f1475cd47af2577bafe01d98fc0d0949b9d7e`: added injectable domain `GroundProjector` with Kotlin reference implementation.
+- Commit `ce73f998c6d5f75d4c8b9e1d0b1ea942e12a1147`: added `NativeGroundProjector` using existing JNI homography math.
+- Commit `53329d00c00ed26c89373b9f17dc4bd103575e1d`: injected `GroundProjector` through `ModularAnalysisEngine` into `AnalysisPipelineRunner`.
+- Commit `7d542a191bf8a2ad74c58cc247068f18cd38c625`: added injectable `SpeedEstimatorBackend` with Kotlin reference implementation.
+- Commit `48f996b33c4acac6ecc064b319fc8ad32359ab22`: added native-first robust speed adapter with Kotlin fallback.
+- Commit `52c6d068913c2dafcce4b41ff3848e4dda049602`: added backend identity/provenance to the speed estimator contract.
+- Commit `264ff06d635a9bcfd62fd48724a8bb62a66cea80`: added `speedEstimatorBackend` to `AnalysisMetrics`.
+- Commit `96eb8a4c03e0154f3b66f35fdd7d2b69139a272f`: routed the selected speed backend through the shared pipeline and recorded its identity in the result.
+- Commit `ec66de51bb62a6c0e26c210ed50914701d6f0f53`: Local Analysis now uses the native ground projector and native-first speed estimator; LiteRT GPU is attempted before CPU.
+- Commit `70f9223c02a9a23745ac6d4d6900c488f010ca9f`: exposed the native-first speed backend name explicitly.
+
+### Runtime acceleration and warning cleanup
+- Local Analysis now attempts `Accelerator.GPU`, falling back to CPU only when GPU detector construction fails. The selected accelerator is visible in the lab state/results.
+- Deprecated Compose APIs were updated in commits `efad674ed41fb6838e942cb3b049b2440953c15e`, `332185946699f687415ac7b4f30f5f83a245401c`, and `360c6629efff8ef9675047f5d0799ba242646ddf`.
+- The codebase should still be validated on the exact feature HEAD because these changes occurred after the last confirmed green baseline.
 
 ### Current stopping point
-The calibration workflow is implemented end-to-end at the app/UI/storage/domain level, with explicit quality gates and regression tests. Physical speed remains protected by calibration and timestamp gates. The exact current CI gate is Run #220 on `91d6d3bc...`; after it is green, the next high-priority work is real-device LiteRT/tensor validation and benchmark instrumentation, followed by TrackEval and exact PTS work.
+The integrated architecture is now stronger than the pre-request state: local video no longer has the known fixed sampling delay in its common path, the Lab has true immersive viewing and smoother radar visualization, LiteRT can use GPU automatically, calibrated geometry is routed through native C++, and calibrated speed can use native C++ with a Kotlin safety fallback. The next hard gate is exact CI verification of the latest HEAD followed by real-device playback/performance validation. No claim is made yet that the phone video runs at realtime speed or that native/Kotlin numerical parity is formally proven.
