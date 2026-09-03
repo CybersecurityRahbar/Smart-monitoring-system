@@ -12,7 +12,7 @@ No Map Widget unless explicitly requested.
 ## Context continuity rule
 `docs/PROJECT_CONTEXT.md` is the cumulative project handoff record. At every meaningful user request and every assistant response/work step, append the new project state, decisions, changes, failures, fixes, verification status and stopping point instead of relying on implicit chat memory.
 The root-level `PROJECT_CONTEXT.md` is intentionally preserved for now and is not the authoritative cumulative log.
-Do not invent historical messages that are no longer available; record only verified historical facts plus new conversation entries verbatim where available.
+Do not invent historical messages that are no longer available; record only verified historical facts plus new conversation entries where available.
 
 ## Architecture
 `Compose UI → ViewModel/StateFlow → Use Cases/Domain → Repositories → Data Sources`
@@ -58,7 +58,8 @@ Recent failures fixed:
 - sdkmanager missing from PATH;
 - LiteRT 2.1.6 duplicate namespace;
 - LiteRT 2.2.0 duplicate namespace under AGP 9, mitigated with compatibility property;
-- preview renderer Compose compile failures fixed in commit `eaaee7fa...` (that run must not be confused with the later reliability failure).
+- preview renderer Compose compile failures fixed in commit `eaaee7fa...` (that run must not be confused with later reliability/build failures);
+- Run #211 (`33763868986`) failed at `compileDebugKotlin` because the newly added bounded-motion parameters were referenced from `InternalTrack` without being in that class's scope.
 
 CI verification rule: only the run for the exact commit under review counts as verification. Cancelled/older runs do not count.
 
@@ -94,9 +95,10 @@ This is not claimed to be byte-for-byte equivalent to the official reference imp
 Future comparison candidates: official/reference ByteTrack behavior, BoT-SORT, OC-SORT and Deep OC-SORT.
 Tracking evaluation target: HOTA plus IDF1/MOTA, ID switches and fragmentation using TrackEval rather than a home-made imitation metric.
 
-### 2026-09-03 reliability fix
-`ByteTrack.kt` now retains the previous observation and, for a short bounded horizon, computes an observed center velocity from the last two timestamped detections. This empirical motion prior is blended with Kalman prediction at a fixed bounded weight and still passes through the existing geometric association gate. It is not an unlimited distance allowance.
-The added test verifies short non-overlap recovery and explicitly rejects a 400 px jump in 100 ms after a prior 8 px/100 ms motion observation.
+### 2026-09-03 bounded motion recovery
+`ByteTrack.kt` now retains the previous timestamped observation and, only for a short bounded horizon, derives an empirical center velocity from the last two detections. The empirical prediction is blended with Kalman prediction before geometric association. The recovery is bounded in time and still subject to the existing center-distance/IoU gate; it is not an unlimited distance allowance.
+Regression coverage includes recovery of the 0 → 8 → 55 px sequence at 100 ms intervals and rejection of an implausible 0 → 8 → 408 px jump.
+The first implementation compiled incorrectly because its new parameters lived on `ByteTrack` while `InternalTrack` could not access outer constructor properties; commit `2835ec1b0449d56413a288576bb08d830b51ae76` fixes this by passing the bounded-motion parameters explicitly into each `InternalTrack`.
 
 ## Geometry/calibration
 `GeometryAndSpeed.kt` provides validated homography projection and robust metric trajectory speed estimation.
@@ -131,7 +133,7 @@ The preview renderer compile defects were fixed in commit `eaaee7fa...`; the pre
 
 ## Plate/OCR
 Current `PlateConsensus` groups OCR readings by track and normalized text and uses exponential recency weighting based on actual timestamps.
-On 2026-09-03 a test expected `ABC123` for readings `0.90@0ms` and `XYZ999` at `0.60@100ms` with half-life 100ms. That expectation was mathematically wrong: weighted support is `0.45` versus `0.60`, so the correct expected winner is `XYZ999` at 100ms. The test was corrected accordingly.
+The original failing test on 2026-09-03 used `ABC123@0ms` at confidence 0.90 and `XYZ999@100ms` at confidence 0.60 with half-life 100ms, but expected `ABC123`. That expectation was mathematically wrong: weighted support is 0.45 versus 0.60, so `XYZ999@100ms` is correct. The test was corrected and an additional test checks that changing frame numbers without changing presentation timestamps does not change the winner.
 Temporal consensus is not yet a full production plate detector/OCR backend; those remain pending.
 
 ## Benchmarks
@@ -163,7 +165,7 @@ Runtime: decode FPS, inference latency, E2E latency, dropped frames, memory and 
 Test conditions should include daylight, dusk/night, glare/shadows, dense traffic, occlusion, multiple lanes, approaching/receding vehicles and varied camera geometry.
 
 ## Current blockers / not yet claimed
-- validated model behavior must be tested on the actual phone;
+- committed model behavior must be tested on the actual phone;
 - CPU/GPU/NPU real-device benchmark pending;
 - labeled traffic clips and TrackEval report pending;
 - independent physical-speed validation pending;
@@ -175,7 +177,7 @@ Test conditions should include daylight, dusk/night, glare/shadows, dense traffi
 - final ESP32 hardware/firmware validation pending.
 
 ## Immediate execution order
-1. Pass CI for the newest reliability/execution commit.
+1. Verify CI for the newest reliability/execution commit `2835ec1b...`.
 2. Fix every compile/test/lint failure before further feature growth.
 3. Validate the committed LiteRT artifact and tensor contract on the actual Android device.
 4. Build CPU/GPU/NPU benchmark UI and collect physical-device measurements.
@@ -191,16 +193,19 @@ Test conditions should include daylight, dusk/night, glare/shadows, dense traffi
 ### User request
 "حسنا اكمل العمل بتفكيرا عميق وتركيزا شديد لا اريد اخطاء او نسيان هل فهمت"
 
-### Work performed
-- Re-read the current cumulative context and treated `docs/PROJECT_CONTEXT.md` as the authoritative project handoff record.
-- Preserved root `PROJECT_CONTEXT.md` as requested; did not delete it.
-- Inspected the failing reliability tests and their production implementations.
-- Corrected the timestamp-weighted plate consensus test: with half-life 100 ms, `XYZ999` has support 0.60 versus 0.45 for `ABC123`.
-- Updated `ByteTrack.kt` with a bounded, timestamp-derived empirical motion prior blended with Kalman prediction.
-- Added a regression test rejecting an implausible 400 px / 100 ms jump after a valid short-motion history.
-- Confirmed `DetectorModelRegistry.kt` currently uses the classic `[1,84,8400]` contract for the committed `yolo26n.tflite` asset and verified the registered SHA-256.
-- Updated this document to correct stale statements about the model asset and to preserve the actual project plan and blockers.
-- Latest workflow for commit `c321020ec307c775b2c8680803e975567e6ffe58` was observed as pending at the time of this entry; it had not yet earned green verification.
+### Assistant execution record
+- Confirmed that future work must continue from the repository state and the cumulative context, not implicit memory.
+- Reviewed the existing reliability failures and source implementations.
+- Preserved root `PROJECT_CONTEXT.md` and used `docs/PROJECT_CONTEXT.md` as the authoritative cumulative handoff file.
+- Identified that the timestamp-weighted plate test expectation was mathematically wrong and corrected it to `XYZ999` at 100 ms.
+- Added a frame-rate/frame-index independence regression test for plate consensus.
+- Inspected `ByteTrack`, `KalmanBoxPredictor` and `LinearAssignment` rather than widening the motion gate blindly.
+- Added bounded empirical motion prediction from the last two timestamped detections and a regression that rejects an implausible 400 px jump.
+- CI Run #211 (`33763868986`) then exposed a new compile-scope error: `InternalTrack` could not see `ByteTrack` constructor parameters `empiricalVelocityHorizonSeconds` and `empiricalVelocityBlend`.
+- Corrected the production code in commit `2835ec1b0449d56413a288576bb08d830b51ae76` by passing both parameters explicitly into each `InternalTrack`.
 
-### Current exact stopping point
-The code fixes and regression tests are committed on `main`. CI for commit `c321020ec307c775b2c8680803e975567e6ffe58` is the next verification gate. No green result is claimed until the exact run completes successfully.
+### Current verification gate
+The exact `2835ec1b...` commit is now the only commit whose CI result matters. The previous Run #211 failure was a compile error on its predecessor, not a valid verification of `2835ec1b`.
+
+### Current stopping point
+Production code and regression tests contain the intended fixes; the next concrete state to record is the CI result for commit `2835ec1b...`. No green build is claimed until GitHub Actions proves it.
