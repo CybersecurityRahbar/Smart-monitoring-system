@@ -142,6 +142,7 @@ data class AnalysisMetrics(
     val plateReads: Long = 0,
     val trafficEvents: Long = 0,
     val homographyReprojectionError: Double? = null,
+    val speedEstimatorBackend: String = "Kotlin reference",
 )
 
 data class AnalysisResult(
