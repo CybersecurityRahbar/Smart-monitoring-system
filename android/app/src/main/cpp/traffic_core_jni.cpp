@@ -36,7 +36,9 @@ Java_com_smarttraffic_app_data_nativecore_NativeTrafficCore_estimateRobustSpeed(
     }
 
     const auto result = smarttraffic::robust_speed(
-        xs, ys, reinterpret_cast<const long long*>(ts),
+        xs,
+        ys,
+        reinterpret_cast<const long long*>(ts),
         static_cast<std::size_t>(count),
         static_cast<std::size_t>(minimumSamples < 2 ? 2 : minimumSamples));
 
@@ -44,13 +46,17 @@ Java_com_smarttraffic_app_data_nativecore_NativeTrafficCore_estimateRobustSpeed(
     env->ReleaseDoubleArrayElements(yMeters, ys, JNI_ABORT);
     env->ReleaseLongArrayElements(timestampsMs, ts, JNI_ABORT);
 
-    const jdouble out[4] = {
+    // [m/s, confidence, uncertainty/error km/h, inlier samples, vx m/s, vy m/s, median residual m]
+    const jdouble out[7] = {
         result.meters_per_second,
         result.confidence,
         result.error_kmh,
         static_cast<jdouble>(result.sample_count),
+        result.velocity_x_mps,
+        result.velocity_y_mps,
+        result.position_residual_meters,
     };
-    jdoubleArray array = env->NewDoubleArray(4);
-    if (array != nullptr) env->SetDoubleArrayRegion(array, 0, 4, out);
+    jdoubleArray array = env->NewDoubleArray(7);
+    if (array != nullptr) env->SetDoubleArrayRegion(array, 0, 7, out);
     return array;
 }
