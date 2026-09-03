@@ -11,6 +11,7 @@ import com.smarttraffic.app.data.analysis.LocalImageFrameSource
 import com.smarttraffic.app.data.analysis.LocalVideoFrameSource
 import com.smarttraffic.app.data.evidence.FileEvidenceStore
 import com.smarttraffic.app.data.tracking.ByteTrack
+import com.smarttraffic.app.data.vision.AppearanceAugmentingDetector
 import com.smarttraffic.app.data.vision.DetectorModelRegistry
 import com.smarttraffic.app.data.vision.LiteRtObjectDetector
 import com.smarttraffic.app.domain.analysis.AnalysisConfig
@@ -81,7 +82,10 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                         accelerator = Accelerator.CPU,
                         inputSize = spec.inputSize,
                         expectedOutput = spec.expectedOutput,
-                    ).use { detector ->
+                    ).use { rawDetector ->
+                        val detector = if (effectiveConfig.useAppearanceAssociation) {
+                            AppearanceAugmentingDetector(rawDetector)
+                        } else rawDetector
                         val frameSource = when (mediaType) {
                             AnalysisMediaType.VIDEO -> LocalVideoFrameSource(app, uri)
                             AnalysisMediaType.IMAGE -> {
