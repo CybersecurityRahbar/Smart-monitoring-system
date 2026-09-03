@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.litert.Accelerator
 import com.smarttraffic.app.data.analysis.LocalImageFrameSource
 import com.smarttraffic.app.data.analysis.LocalVideoFrameSource
+import com.smarttraffic.app.data.evidence.FileEvidenceStore
 import com.smarttraffic.app.data.tracking.ByteTrack
 import com.smarttraffic.app.data.vision.DetectorModelRegistry
 import com.smarttraffic.app.data.vision.LiteRtObjectDetector
@@ -15,7 +16,7 @@ import com.smarttraffic.app.domain.analysis.AnalysisConfig
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewObserver
 import com.smarttraffic.app.domain.analysis.AnalysisResult
-import com.smarttraffic.app.domain.analysis.AnalysisFrame
+import com.smarttraffic.app.domain.analysis.EvidenceRecord
 import com.smarttraffic.app.domain.analysis.ModularAnalysisEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,7 +58,7 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
         activeJob = viewModelScope.launch(Dispatchers.Default) {
             _state.value = AnalysisRunState(
                 phase = AnalysisRunPhase.RUNNING,
-                message = "Running detector, tracker, geometry and live radar…",
+                message = "Running detector, tracker, geometry, rules and live radar…",
             )
             try {
                 val app = getApplication<Application>()
@@ -97,9 +98,11 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                     }
                 }
 
+                if (config.enableEvidence) persistEvidence(app, result)
+
                 _state.value = AnalysisRunState(
                     phase = AnalysisRunPhase.SUCCESS,
-                    message = "Real analysis completed. The preview shows the processed frames; metrics come from the same run.",
+                    message = "Real analysis completed. Results, rules and evidence references came from the same run.",
                     result = result,
                 )
             } catch (t: Throwable) {
@@ -108,6 +111,38 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                     message = t.message ?: t::class.java.simpleName,
                 )
             }
+        }
+    }
+
+    private suspend fun persistEvidence(app: Application, result: AnalysisResult) = withContext(Dispatchers.IO) {
+        if (result.trafficEvents.isEmpty()) return@withContext
+        val store = FileEvidenceStore(app)
+        result.trafficEvents.filter { it.evidenceRequested }.forEach { event ->
+            val track = result.tracks.firstOrNull { it.id == event.trackId }
+            val plate = result.plateReadings
+                .filter { it.trackId == event.trackId && it.timestampMs <= event.timestampMs }
+                .maxByOrNull { it.timestampMs }
+            store.save(
+                EvidenceRecord(
+                    id = event.id,
+                    eventId = event.id,
+                    sourceId = result.source.id,
+                    sourceUri = result.source.uri,
+                    frameIndex = track?.observations?.maxByOrNull { it.timestampMs }?.frameIndex ?: -1L,
+                    timestampMs = event.timestampMs,
+                    eventType = event.type,
+                    measuredSpeedKmh = event.measuredSpeedKmh,
+                    thresholdKmh = event.thresholdKmh,
+                    confidence = event.confidence,
+                    trackId = event.trackId,
+                    plateText = plate?.text,
+                    calibrationId = event.calibrationId,
+                    calibrationVersion = event.calibrationVersion,
+                    detectorModel = event.detectorModel,
+                    tracker = event.tracker,
+                    createdAtMs = System.currentTimeMillis(),
+                ),
+            )
         }
     }
 
