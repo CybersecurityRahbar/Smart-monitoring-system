@@ -278,7 +278,9 @@ private fun AnalysisResultCard(result: AnalysisResult, accelerator: String?) {
             Text("Executed metrics", style = MaterialTheme.typography.titleMedium)
             val m = result.metrics
             MetricRow("Inference backend", accelerator ?: "—")
+            MetricRow("Speed backend", m.speedEstimatorBackend)
             MetricRow("Source FPS", m.decodeFps?.let { "%.2f".format(it) } ?: "—")
+            MetricRow("Timestamp precision", m.timestampPrecision.name)
             MetricRow("Frames", m.framesProcessed.toString())
             MetricRow("Detections", m.detections.toString())
             MetricRow("Tracks", result.tracks.size.toString())
