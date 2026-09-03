@@ -21,6 +21,19 @@ class ByteTrackMotionGateTest {
         assertTrue(recovered.single().observations.last().detection.left >= 55f)
     }
 
+    @Test
+    fun rejectsUnboundedJumpEvenAfterObservedMotionHistory() {
+        val tracker = ByteTrack()
+        tracker.update(listOf(detection(0L, 0f)), 0L, 0L)
+        tracker.update(listOf(detection(1L, 8f)), 1L, 100L)
+
+        // A sudden 400 px displacement in 100 ms is outside the bounded recovery prior.
+        // It must not be absorbed into the existing identity merely because a velocity
+        // estimate is available from two earlier observations.
+        val result = tracker.update(listOf(detection(2L, 408f)), 2L, 200L)
+        assertTrue(result.isEmpty())
+    }
+
     private fun detection(frameIndex: Long, left: Float): Detection = Detection(
         classId = 2,
         className = "car",
