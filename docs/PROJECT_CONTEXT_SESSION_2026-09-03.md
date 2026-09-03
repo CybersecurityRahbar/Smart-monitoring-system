@@ -64,7 +64,7 @@ A deadlock risk was caught during review: an earlier `stop()` implementation hel
 `ExactPtsVideoFrameSource.kt` was added using `MediaExtractor + MediaCodec + ImageReader`.
 It decodes the video sequentially and uses `MediaCodec.BufferInfo.presentationTimeUs` as the frame timestamp. The source is marked `FrameTimestampPrecision.EXACT_SOURCE_CLOCK`, and frame dimension/rotation metadata are retained.
 
-`LocalAnalysisViewModel` now attempts `ExactPtsVideoFrameSource` first for local video. If codec initialization fails, it explicitly falls back to `LocalVideoFrameSource`; the fallback remains `REQUESTED_SAMPLE_TIME`, so the physical-speed gate still blocks measurement-grade speed. No exact-timestamp claim is made for the fallback.
+`LocalAnalysisViewModel` now attempts `ExactPtsVideoFrameSource` first for local video. If codec initialization fails, it explicitly falls back to `LocalVideoFrameSource`; the fallback remains `REQUESTED_SAMPLE_TIME`, so physical speed remains blocked.
 
 Android's current Media3/MediaCodec documentation confirms that decoded output buffers carry an explicit presentation timestamp, which is the temporal field used by this implementation. citeturn554474search0turn554474search1
 
@@ -112,6 +112,24 @@ Only a CI run whose `head_sha` exactly equals the current `main` commit counts a
 Run #282 failed in `Build & Test Android` for exactly one unit test: `RobustSpeedParityTest.variableTimestampsDoNotAssumeFixedFrameCadence`, with an assertion at line 58. The log reports 35 tests completed and 1 failed. The model verification step passed and Kotlin compilation completed/up-to-date, so this was not a source-compilation failure.
 
 A new push for commit `ce2f5ad61e656c755b5599d857e9cb762cea58e4` has now been created to align the Kotlin golden with the native golden. A fresh CI result for this exact commit is still required before declaring the repository green.
+
+## Run #284 lint failure and API compatibility fix — 2026-09-03
+Run #284 (`33784806693`) checked out exact commit `b3a2d736eae230a1a1be4c10c03c76b49bab4420`. Its Android job results were: `assembleDebug` success, `testDebugUnitTest` success, `lintDebug` failure; the Native C++ Parity Vectors job succeeded and the Offline Research Math job succeeded.
+
+The only Android lint error was:
+`LocalVideoFrameSource.kt:107 — Call requires API level 28 (current min is 26): MediaMetadataRetriever#getFramesAtIndex [NewApi]`.
+
+Root cause: `indexDecodeEnabled` was initialized from `Build.VERSION.SDK_INT >= Build.VERSION_CODES.P`, but the API-28 call was inside a helper where Lint could not prove that property invariant was a sufficient call-site guard. The code was logically intended to avoid pre-28 execution, but the API check was not expressed directly at the call site.
+
+Fix applied in `LocalVideoFrameSource.kt` commit `1db16c6a7a66fe934e5c4c45dadda40fcfcb1ace`: `fillBatchIfNeeded()` now performs a direct `Build.VERSION.SDK_INT < Build.VERSION_CODES.P` guard before `getFramesAtIndex()`, disables indexed decoding and returns on Android 26/27. The existing timestamp-based `getFrameAtTime()` path remains the fallback for pre-28 devices and codecs that reject indexed decoding.
+
+The fix intentionally does NOT:
+- raise `minSdk` from 26 to 28;
+- add a Lint baseline;
+- suppress `NewApi` without a runtime guard;
+- change the physical timestamp provenance.
+
+Thus Android 26–27 retain compatibility, while Android 28+ can continue using indexed batch decoding when available.
 
 ## Reliability decisions retained
 - No mock/fake radar animation is used.
