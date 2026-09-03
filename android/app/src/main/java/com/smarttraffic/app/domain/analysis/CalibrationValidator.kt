@@ -14,6 +14,7 @@ object CalibrationValidator {
         expectedWidth: Int? = null,
         expectedHeight: Int? = null,
         maxReprojectionErrorPixels: Double = 2.0,
+        maxReprojectionErrorTargetUnits: Double = 0.25,
         minimumInlierRatio: Double = 0.75,
     ): CalibrationValidation {
         val reasons = ArrayList<String>()
@@ -28,11 +29,22 @@ object CalibrationValidator {
             reasons += "Homography is singular"
         }
 
-        val reprojection = profile.reprojectionErrorPixels
-        if (reprojection == null || !reprojection.isFinite() || reprojection < 0.0) {
-            reasons += "A finite non-negative reprojection error is required"
-        } else if (reprojection > maxReprojectionErrorPixels) {
-            reasons += "Reprojection error exceeds configured gate"
+        val targetError = profile.reprojectionErrorTargetUnits
+        val pixelError = profile.reprojectionErrorPixels
+        if (targetError != null) {
+            if (!targetError.isFinite() || targetError < 0.0) {
+                reasons += "Target-unit reprojection error must be finite and non-negative"
+            } else if (targetError > maxReprojectionErrorTargetUnits) {
+                reasons += "Target-unit reprojection error exceeds configured gate"
+            }
+        } else if (pixelError != null) {
+            if (!pixelError.isFinite() || pixelError < 0.0) {
+                reasons += "Pixel reprojection error must be finite and non-negative"
+            } else if (pixelError > maxReprojectionErrorPixels) {
+                reasons += "Pixel reprojection error exceeds configured gate"
+            }
+        } else {
+            reasons += "A measured reprojection error is required"
         }
 
         val ratio = profile.homographyInlierRatio
