@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import com.smarttraffic.app.core.tr
 import com.smarttraffic.app.features.alerts.AlertsScreen
 import com.smarttraffic.app.features.analysis.LocalAnalysisScreen
+import com.smarttraffic.app.features.calibration.CalibrationLabScreen
 import com.smarttraffic.app.features.dashboard.DashboardScreen
 import com.smarttraffic.app.features.devices.DevicesScreen
 import com.smarttraffic.app.features.evidence.EvidenceScreen
@@ -38,7 +39,7 @@ import com.smarttraffic.app.features.settings.SettingsScreen
 import com.smarttraffic.app.features.watchlist.WatchlistScreen
 
 enum class AppDestination {
-    Dashboard, Radar, Live, Alerts, More, Reports, Analysis, Devices, Rules, Watchlist, Evidence, Settings
+    Dashboard, Radar, Live, Alerts, More, Reports, Analysis, Calibration, Devices, Rules, Watchlist, Evidence, Settings
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -49,6 +50,7 @@ fun AppNavHost() {
     val isNested = destination in setOf(
         AppDestination.Reports,
         AppDestination.Analysis,
+        AppDestination.Calibration,
         AppDestination.Devices,
         AppDestination.Rules,
         AppDestination.Watchlist,
@@ -116,6 +118,7 @@ fun AppNavHost() {
                 paddingValues = paddingValues,
                 onReports = { destination = AppDestination.Reports },
                 onAnalysis = { destination = AppDestination.Analysis },
+                onCalibration = { destination = AppDestination.Calibration },
                 onDevices = { destination = AppDestination.Devices },
                 onRules = { destination = AppDestination.Rules },
                 onWatchlist = { destination = AppDestination.Watchlist },
@@ -124,6 +127,7 @@ fun AppNavHost() {
             )
             AppDestination.Reports -> IncidentReportsScreen(paddingValues)
             AppDestination.Analysis -> LocalAnalysisScreen(paddingValues)
+            AppDestination.Calibration -> CalibrationLabScreen(paddingValues)
             AppDestination.Devices -> DevicesScreen(paddingValues)
             AppDestination.Rules -> TrafficRulesScreen(paddingValues)
             AppDestination.Watchlist -> WatchlistScreen(paddingValues)
@@ -145,6 +149,7 @@ private fun destinationLabel(destination: AppDestination): String = when (destin
 private fun nestedTitle(destination: AppDestination): String = when (destination) {
     AppDestination.Reports -> tr("incidentReports")
     AppDestination.Analysis -> tr("analysisLab")
+    AppDestination.Calibration -> "Camera Calibration"
     AppDestination.Devices -> tr("devices")
     AppDestination.Rules -> tr("rules")
     AppDestination.Watchlist -> tr("watchlist")
