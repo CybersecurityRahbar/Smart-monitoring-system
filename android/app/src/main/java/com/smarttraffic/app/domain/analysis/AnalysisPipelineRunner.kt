@@ -23,6 +23,7 @@ class AnalysisPipelineRunner(
         require(config.minimumSpeedSamples >= 4) { "minimumSpeedSamples must be >= 4" }
         require(config.maxPlausibleSpeedKmh > 0.0) { "maxPlausibleSpeedKmh must be positive" }
         require(config.maxCalibrationReprojectionErrorPixels > 0.0) { "maxCalibrationReprojectionErrorPixels must be positive" }
+        require(config.maxCalibrationReprojectionErrorTargetUnits > 0.0) { "maxCalibrationReprojectionErrorTargetUnits must be positive" }
         require(config.minimumCalibrationInlierRatio in 0.0..1.0) { "minimumCalibrationInlierRatio must be within [0,1]" }
         require(!config.useVehicleKeypoints || keypointEstimator != null) {
             "Vehicle keypoints are enabled but no VehicleKeypointEstimator backend is installed"
@@ -61,6 +62,8 @@ class AnalysisPipelineRunner(
         var peakActiveTracks = 0
         var lastActiveTracks = 0
         var previousFrameIndex: Long? = null
+        var calibrationChecked = false
+        var calibrationReady = false
         val analysisStartNs = System.nanoTime()
 
         try {
@@ -77,6 +80,15 @@ class AnalysisPipelineRunner(
                     }
                 }
                 previousFrameIndex = frame.index
+
+                if (!calibrationChecked) {
+                    calibrationReady = config.useGroundPlane && calibrationAccepted(
+                        config = config,
+                        sourceWidth = frame.width,
+                        sourceHeight = frame.height,
+                    )
+                    calibrationChecked = true
+                }
 
                 val inferenceStartNs = System.nanoTime()
                 val rawDetections = try {
@@ -117,7 +129,7 @@ class AnalysisPipelineRunner(
                     } else emptyList()
 
                     val contact = selectContactPoint(observation.detection, keypoints)
-                    val ground = if (config.useGroundPlane && calibrationAccepted(config)) {
+                    val ground = if (calibrationReady) {
                         runCatching {
                             HomographyProjector(config.calibration!!.homography)
                                 .project(contact.first, contact.second)
@@ -144,7 +156,6 @@ class AnalysisPipelineRunner(
                     }
                 }
 
-                val calibrationReady = config.useGroundPlane && calibrationAccepted(config)
                 if (previewObserver != null) {
                     val bitmap = frame.payload as? android.graphics.Bitmap
                     if (bitmap != null) {
@@ -198,8 +209,7 @@ class AnalysisPipelineRunner(
             )
         }
 
-        val calibrationReady = calibrationAccepted(config)
-        val speedEstimates = if (config.useGroundPlane && calibrationReady) {
+        val speedEstimates = if (calibrationReady) {
             completedTracks.mapNotNull { track ->
                 RobustSpeedEstimator(
                     minimumSamples = config.minimumSpeedSamples,
@@ -209,11 +219,6 @@ class AnalysisPipelineRunner(
             }.toMap()
         } else emptyMap()
 
-        if (config.enableRules && !calibrationReady) {
-            require(!config.trafficRules.enabled) {
-                "Traffic rules are enabled but no validated physical calibration is available"
-            }
-        }
         val trafficEvents = if (config.enableRules) {
             TrafficRuleEngine.evaluate(
                 tracks = completedTracks,
@@ -243,6 +248,7 @@ class AnalysisPipelineRunner(
             plateReadings = PlateConsensus.resolve(plateReadings),
             trafficEvents = trafficEvents,
             metrics = AnalysisMetrics(
+                decodeFps = source.source.frameRate,
                 inferenceLatencyMs = inferenceMedian,
                 inferenceMedianLatencyMs = inferenceMedian,
                 inferenceP95LatencyMs = inferenceP95,
@@ -259,26 +265,32 @@ class AnalysisPipelineRunner(
                 peakActiveTracks = peakActiveTracks,
                 completedTracks = completedTracks.size.toLong(),
                 speedEstimates = speedEstimates.size.toLong(),
-                rejectedSpeedEstimates = (completedTracks.size - speedEstimates.size).toLong().coerceAtLeast(0L),
+                rejectedSpeedEstimates = if (calibrationReady) {
+                    (completedTracks.size - speedEstimates.size).toLong().coerceAtLeast(0L)
+                } else completedTracks.size.toLong(),
                 plateReads = plateReadings.size.toLong(),
                 trafficEvents = trafficEvents.size.toLong(),
-                homographyReprojectionError = config.calibration?.reprojectionErrorPixels,
+                homographyReprojectionError = config.calibration?.reprojectionErrorPixels
+                    ?: config.calibration?.reprojectionErrorTargetUnits,
             ),
         )
     }
 
-    private fun calibrationAccepted(config: AnalysisConfig): Boolean {
+    private fun calibrationAccepted(
+        config: AnalysisConfig,
+        sourceWidth: Int,
+        sourceHeight: Int,
+    ): Boolean {
         val calibration = config.calibration ?: return !config.requireValidatedCalibration
-        if (calibration.imageWidth <= 0 || calibration.imageHeight <= 0) return false
-        if (calibration.homography.size != 9 || calibration.homography.any { !it.isFinite() }) return false
-        if (!config.requireValidatedCalibration) return true
-
-        val reprojection = calibration.reprojectionErrorPixels ?: return false
-        val inlierRatio = calibration.homographyInlierRatio ?: return false
-        return reprojection.isFinite() && reprojection >= 0.0 &&
-            reprojection <= config.maxCalibrationReprojectionErrorPixels &&
-            inlierRatio.isFinite() && inlierRatio in 0.0..1.0 &&
-            inlierRatio >= config.minimumCalibrationInlierRatio
+        val validation = CalibrationValidator.validate(
+            profile = calibration,
+            expectedWidth = sourceWidth,
+            expectedHeight = sourceHeight,
+            maxReprojectionErrorPixels = config.maxCalibrationReprojectionErrorPixels,
+            maxReprojectionErrorTargetUnits = config.maxCalibrationReprojectionErrorTargetUnits,
+            minimumInlierRatio = config.minimumCalibrationInlierRatio,
+        )
+        return validation.accepted
     }
 
     private fun percentile(sorted: List<Double>, p: Double): Double? {
