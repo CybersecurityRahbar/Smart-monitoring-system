@@ -34,7 +34,6 @@ fun IncidentReportsScreen(paddingValues: PaddingValues) {
         "Traffic violation" -> "مخالفة مرورية"
         "Collision" -> "تصادم"
         "Road hazard" -> "خطر على الطريق"
-        "Congestion" -> "ازدحام"
         else -> "أخرى"
     } else value
 
@@ -50,7 +49,16 @@ fun IncidentReportsScreen(paddingValues: PaddingValues) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(tr("newReport"), style = MaterialTheme.typography.titleLarge)
                 ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
-                    OutlinedTextField(value = typeLabel(type), onValueChange = {}, readOnly = true, label = { Text(tr("incidentType")) }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) }, modifier = Modifier.fillMaxWidth().menuAnchor())
+                    OutlinedTextField(
+                        value = typeLabel(type),
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text(tr("incidentType")) },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled = true),
+                    )
                     ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                         incidentTypes.forEach { option -> DropdownMenuItem(text = { Text(typeLabel(option)) }, onClick = { type = option; expanded = false }) }
                     }
@@ -72,20 +80,6 @@ fun IncidentReportsScreen(paddingValues: PaddingValues) {
                     Column { Text(tr("reportRecorded"), style = MaterialTheme.typography.titleMedium); Text(tr("pendingReview"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
             }
-        }
-        Text(tr("recentReports"), style = MaterialTheme.typography.titleLarge)
-        ReportRow("09:42", tr("reportSpeeding"), tr("high"))
-        ReportRow("08:17", tr("reportRoadHazard"), tr("normal"))
-    }
-}
-
-@Composable
-private fun ReportRow(time: String, title: String, priority: String) {
-    Card(shape = RoundedCornerShape(20.dp)) {
-        Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(Icons.Filled.WarningAmber, null, tint = MaterialTheme.colorScheme.tertiary)
-            Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.titleMedium); Text("${tr("today")} • $time", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            Text(priority, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
