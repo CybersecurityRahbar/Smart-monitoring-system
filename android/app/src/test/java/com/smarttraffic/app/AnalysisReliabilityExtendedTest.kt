@@ -27,10 +27,10 @@ class AnalysisReliabilityExtendedTest {
             minimumSupport = 0.0,
         ).single()
 
-        // With real timestamps, the second observation is one half-life newer, but
-        // the high-confidence first reading still has greater weighted support.
-        assertEquals("ABC123", resolved.text)
-        assertEquals(0L, resolved.timestampMs)
+        // The newest reading is one half-life newer, so its weighted support is 0.60
+        // versus 0.45 for the older reading. The winner must therefore be XYZ999.
+        assertEquals("XYZ999", resolved.text)
+        assertEquals(100L, resolved.timestampMs)
     }
 
     @Test
@@ -107,7 +107,6 @@ class AnalysisReliabilityExtendedTest {
                 imageWidth = 1920,
                 imageHeight = 1080,
                 homography = listOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-                reprojectionErrorTargetUnits = 0.05,
                 homographyInlierCount = 12,
                 homographyInlierRatio = 1.0,
             ),
