@@ -56,6 +56,7 @@ class AnalysisPipelineRunner(
         var peakActiveTracks = 0
         var lastActiveTracks = 0
         var previousFrameIndex: Long? = null
+        var previousTimestampMs: Long? = null
         var calibrationChecked = false
         var calibrationReady = false
         val analysisStartNs = System.nanoTime()
@@ -73,7 +74,13 @@ class AnalysisPipelineRunner(
                         droppedFrames += frame.index - previous - 1L
                     }
                 }
+                previousTimestampMs?.let { previous ->
+                    require(frame.timestampMs >= previous) {
+                        "Frame timestamps must be monotonic: previous=$previous current=${frame.timestampMs}"
+                    }
+                }
                 previousFrameIndex = frame.index
+                previousTimestampMs = frame.timestampMs
 
                 if (!calibrationChecked) {
                     calibrationReady = config.useGroundPlane && calibrationAccepted(
@@ -122,8 +129,11 @@ class AnalysisPipelineRunner(
 
                     val contact = selectContactPoint(observation.detection, keypoints)
                     val ground = if (calibrationReady) {
+                        val calibration = requireNotNull(config.calibration) {
+                            "Calibration was accepted without a calibration profile"
+                        }
                         runCatching {
-                            HomographyProjector(config.calibration!!.homography).project(contact.first, contact.second)
+                            HomographyProjector(calibration.homography).project(contact.first, contact.second)
                         }.getOrElse { error ->
                             throw IllegalStateException(
                                 "Ground-plane projection failed at frame=${frame.index}, track=${track.id}",
@@ -228,7 +238,6 @@ class AnalysisPipelineRunner(
         val sortedInference = inferenceSamples.sorted()
         val inferenceMedian = percentile(sortedInference, 0.50)
         val inferenceP95 = percentile(sortedInference, 0.95)
-
         val rejectedSpeedEstimates = if (physicalSpeedAllowed) {
             (completedTracks.size - speedEstimates.size).toLong().coerceAtLeast(0L)
         } else completedTracks.size.toLong()
@@ -275,7 +284,7 @@ class AnalysisPipelineRunner(
     }
 
     private fun calibrationAccepted(config: AnalysisConfig, sourceWidth: Int, sourceHeight: Int): Boolean {
-        val calibration = config.calibration ?: return !config.requireValidatedCalibration
+        val calibration = config.calibration ?: return false
         val validation = CalibrationValidator.validate(
             profile = calibration,
             expectedWidth = sourceWidth,
@@ -299,9 +308,7 @@ class AnalysisPipelineRunner(
     private fun selectContactPoint(detection: Detection, keypoints: List<VehicleKeypoint>): Pair<Double, Double> {
         val learned = keypoints
             .filter { it.confidence >= 0.50f && it.x.isFinite() && it.y.isFinite() }
-            .firstOrNull {
-                it.name.lowercase() in setOf("ground_contact", "contact", "footprint", "rear_contact", "front_contact")
-            }
+            .firstOrNull { it.name.lowercase() in setOf("ground_contact", "contact", "footprint", "rear_contact", "front_contact") }
         return if (learned != null) learned.x to learned.y
         else ((detection.left + detection.right) / 2.0) to detection.bottom.toDouble()
     }
