@@ -73,7 +73,14 @@ class ByteTrack(
 
         high.forEach { indexed ->
             if (indexed.index in matchedDetectionIndices) return@forEach
-            val track = InternalTrack(nextId++, indexed.value, frameIndex, timestampMs)
+            val track = InternalTrack(
+                id = nextId++,
+                initial = indexed.value,
+                initialFrameIndex = frameIndex,
+                initialTimestampMs = timestampMs,
+                empiricalVelocityHorizonSeconds = empiricalVelocityHorizonSeconds,
+                empiricalVelocityBlend = empiricalVelocityBlend,
+            )
             track.hits = 1
             track.matched = true
             tracks[track.id] = track
@@ -167,6 +174,8 @@ class ByteTrack(
         initial: Detection,
         initialFrameIndex: Long,
         initialTimestampMs: Long,
+        private val empiricalVelocityHorizonSeconds: Double,
+        private val empiricalVelocityBlend: Double,
     ) {
         var lastDetection = initial
         private var previousDetection: Detection? = null
@@ -214,11 +223,13 @@ class ByteTrack(
             if (!velocityX.isFinite() || !velocityY.isFinite()) return kalmanPrediction
 
             val displacementSeconds = min(dtSeconds, empiricalVelocityHorizonSeconds)
+            val displacementX = (velocityX * displacementSeconds).toFloat()
+            val displacementY = (velocityY * displacementSeconds).toFloat()
             val observedPrediction = ByteTrackBox(
-                left = lastBox.left + (velocityX * displacementSeconds).toFloat(),
-                top = lastBox.top + (velocityY * displacementSeconds).toFloat(),
-                right = lastBox.right + (velocityX * displacementSeconds).toFloat(),
-                bottom = lastBox.bottom + (velocityY * displacementSeconds).toFloat(),
+                left = lastBox.left + displacementX,
+                top = lastBox.top + displacementY,
+                right = lastBox.right + displacementX,
+                bottom = lastBox.bottom + displacementY,
             )
             val blend = empiricalVelocityBlend.toFloat()
             return ByteTrackBox(
