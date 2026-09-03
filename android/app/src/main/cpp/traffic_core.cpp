@@ -46,6 +46,10 @@ double percentile(std::vector<double> values, double probability) {
     return values[lower] + (values[upper] - values[lower]) * (position - static_cast<double>(lower));
 }
 
+SpeedResult invalid_speed_result(int samples = 0) {
+    return {0.0, 0.0, 0.0, samples, 0.0, 0.0, 0.0};
+}
+
 }  // namespace
 
 Point2d project_homography(const double* h9, double x, double y) {
@@ -74,7 +78,7 @@ SpeedResult robust_speed(const double* x_meters,
                          std::size_t minimum_samples) {
     if (x_meters == nullptr || y_meters == nullptr || timestamps_ms == nullptr ||
         count < minimum_samples || count < 2U) {
-        return {0.0, 0.0, 0.0, static_cast<int>(count)};
+        return invalid_speed_result(static_cast<int>(count));
     }
 
     std::vector<TimedPoint> points;
@@ -84,14 +88,14 @@ SpeedResult robust_speed(const double* x_meters,
         points.push_back({x_meters[i], y_meters[i], timestamps_ms[i]});
     }
     if (points.size() < minimum_samples) {
-        return {0.0, 0.0, 0.0, static_cast<int>(points.size())};
+        return invalid_speed_result(static_cast<int>(points.size()));
     }
     std::stable_sort(points.begin(), points.end(), [](const TimedPoint& a, const TimedPoint& b) {
         return a.timestamp_ms < b.timestamp_ms;
     });
 
     const long long duration_ms = points.back().timestamp_ms - points.front().timestamp_ms;
-    if (duration_ms <= 0) return {0.0, 0.0, 0.0, 0};
+    if (duration_ms <= 0) return invalid_speed_result();
 
     std::vector<PairVelocity> slopes;
     slopes.reserve(points.size() * 8U);
@@ -112,7 +116,7 @@ SpeedResult robust_speed(const double* x_meters,
 
     const std::size_t minimum_pairs = std::max<std::size_t>(6U, minimum_samples * 2U);
     if (slopes.size() < minimum_pairs) {
-        return {0.0, 0.0, 0.0, static_cast<int>(slopes.size())};
+        return invalid_speed_result(static_cast<int>(slopes.size()));
     }
 
     std::vector<double> speeds;
@@ -133,25 +137,22 @@ SpeedResult robust_speed(const double* x_meters,
         if (std::abs(slope.speed - speed_median) <= gate) inliers.push_back(slope);
     }
     if (inliers.size() < minimum_pairs) {
-        return {0.0, 0.0, 0.0, static_cast<int>(inliers.size())};
+        return invalid_speed_result(static_cast<int>(inliers.size()));
     }
 
     std::vector<double> vx_values;
     std::vector<double> vy_values;
-    std::vector<double> inlier_speed_values;
     vx_values.reserve(inliers.size());
     vy_values.reserve(inliers.size());
-    inlier_speed_values.reserve(inliers.size());
     for (const auto& slope : inliers) {
         vx_values.push_back(slope.vx);
         vy_values.push_back(slope.vy);
-        inlier_speed_values.push_back(slope.speed);
     }
     const double vx = median(vx_values);
     const double vy = median(vy_values);
     const double speed = std::hypot(vx, vy);
     if (!std::isfinite(speed) || speed > kMaxPlausibleSpeedKmh / 3.6) {
-        return {0.0, 0.0, 0.0, static_cast<int>(inliers.size())};
+        return invalid_speed_result(static_cast<int>(inliers.size()));
     }
 
     const double median_t = [&points]() {
@@ -203,7 +204,15 @@ SpeedResult robust_speed(const double* x_meters,
         kMadScale * velocity_mad * 2.0,
         p90_residual / std::max(static_cast<double>(duration_ms) / 1000.0, 0.1));
 
-    return {speed, confidence, uncertainty_mps * 3.6, static_cast<int>(inliers.size())};
+    return {
+        speed,
+        confidence,
+        uncertainty_mps * 3.6,
+        static_cast<int>(inliers.size()),
+        vx,
+        vy,
+        median_residual,
+    };
 }
 
 }  // namespace smarttraffic
