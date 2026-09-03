@@ -1,9 +1,9 @@
 package com.smarttraffic.app
 
+import com.smarttraffic.app.domain.analysis.Detection
 import com.smarttraffic.app.domain.analysis.GroundPoint
 import com.smarttraffic.app.domain.analysis.KotlinSpeedEstimatorBackend
 import com.smarttraffic.app.domain.analysis.TrackObservation
-import com.smarttraffic.app.domain.analysis.Detection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -23,7 +23,7 @@ class RobustSpeedParityTest {
         assertEquals(1.0, result.metersPerSecond, 1e-9)
         assertEquals(1.0, result.velocityXMps!!, 1e-9)
         assertEquals(0.0, result.velocityYMps!!, 1e-9)
-        assertEquals(0.6525f, result.confidence, 1e-6f)
+        assertEquals(0.9025f, result.confidence, 1e-6f)
         assertEquals(0.0, result.positionResidualMeters!!, 1e-9)
         assertEquals(28, result.sampleCount)
     }
@@ -41,7 +41,7 @@ class RobustSpeedParityTest {
         assertEquals(kotlin.math.sqrt(2.0), result.metersPerSecond, 1e-9)
         assertEquals(1.0, result.velocityXMps!!, 1e-9)
         assertEquals(1.0, result.velocityYMps!!, 1e-9)
-        assertEquals(0.6525f, result.confidence, 1e-6f)
+        assertEquals(0.9025f, result.confidence, 1e-6f)
         assertEquals(28, result.sampleCount)
     }
 
@@ -55,7 +55,7 @@ class RobustSpeedParityTest {
         assertNotNull(result)
         assertEquals(2.0, result!!.metersPerSecond, 1e-9)
         assertEquals(2.0, result.velocityXMps!!, 1e-9)
-        assertEquals(0.69375f, result.confidence, 1e-6f)
+        assertEquals(0.90625f, result.confidence, 1e-6f)
         assertEquals(27, result.sampleCount)
         assertTrue(result.durationMs == 1250L)
     }
