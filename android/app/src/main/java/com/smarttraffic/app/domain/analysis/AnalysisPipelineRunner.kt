@@ -277,6 +277,7 @@ class AnalysisPipelineRunner(
                 trafficEvents = trafficEvents.size.toLong(),
                 homographyReprojectionError = config.calibration?.reprojectionErrorPixels
                     ?: config.calibration?.reprojectionErrorTargetUnits,
+                speedEstimatorBackend = speedEstimator.name,
             ),
         )
     }
