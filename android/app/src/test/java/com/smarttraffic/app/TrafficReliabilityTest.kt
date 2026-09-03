@@ -133,6 +133,26 @@ class TrafficReliabilityTest {
     }
 
     @Test
+    fun byteTrackRecoversFastMotionWithoutBoxOverlapButRejectsImpossibleJump() {
+        val tracker = ByteTrack()
+        tracker.update(listOf(detection(0, 0f, width = 10f, confidence = 0.95f)), 0L, 0L)
+        tracker.update(listOf(detection(1, 11f, width = 10f, confidence = 0.95f)), 1L, 100L)
+        val recovered = tracker.update(listOf(detection(2, 22f, width = 10f, confidence = 0.95f)), 2L, 200L)
+
+        assertEquals(1, recovered.size)
+        assertEquals(1L, recovered.single().id)
+
+        val fresh = ByteTrack()
+        fresh.update(listOf(detection(0, 0f, width = 10f, confidence = 0.95f)), 0L, 0L)
+        val impossible = fresh.update(
+            listOf(detection(1, 1000f, width = 10f, confidence = 0.95f)),
+            1L,
+            100L,
+        )
+        assertTrue(impossible.isEmpty())
+    }
+
+    @Test
     fun pipelineReportsFrameGapsAndProducesMeasuredSpeed() = runBlocking {
         val frames = (0..19).filter { it != 5 }.map { index ->
             AnalysisFrame(index.toLong(), index * 100L, index, 1920, 1080)
@@ -203,19 +223,6 @@ class TrafficReliabilityTest {
 
         assertTrue(result.speedEstimates.isEmpty())
         assertEquals(1L, result.metrics.rejectedSpeedEstimates)
-    }
-
-    @Test
-    fun byteTrackDoesNotConfirmTrackWhenBoxesHaveNoOverlap() {
-        val tracker = ByteTrack()
-        tracker.update(listOf(detection(0, 0f, width = 10f, confidence = 0.95f)), 0L, 0L)
-        val tracks = tracker.update(
-            listOf(detection(1, 10f, width = 10f, confidence = 0.95f)),
-            1L,
-            100L,
-        )
-
-        assertTrue(tracks.isEmpty())
     }
 
     private fun detection(
