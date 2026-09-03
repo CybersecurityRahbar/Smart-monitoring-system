@@ -11,11 +11,11 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Assignment
+import androidx.compose.material.icons.automirrored.filled.Rule
 import androidx.compose.material.icons.filled.Analytics
-import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.DevicesOther
 import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.Rule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -54,11 +54,11 @@ fun OperationsHubScreen(
         }
 
         val items = listOf(
-            HubItem("reports", "incidentReports", Icons.Filled.Assignment, onReports),
+            HubItem("reports", "incidentReports", Icons.AutoMirrored.Filled.Assignment, onReports),
             HubItem("analysis", "analysisLab", Icons.Filled.Analytics, onAnalysis),
             HubItem("calibration", "cameraCalibration", Icons.Filled.Tune, onCalibration),
             HubItem("devices", "devices", Icons.Filled.DevicesOther, onDevices),
-            HubItem("rules", "rules", Icons.Filled.Rule, onRules),
+            HubItem("rules", "rules", Icons.AutoMirrored.Filled.Rule, onRules),
             HubItem("watchlist", "watchlist", Icons.Filled.VerifiedUser, onWatchlist),
             HubItem("evidence", "evidence", Icons.Filled.PhotoLibrary, onEvidence),
             HubItem("settings", "settings", Icons.Filled.Settings, onSettings),
