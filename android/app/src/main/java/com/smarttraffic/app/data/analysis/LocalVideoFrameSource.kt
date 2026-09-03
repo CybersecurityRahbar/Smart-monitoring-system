@@ -82,9 +82,12 @@ class LocalVideoFrameSource(
             bitmap = try {
                 retriever.getFrameAtIndex(currentIndex.toInt())
             } catch (_: RuntimeException) {
-                // A few codecs expose frame-count metadata but cannot seek by index. Once this
-                // happens, fall back to timestamp sampling rather than aborting the whole lab run.
+                // Some codecs expose frame-count metadata but cannot decode by index. Continue
+                // from this same source position using timestamp sampling rather than failing.
                 indexDecodeEnabled = false
+                nextTimestampUs = sequentialFrameRate?.let {
+                    (currentIndex.toDouble() * 1_000_000.0 / it).roundToLong().coerceAtLeast(0L)
+                } ?: nextTimestampUs
                 null
             }
 
