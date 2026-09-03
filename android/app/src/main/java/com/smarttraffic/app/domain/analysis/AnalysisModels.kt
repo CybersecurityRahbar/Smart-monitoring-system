@@ -2,15 +2,11 @@ package com.smarttraffic.app.domain.analysis
 
 /** Timestamp provenance for physical measurements. */
 enum class FrameTimestampPrecision {
-    /** Source timestamps come from the actual media/camera presentation clock. */
     EXACT_SOURCE_CLOCK,
-    /** Timestamp identifies the requested/nominal sample time, not the decoded PTS. */
     REQUESTED_SAMPLE_TIME,
-    /** The source did not establish a sufficient timestamp contract. */
     UNKNOWN,
 }
 
-/** Stable identity of the media/camera source entering the analysis engine. */
 data class MediaSource(
     val id: String,
     val uri: String,
@@ -30,6 +26,8 @@ data class Detection(
     val bottom: Float,
     val frameIndex: Long,
     val timestampMs: Long,
+    /** Optional deterministic appearance cue computed from the vehicle crop. */
+    val appearanceSignature: FloatArray? = null,
 )
 
 data class GroundPoint(
@@ -40,12 +38,7 @@ data class GroundPoint(
     val reprojectionErrorMeters: Double? = null,
 )
 
-data class VehicleKeypoint(
-    val name: String,
-    val x: Double,
-    val y: Double,
-    val confidence: Float,
-)
+data class VehicleKeypoint(val name: String, val x: Double, val y: Double, val confidence: Float)
 
 data class TrackObservation(
     val frameIndex: Long,
@@ -73,7 +66,6 @@ data class SpeedEstimate(
     val velocityYMps: Double? = null,
     val directionDegrees: Double? = null,
     val positionResidualMeters: Double? = null,
-    /** Estimated uncertainty/dispersion, not ground-truth error. */
     val errorKmh: Double? = null,
 )
 
@@ -119,6 +111,7 @@ data class AnalysisConfig(
     val useOpticalFlowRefinement: Boolean = false,
     val useSegmentationRefinement: Boolean = false,
     val useReIdentification: Boolean = false,
+    val useAppearanceAssociation: Boolean = true,
     val enablePlateRecognition: Boolean = false,
     val enableRules: Boolean = false,
     val trafficRules: TrafficRuleConfig = TrafficRuleConfig(),
