@@ -3,7 +3,7 @@ package com.smarttraffic.app.navigation
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Notifications
@@ -78,7 +78,7 @@ fun AppNavHost() {
                     title = { Text(nestedTitle(destination)) },
                     navigationIcon = {
                         IconButton(onClick = ::navigateBackInApp) {
-                            Icon(Icons.Filled.ArrowBack, contentDescription = tr("back"))
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("back"))
                         }
                     },
                 )
@@ -98,9 +98,10 @@ fun AppNavHost() {
                                     AppDestination.Radar -> Icons.Filled.Speed
                                     AppDestination.Live -> Icons.Filled.Videocam
                                     AppDestination.Alerts -> Icons.Filled.Notifications
-                                    else -> Icons.Filled.MoreHoriz
+                                    AppDestination.More -> Icons.Filled.MoreHoriz
+                                    else -> Icons.Filled.Dashboard
                                 },
-                                contentDescription = null,
+                                contentDescription = destinationLabel(item),
                             )
                         },
                         label = { Text(destinationLabel(item)) },
@@ -110,12 +111,12 @@ fun AppNavHost() {
         },
     ) { paddingValues ->
         when (destination) {
-            AppDestination.Dashboard -> DashboardScreen(paddingValues, onReports = { destination = AppDestination.Reports })
+            AppDestination.Dashboard -> DashboardScreen(paddingValues, onOpenRadar = { destination = AppDestination.Radar }, onOpenLive = { destination = AppDestination.Live }, onOpenAnalysis = { destination = AppDestination.Analysis })
             AppDestination.Radar -> IntelligentRadarScreen(paddingValues)
             AppDestination.Live -> LiveCameraScreen(paddingValues)
             AppDestination.Alerts -> AlertsScreen(paddingValues)
             AppDestination.More -> OperationsHubScreen(
-                paddingValues = paddingValues,
+                paddingValues,
                 onReports = { destination = AppDestination.Reports },
                 onAnalysis = { destination = AppDestination.Analysis },
                 onCalibration = { destination = AppDestination.Calibration },
@@ -137,23 +138,23 @@ fun AppNavHost() {
     }
 }
 
-private fun destinationLabel(destination: AppDestination): String = when (destination) {
-    AppDestination.Dashboard -> tr("dashboard")
-    AppDestination.Radar -> tr("radar")
-    AppDestination.Live -> tr("live")
-    AppDestination.Alerts -> tr("alerts")
-    AppDestination.More -> tr("more")
-    else -> destination.name
+private fun nestedTitle(destination: AppDestination): String = when (destination) {
+    AppDestination.Reports -> "Incident Reports"
+    AppDestination.Analysis -> "Local Analysis Lab"
+    AppDestination.Calibration -> "Camera Calibration"
+    AppDestination.Devices -> "Devices"
+    AppDestination.Rules -> "Traffic Rules"
+    AppDestination.Watchlist -> "Watchlist"
+    AppDestination.Evidence -> "Evidence"
+    AppDestination.Settings -> "Settings"
+    else -> ""
 }
 
-private fun nestedTitle(destination: AppDestination): String = when (destination) {
-    AppDestination.Reports -> tr("incidentReports")
-    AppDestination.Analysis -> tr("analysisLab")
-    AppDestination.Calibration -> "Camera Calibration"
-    AppDestination.Devices -> tr("devices")
-    AppDestination.Rules -> tr("rules")
-    AppDestination.Watchlist -> tr("watchlist")
-    AppDestination.Evidence -> tr("evidence")
-    AppDestination.Settings -> tr("settings")
-    else -> destinationLabel(destination)
+private fun destinationLabel(destination: AppDestination): String = when (destination) {
+    AppDestination.Dashboard -> "Dashboard"
+    AppDestination.Radar -> "Radar"
+    AppDestination.Live -> "Live"
+    AppDestination.Alerts -> "Alerts"
+    AppDestination.More -> "More"
+    else -> nestedTitle(destination)
 }
