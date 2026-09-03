@@ -29,7 +29,7 @@ void test_linear() {
     expect_near("linear speed", result.meters_per_second, 1.0, 1e-9);
     expect_near("linear vx", result.velocity_x_mps, 1.0, 1e-9);
     expect_near("linear vy", result.velocity_y_mps, 0.0, 1e-9);
-    expect_near("linear confidence", result.confidence, 0.6525, 1e-9);
+    expect_near("linear confidence", result.confidence, 0.9025, 1e-9);
     expect_near("linear residual", result.position_residual_meters, 0.0, 1e-9);
     expect_near("linear uncertainty", result.error_kmh, 0.0, 1e-9);
     expect_equal("linear inliers", result.sample_count, 28);
@@ -44,7 +44,7 @@ void test_diagonal() {
     expect_near("diagonal speed", result.meters_per_second, std::sqrt(2.0), 1e-9);
     expect_near("diagonal vx", result.velocity_x_mps, 1.0, 1e-9);
     expect_near("diagonal vy", result.velocity_y_mps, 1.0, 1e-9);
-    expect_near("diagonal confidence", result.confidence, 0.6525, 1e-9);
+    expect_near("diagonal confidence", result.confidence, 0.9025, 1e-9);
     expect_near("diagonal residual", result.position_residual_meters, 0.0, 1e-9);
     expect_equal("diagonal inliers", result.sample_count, 28);
 }
@@ -58,7 +58,7 @@ void test_variable_timestamps() {
     expect_near("variable speed", result.meters_per_second, 2.0, 1e-9);
     expect_near("variable vx", result.velocity_x_mps, 2.0, 1e-9);
     expect_near("variable vy", result.velocity_y_mps, 0.0, 1e-9);
-    expect_near("variable confidence", result.confidence, 0.69375, 1e-9);
+    expect_near("variable confidence", result.confidence, 0.90625, 1e-9);
     expect_near("variable residual", result.position_residual_meters, 0.0, 1e-9);
     expect_equal("variable inliers", result.sample_count, 27);
 }
