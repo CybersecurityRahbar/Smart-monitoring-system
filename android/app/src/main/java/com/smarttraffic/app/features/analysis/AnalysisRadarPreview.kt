@@ -18,8 +18,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
@@ -34,6 +38,13 @@ fun AnalysisRadarPreview(
 ) {
     if (preview == null) return
 
+    val primary = MaterialTheme.colorScheme.primary
+    val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
+    val background = MaterialTheme.colorScheme.background
+    val outline = MaterialTheme.colorScheme.outlineVariant
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
+
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Card(shape = RoundedCornerShape(22.dp)) {
             Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -47,13 +58,13 @@ fun AnalysisRadarPreview(
                         Text(
                             "Frame ${preview.frame.index} • ${preview.frame.timestampMs} ms • ${preview.tracks.size} active track(s)",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = onSurfaceVariant,
                         )
                     }
                     Text(
                         if (preview.calibrated) "METRIC RADAR" else "VISUAL RADAR",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = primary,
                     )
                 }
 
@@ -62,10 +73,10 @@ fun AnalysisRadarPreview(
                     Modifier
                         .fillMaxWidth()
                         .aspectRatio(ratio)
-                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(16.dp)),
+                        .background(surfaceVariant, RoundedCornerShape(16.dp)),
                 ) {
                     Image(
-                        bitmap = preview.bitmap.asImageBitmapCompat(),
+                        bitmap = preview.bitmap.asImageBitmap(),
                         contentDescription = "Analyzed video frame",
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.FillBounds,
@@ -83,34 +94,81 @@ fun AnalysisRadarPreview(
                             val right = d.right * sx
                             val bottom = d.bottom * sy
                             drawRoundRect(
-                                color = MaterialTheme.colorScheme.primary,
+                                color = primary,
                                 topLeft = Offset(left, top),
-                                size = androidx.compose.ui.geometry.Size(right - left, bottom - top),
-                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(12f, 12f),
+                                size = Size(
+                                    (right - left).coerceAtLeast(0f),
+                                    (bottom - top).coerceAtLeast(0f),
+                                ),
+                                cornerRadius = CornerRadius(12f, 12f),
                                 style = Stroke(width = 3f),
                             )
-                            val label = buildString {
-                                append("#")
-                                append(track.id)
-                                append(' ')
-                                append(track.className)
-                                preview.speedEstimates[track.id]?.let { speed ->
-                                    append(" • ")
-                                    append("%.1f km/h".format(speed.kilometersPerHour))
-                                }
-                            }
-                            drawLabel(label, Offset(left + 4f, max(16f, top - 5f)))
                         }
                     }
+                    PreviewLabels(
+                        preview = preview,
+                        modifier = Modifier.fillMaxSize(),
+                        textColor = onSurface,
+                        backgroundColor = surfaceVariant,
+                    )
                 }
             }
         }
-        RadarPanel(preview)
+        RadarPanel(
+            preview = preview,
+            primary = primary,
+            surfaceVariant = surfaceVariant,
+            background = background,
+            outline = outline,
+            onSurfaceVariant = onSurfaceVariant,
+        )
     }
 }
 
 @Composable
-private fun RadarPanel(preview: AnalysisPreviewFrame) {
+private fun PreviewLabels(
+    preview: AnalysisPreviewFrame,
+    modifier: Modifier,
+    textColor: Color,
+    backgroundColor: Color,
+) {
+    Box(modifier) {
+        preview.tracks.forEach { track ->
+            val observation = track.observations.lastOrNull { it.frameIndex == preview.frame.index }
+                ?: track.observations.lastOrNull()
+                ?: return@forEach
+            val d = observation.detection
+            val label = buildString {
+                append("#")
+                append(track.id)
+                append(' ')
+                append(track.className)
+                preview.speedEstimates[track.id]?.let { speed ->
+                    append(" • ")
+                    append("%.1f km/h".format(speed.kilometersPerHour))
+                }
+            }
+            Box(
+                Modifier
+                    .padding(start = (d.left / preview.frame.width * 1000f).dp, top = (d.top / preview.frame.height * 1000f).dp)
+                    .background(backgroundColor.copy(alpha = 0.82f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 5.dp, vertical = 2.dp),
+            ) {
+                Text(label, color = textColor, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RadarPanel(
+    preview: AnalysisPreviewFrame,
+    primary: Color,
+    surfaceVariant: Color,
+    background: Color,
+    outline: Color,
+    onSurfaceVariant: Color,
+) {
     Card(shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -118,30 +176,28 @@ private fun RadarPanel(preview: AnalysisPreviewFrame) {
                 Text(
                     if (preview.calibrated) "ground-plane coordinates" else "image-space visualization",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = onSurfaceVariant,
                 )
             }
             Box(
                 Modifier
                     .fillMaxWidth()
                     .aspectRatio(1.75f)
-                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(16.dp)),
+                    .background(surfaceVariant, RoundedCornerShape(16.dp)),
             ) {
                 Canvas(Modifier.fillMaxSize()) {
-                    drawRect(
-                        brush = Brush.linearGradient(
-                            listOf(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.background),
-                        ),
-                    )
+                    drawRect(background)
                     for (i in 1..4) {
                         val x = size.width * i / 5f
                         val y = size.height * i / 5f
-                        drawLine(MaterialTheme.colorScheme.outlineVariant, Offset(x, 0f), Offset(x, size.height), 1f)
-                        drawLine(MaterialTheme.colorScheme.outlineVariant, Offset(0f, y), Offset(size.width, y), 1f)
+                        drawLine(outline, Offset(x, 0f), Offset(x, size.height), 1f, cap = StrokeCap.Round)
+                        drawLine(outline, Offset(0f, y), Offset(size.width, y), 1f, cap = StrokeCap.Round)
                     }
 
                     val points = preview.tracks.mapNotNull { track ->
-                        val o = track.observations.lastOrNull() ?: return@mapNotNull null
+                        val o = track.observations.lastOrNull { it.frameIndex == preview.frame.index }
+                            ?: track.observations.lastOrNull()
+                            ?: return@mapNotNull null
                         val ground = o.groundPoint
                         if (ground != null) RadarPoint(track, ground.xMeters, ground.yMeters)
                         else {
@@ -162,41 +218,61 @@ private fun RadarPanel(preview: AnalysisPreviewFrame) {
                         points.forEach { point ->
                             val px = (((point.x - minX) / rangeX) * 0.82 + 0.09) * size.width
                             val py = ((1.0 - (point.y - minY) / rangeY) * 0.82 + 0.09) * size.height
-                            drawCircle(MaterialTheme.colorScheme.primary, 8f, Offset(px.toFloat(), py.toFloat()))
-                            drawCircle(MaterialTheme.colorScheme.background, 8f, Offset(px.toFloat(), py.toFloat()), style = Stroke(2f))
-                            val speed = preview.speedEstimates[point.track.id]
-                            val text = buildString {
-                                append("#")
-                                append(point.track.id)
-                                speed?.let { append("  "); append("%.1f".format(it.kilometersPerHour)); append(" km/h") }
-                            }
-                            drawLabel(text, Offset(px.toFloat() + 10f, py.toFloat() - 4f))
+                            drawCircle(primary, 8f, Offset(px.toFloat(), py.toFloat()))
+                            drawCircle(background, 8f, Offset(px.toFloat(), py.toFloat()), style = Stroke(2f))
                         }
                     }
                 }
+                RadarLabels(
+                    preview = preview,
+                    modifier = Modifier.fillMaxSize(),
+                    primary = primary,
+                    background = background,
+                    onSurfaceVariant = onSurfaceVariant,
+                )
             }
             if (!preview.calibrated) {
                 Text(
                     "Radar follows the tracked vehicle visually. Metric position and speed remain blocked until validated road calibration is supplied.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = onSurfaceVariant,
                 )
             }
         }
     }
 }
 
-private data class RadarPoint(val track: Track, val x: Double, val y: Double)
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLabel(text: String, anchor: Offset) {
-    drawContext.canvas.nativeCanvas.apply {
-        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = 30f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
+@Composable
+private fun RadarLabels(
+    preview: AnalysisPreviewFrame,
+    modifier: Modifier,
+    primary: Color,
+    background: Color,
+    onSurfaceVariant: Color,
+) {
+    Box(modifier) {
+        preview.tracks.forEach { track ->
+            val observation = track.observations.lastOrNull { it.frameIndex == preview.frame.index }
+                ?: track.observations.lastOrNull()
+                ?: return@forEach
+            val d = observation.detection
+            val x = ((d.left + d.right) * 0.5 / preview.frame.width * 0.82 + 0.09)
+            val y = (1.0 - d.bottom / preview.frame.height.toDouble()) * 0.82 + 0.09
+            val label = buildString {
+                append("#")
+                append(track.id)
+                preview.speedEstimates[track.id]?.let { append(" • %.1f km/h".format(it.kilometersPerHour)) }
+            }
+            Box(
+                Modifier
+                    .padding(start = (x * 320f).dp, top = (y * 175f).dp)
+                    .background(background.copy(alpha = 0.82f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+            ) {
+                Text(label, color = onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+            }
         }
-        drawText(text, anchor.x, anchor.y, paint)
     }
 }
 
-private fun android.graphics.Bitmap.asImageBitmapCompat(): androidx.compose.ui.graphics.ImageBitmap =
-    androidx.compose.ui.graphics.asImageBitmap()
+private data class RadarPoint(val track: Track, val x: Double, val y: Double)
