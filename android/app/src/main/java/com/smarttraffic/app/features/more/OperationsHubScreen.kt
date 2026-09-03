@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.DevicesOther
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Rule
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -35,6 +36,7 @@ fun OperationsHubScreen(
     paddingValues: PaddingValues,
     onReports: () -> Unit,
     onAnalysis: () -> Unit,
+    onCalibration: () -> Unit,
     onDevices: () -> Unit,
     onRules: () -> Unit,
     onWatchlist: () -> Unit,
@@ -54,6 +56,7 @@ fun OperationsHubScreen(
         val items = listOf(
             HubItem("reports", "incidentReports", Icons.Filled.Assignment, onReports),
             HubItem("analysis", "analysisLab", Icons.Filled.Analytics, onAnalysis),
+            HubItem("calibration", "cameraCalibration", Icons.Filled.Tune, onCalibration),
             HubItem("devices", "devices", Icons.Filled.DevicesOther, onDevices),
             HubItem("rules", "rules", Icons.Filled.Rule, onRules),
             HubItem("watchlist", "watchlist", Icons.Filled.VerifiedUser, onWatchlist),
@@ -71,7 +74,10 @@ fun OperationsHubScreen(
                 Card(onClick = item.onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                     Column(Modifier.padding(17.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
                         Icon(item.icon, null, tint = MaterialTheme.colorScheme.primary)
-                        Text(tr(item.labelKey), style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (item.key == "calibration") "Camera Calibration" else tr(item.labelKey),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
                         Text(tr("open"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
