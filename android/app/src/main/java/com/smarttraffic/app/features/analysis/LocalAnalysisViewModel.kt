@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.litert.Accelerator
+import com.smarttraffic.app.core.TrafficRulePreferences
 import com.smarttraffic.app.data.analysis.LocalImageFrameSource
 import com.smarttraffic.app.data.analysis.LocalVideoFrameSource
 import com.smarttraffic.app.data.evidence.FileEvidenceStore
@@ -62,7 +63,13 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
             )
             try {
                 val app = getApplication<Application>()
-                val spec = DetectorModelRegistry.requireSpec(config.detectorModel)
+                val persistedRules = TrafficRulePreferences.load(app)
+                val effectiveConfig = config.copy(
+                    enableRules = config.enableRules || persistedRules.enabled,
+                    trafficRules = persistedRules,
+                    enableEvidence = config.enableEvidence || persistedRules.preserveEvidence,
+                )
+                val spec = DetectorModelRegistry.requireSpec(effectiveConfig.detectorModel)
                 if (!DetectorModelRegistry.isInstalled(app, spec)) {
                     error("Detector model is not installed: ${spec.assetPath}")
                 }
@@ -94,11 +101,11 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                             detector = detector,
                             tracker = ByteTrack(),
                             previewObserver = observer,
-                        ).analyze(frameSource, config)
+                        ).analyze(frameSource, effectiveConfig)
                     }
                 }
 
-                if (config.enableEvidence) persistEvidence(app, result)
+                if (effectiveConfig.enableEvidence) persistEvidence(app, result)
 
                 _state.value = AnalysisRunState(
                     phase = AnalysisRunPhase.SUCCESS,
@@ -119,16 +126,19 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
         val store = FileEvidenceStore(app)
         result.trafficEvents.filter { it.evidenceRequested }.forEach { event ->
             val track = result.tracks.firstOrNull { it.id == event.trackId }
+            val nearestObservation = track?.observations?.minByOrNull {
+                kotlin.math.abs(it.timestampMs - event.timestampMs)
+            }
             val plate = result.plateReadings
-                .filter { it.trackId == event.trackId && it.timestampMs <= event.timestampMs }
-                .maxByOrNull { it.timestampMs }
+                .filter { it.trackId == event.trackId }
+                .minByOrNull { kotlin.math.abs(it.timestampMs - event.timestampMs) }
             store.save(
                 EvidenceRecord(
                     id = event.id,
                     eventId = event.id,
                     sourceId = result.source.id,
                     sourceUri = result.source.uri,
-                    frameIndex = track?.observations?.maxByOrNull { it.timestampMs }?.frameIndex ?: -1L,
+                    frameIndex = nearestObservation?.frameIndex ?: -1L,
                     timestampMs = event.timestampMs,
                     eventType = event.type,
                     measuredSpeedKmh = event.measuredSpeedKmh,
