@@ -57,7 +57,6 @@ class ByteTrack(
             matchedDetectionIndices += match.detection.index
         }
 
-        // Second association: unmatched existing tracks with lower-confidence detections.
         associate(
             tracks.values.filter { !it.matched && it.hits > 0 },
             low,
@@ -69,7 +68,6 @@ class ByteTrack(
 
         tracks.values.forEach { if (!it.matched) it.markLost() }
 
-        // New identities are created only from unmatched high-confidence observations.
         high.forEach { indexed ->
             if (indexed.index in matchedDetectionIndices) return@forEach
             val track = InternalTrack(nextId++, indexed.value, frameIndex, timestampMs)
@@ -81,8 +79,6 @@ class ByteTrack(
         val iterator = tracks.iterator()
         while (iterator.hasNext()) {
             val track = iterator.next().value
-            // Single-frame false positives are discarded immediately. Confirmed tracks
-            // may survive temporary detector misses/occlusion up to maxLostFrames.
             if ((track.hits == 1 && track.lostFrames > 0) || track.lostFrames > maxLostFrames) {
                 iterator.remove()
             } else {
@@ -130,8 +126,7 @@ class ByteTrack(
     /**
      * Prediction-first association gate. A valid Kalman prediction is preferred because
      * it preserves motion-based identity through close interactions. When prediction
-     * falls below the configured gate (for example while the filter is still converging
-     * or after a short frame gap), the latest measured box is used as a bounded fallback.
+     * falls below the configured gate, the latest measured box is used as a bounded fallback.
      */
     private fun associationIou(
         track: InternalTrack,
@@ -158,6 +153,7 @@ class ByteTrack(
         var lastDetection = initial
         var predicted = ByteTrackBox(initial)
         private val filter = KalmanBoxPredictor(predicted)
+        private val history = ArrayList<TrackObservation>()
         var hits = 0
         var lostFrames = 0
         var matched = false
@@ -165,6 +161,10 @@ class ByteTrack(
         var confidenceEma = initial.confidence
         var lastFrameIndex = initialFrameIndex
         var lastTimestampMs = initialTimestampMs
+
+        init {
+            history += TrackObservation(initialFrameIndex, initialTimestampMs, initial)
+        }
 
         fun predictTo(frameIndex: Long, timestampMs: Long) {
             matched = false
@@ -188,6 +188,7 @@ class ByteTrack(
             confidenceEma = 0.80f * confidenceEma + 0.20f * detection.confidence
             lastFrameIndex = frameIndex
             lastTimestampMs = timestampMs
+            history += TrackObservation(frameIndex, timestampMs, detection)
         }
 
         fun markLost() {
@@ -198,7 +199,7 @@ class ByteTrack(
         fun toDomainTrack(frameIndex: Long, timestampMs: Long): Track = Track(
             id = id,
             className = lastDetection.className,
-            observations = listOf(TrackObservation(frameIndex, timestampMs, lastDetection)),
+            observations = history.toList(),
             trackConfidence = confidenceEma.coerceIn(0f, 1f),
             wasOccluded = everOccluded,
         )
