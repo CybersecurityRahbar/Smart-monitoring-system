@@ -53,8 +53,8 @@ class MjpegFrameSource(
                     val sequence = producedSequence.incrementAndGet()
                     frames.trySend(FramePacket(sequence, bitmap))
                 }
-            } catch (_: CancellationException) {
-                throw _
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Throwable) {
                 frames.close(error)
             } finally {
