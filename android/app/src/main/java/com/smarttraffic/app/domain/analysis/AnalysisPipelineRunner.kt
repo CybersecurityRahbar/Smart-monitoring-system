@@ -9,6 +9,7 @@ class AnalysisPipelineRunner(
     private val tracker: MultiObjectTracker,
     private val keypointEstimator: VehicleKeypointEstimator? = null,
     private val plateRecognizer: PlateRecognizer? = null,
+    private val previewObserver: AnalysisPreviewObserver? = null,
 ) {
     suspend fun run(source: FrameSource, config: AnalysisConfig): AnalysisResult {
         require(config.trackerInputMinimumConfidence in 0f..1f) { "trackerInputMinimumConfidence must be within [0,1]" }
@@ -141,6 +142,42 @@ class AnalysisPipelineRunner(
                         plateRecognizer!!.recognize(frame.payload, observation.detection)?.let { reading ->
                             plateReadings += reading.copy(trackId = reading.trackId ?: track.id)
                         }
+                    }
+                }
+
+                val calibrationReady = config.useGroundPlane && calibrationAccepted(config)
+                if (previewObserver != null) {
+                    val bitmap = frame.payload as? android.graphics.Bitmap
+                    if (bitmap != null) {
+                        val liveTracks = tracks.mapNotNull { track ->
+                            val buffer = trackBuffers[track.id] ?: return@mapNotNull null
+                            Track(
+                                id = buffer.id,
+                                className = buffer.className,
+                                observations = buffer.observations.toList(),
+                                trackConfidence = buffer.confidenceSamples.average().toFloat().coerceIn(0f, 1f),
+                                wasOccluded = buffer.wasOccluded,
+                            )
+                        }
+                        val liveSpeeds = if (calibrationReady) {
+                            liveTracks.mapNotNull { liveTrack ->
+                                RobustSpeedEstimator(
+                                    minimumSamples = config.minimumSpeedSamples,
+                                    minimumDurationMs = config.minimumTrackDurationMs,
+                                    maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
+                                ).estimate(liveTrack.observations)?.let { liveTrack.id to it }
+                            }.toMap()
+                        } else emptyMap()
+                        previewObserver.onFrame(
+                            AnalysisPreviewFrame(
+                                frame = frame,
+                                bitmap = bitmap,
+                                detections = reportableDetections,
+                                tracks = liveTracks,
+                                speedEstimates = liveSpeeds,
+                                calibrated = calibrationReady,
+                            ),
+                        )
                     }
                 }
             }
