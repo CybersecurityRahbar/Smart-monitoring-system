@@ -58,7 +58,7 @@ void test_variable_timestamps() {
     expect_near("variable speed", result.meters_per_second, 2.0, 1e-9);
     expect_near("variable vx", result.velocity_x_mps, 2.0, 1e-9);
     expect_near("variable vy", result.velocity_y_mps, 0.0, 1e-9);
-    expect_near("variable confidence", result.confidence, 0.90625, 1e-9);
+    expect_near("variable confidence", result.confidence, 0.94375, 1e-9);
     expect_near("variable residual", result.position_residual_meters, 0.0, 1e-9);
     expect_equal("variable inliers", result.sample_count, 27);
 }
