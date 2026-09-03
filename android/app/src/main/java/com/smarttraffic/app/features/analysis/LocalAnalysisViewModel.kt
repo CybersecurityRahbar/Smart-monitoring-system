@@ -12,7 +12,10 @@ import com.smarttraffic.app.data.tracking.ByteTrack
 import com.smarttraffic.app.data.vision.DetectorModelRegistry
 import com.smarttraffic.app.data.vision.LiteRtObjectDetector
 import com.smarttraffic.app.domain.analysis.AnalysisConfig
+import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
+import com.smarttraffic.app.domain.analysis.AnalysisPreviewObserver
 import com.smarttraffic.app.domain.analysis.AnalysisResult
+import com.smarttraffic.app.domain.analysis.AnalysisFrame
 import com.smarttraffic.app.domain.analysis.ModularAnalysisEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,30 +34,36 @@ data class AnalysisRunState(
     val result: AnalysisResult? = null,
 )
 
-/** Runs the real local-video/image pipeline; missing capabilities fail explicitly. */
+/** Runs the real local-video/image pipeline and streams processed frames to the laboratory preview. */
 class LocalAnalysisViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(AnalysisRunState())
     val state: StateFlow<AnalysisRunState> = _state.asStateFlow()
+
+    private val _preview = MutableStateFlow<AnalysisPreviewFrame?>(null)
+    val preview: StateFlow<AnalysisPreviewFrame?> = _preview.asStateFlow()
+
     private var activeJob: Job? = null
 
     fun reset() {
         activeJob?.cancel()
         activeJob = null
+        _preview.value = null
         _state.value = AnalysisRunState()
     }
 
     fun run(uri: Uri, mediaType: AnalysisMediaType, config: AnalysisConfig) {
         if (activeJob?.isActive == true) return
+        _preview.value = null
         activeJob = viewModelScope.launch(Dispatchers.Default) {
             _state.value = AnalysisRunState(
                 phase = AnalysisRunPhase.RUNNING,
-                message = "Loading validated on-device detector and media source…",
+                message = "Running detector, tracker, geometry and live radar…",
             )
             try {
                 val app = getApplication<Application>()
                 val spec = DetectorModelRegistry.requireSpec(config.detectorModel)
                 if (!DetectorModelRegistry.isInstalled(app, spec)) {
-                    error("Detector model is not installed: ${spec.assetPath}. Add the validated LiteRT artifact before running real inference.")
+                    error("Detector model is not installed: ${spec.assetPath}")
                 }
 
                 val result = withContext(Dispatchers.Default) {
@@ -75,16 +84,22 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                                 LocalImageFrameSource(bitmap, uri.toString())
                             }
                         }
+
+                        val observer = AnalysisPreviewObserver { previewFrame ->
+                            _preview.value = previewFrame
+                        }
+
                         ModularAnalysisEngine(
                             detector = detector,
                             tracker = ByteTrack(),
+                            previewObserver = observer,
                         ).analyze(frameSource, config)
                     }
                 }
 
                 _state.value = AnalysisRunState(
                     phase = AnalysisRunPhase.SUCCESS,
-                    message = "Real analysis completed. Metrics below come from the executed pipeline.",
+                    message = "Real analysis completed. The preview shows the processed frames; metrics come from the same run.",
                     result = result,
                 )
             } catch (t: Throwable) {
