@@ -1,9 +1,9 @@
 package com.smarttraffic.app.data.nativecore
 
+import com.smarttraffic.app.domain.analysis.KotlinSpeedEstimatorBackend
 import com.smarttraffic.app.domain.analysis.SpeedEstimate
 import com.smarttraffic.app.domain.analysis.SpeedEstimatorBackend
 import com.smarttraffic.app.domain.analysis.TrackObservation
-import com.smarttraffic.app.domain.analysis.KotlinSpeedEstimatorBackend
 import kotlin.math.atan2
 import kotlin.math.hypot
 
@@ -12,6 +12,8 @@ import kotlin.math.hypot
  * runtime/linker problem cannot turn a valid analysis into an untrusted zero-speed result.
  */
 class NativeFirstSpeedEstimator : SpeedEstimatorBackend {
+    override val name: String = "Native C++ (Kotlin fallback)"
+
     override fun estimate(
         observations: List<TrackObservation>,
         minimumSamples: Int,
@@ -27,7 +29,7 @@ class NativeFirstSpeedEstimator : SpeedEstimatorBackend {
                 if (!ground.xMeters.isFinite() || !ground.yMeters.isFinite()) return@mapNotNull null
                 Triple(ground.xMeters, ground.yMeters, observation.timestampMs)
             }
-            .distinctBy { it.third to it.first to it.second }
+            .distinctBy { point -> Triple(point.third, point.first, point.second) }
             .toList()
 
         if (points.size < minimumSamples) return null
