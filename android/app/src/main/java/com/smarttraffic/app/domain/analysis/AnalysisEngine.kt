@@ -41,6 +41,7 @@ class ModularAnalysisEngine(
     private val plateRecognizer: PlateRecognizer? = null,
     private val frameSourceFactory: FrameSourceFactory? = null,
     private val previewObserver: AnalysisPreviewObserver? = null,
+    private val groundProjector: GroundProjector = KotlinGroundProjector,
 ) : AnalysisEngine {
     private val runner = AnalysisPipelineRunner(
         detector = detector,
@@ -48,6 +49,7 @@ class ModularAnalysisEngine(
         keypointEstimator = keypoints,
         plateRecognizer = plateRecognizer,
         previewObserver = previewObserver,
+        groundProjector = groundProjector,
     )
 
     override suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult {
