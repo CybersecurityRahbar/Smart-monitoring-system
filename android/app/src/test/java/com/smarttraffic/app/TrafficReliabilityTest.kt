@@ -114,8 +114,10 @@ class TrafficReliabilityTest {
         val tracks = tracker.update(second, 1L, 100L)
 
         assertEquals(2, tracks.size)
-        val leftTrack = tracks.first { it.observations.single().detection.left < 10f }
-        val rightTrack = tracks.first { it.observations.single().detection.left > 30f }
+        val leftTrack = tracks.first { it.observations.last().detection.left < 10f }
+        val rightTrack = tracks.first { it.observations.last().detection.left > 30f }
+        assertTrue(leftTrack.observations.size >= 2)
+        assertTrue(rightTrack.observations.size >= 2)
         assertEquals(1L, leftTrack.id)
         assertEquals(2L, rightTrack.id)
     }
@@ -179,7 +181,7 @@ class TrafficReliabilityTest {
     fun pipelineRefusesUnvalidatedCalibrationForPhysicalSpeed() = runBlocking {
         val detector = object : ObjectDetector {
             override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> =
-                listOf(detection(frameIndex, frameIndex * 10f, confidence = 0.95f, width = 40f))
+                listOf(detection(frameIndex, frameIndex * 10f, confidence = 0.95f))
         }
         val source = SyntheticFrameSource((0L..19L).map { index ->
             AnalysisFrame(index, index * 100L, index, 1920, 1080)
