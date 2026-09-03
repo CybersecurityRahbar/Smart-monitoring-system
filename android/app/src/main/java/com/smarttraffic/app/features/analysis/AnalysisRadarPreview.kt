@@ -56,7 +56,6 @@ fun AnalysisRadarPreview(
     val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
     val background = MaterialTheme.colorScheme.background
     val outline = MaterialTheme.colorScheme.outlineVariant
-    val onSurface = MaterialTheme.colorScheme.onSurface
     val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
     if (fullscreen) {
@@ -209,18 +208,6 @@ private fun VideoFrameWithTracks(
                     cornerRadius = CornerRadius(12f, 12f),
                     style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f),
                 )
-                val speed = preview.speedEstimates[track.id]?.kilometersPerHour
-                val label = buildString {
-                    append("#${track.id} ${track.className}")
-                    speed?.let { append(" • %.1f km/h".format(it)) }
-                }
-                val labelWidth = (label.length * 7f + 14f).coerceAtMost(max(80f, right - left + 20f))
-                drawRoundRect(
-                    color = Color.Black.copy(alpha = 0.70f),
-                    topLeft = Offset(left, (top - 24f).coerceAtLeast(offsetY)),
-                    size = Size(labelWidth, 22f),
-                    cornerRadius = CornerRadius(6f, 6f),
-                )
             }
         }
         if (showClose) {
@@ -334,50 +321,12 @@ private fun RadarPanel(
                         }
                     }
                 }
-                RadarLabels(
-                    preview = preview,
-                    modifier = Modifier.fillMaxSize(),
-                    background = background,
-                    onSurfaceVariant = onSurfaceVariant,
-                )
             }
             if (!preview.calibrated) {
                 Text(
                     "Radar follows tracked history. Metric position and speed remain blocked until validated road calibration is supplied.",
                     style = MaterialTheme.typography.bodySmall,
                     color = onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun RadarLabels(
-    preview: AnalysisPreviewFrame,
-    modifier: Modifier,
-    background: Color,
-    onSurfaceVariant: Color,
-) {
-    Box(modifier) {
-        preview.tracks.forEach { track ->
-            val observation = track.observations.lastOrNull { it.frameIndex == preview.frame.index }
-                ?: track.observations.lastOrNull()
-                ?: return@forEach
-            val d = observation.detection
-            val x = ((d.left + d.right) * 0.5 / preview.frame.width * 0.82 + 0.09)
-            val y = (1.0 - d.bottom / preview.frame.height.toDouble()) * 0.82 + 0.09
-            Surface(
-                modifier = Modifier
-                    .padding(start = (x * 1000f).dp, top = (y * 560f).dp),
-                color = background.copy(alpha = 0.80f),
-                shape = RoundedCornerShape(6.dp),
-            ) {
-                Text(
-                    "#${track.id}" + (preview.speedEstimates[track.id]?.let { " • %.1f".format(it.kilometersPerHour) } ?: ""),
-                    color = onSurfaceVariant,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
         }
