@@ -1,7 +1,9 @@
 package com.smarttraffic.app.domain.analysis
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +39,7 @@ data class AnalysisSessionState(
  */
 class UnifiedAnalysisSession(
     private val scope: CoroutineScope,
+    private val executionDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     private val mutex = Mutex()
     private val _state = MutableStateFlow(AnalysisSessionState())
@@ -63,7 +66,7 @@ class UnifiedAnalysisSession(
             accelerator = accelerator,
         )
 
-        activeJob = scope.launch {
+        activeJob = scope.launch(executionDispatcher) {
             _state.value = AnalysisSessionState(
                 phase = AnalysisSessionPhase.RUNNING,
                 message = "Running the shared detector, tracker, geometry and radar pipeline…",
@@ -103,16 +106,19 @@ class UnifiedAnalysisSession(
     }
 
     fun publishPreview(frame: AnalysisPreviewFrame) {
-        _state.value = _state.value.copy(
-            phase = AnalysisSessionPhase.RUNNING,
-            preview = frame,
-        )
+        if (activeJob?.isActive == true) {
+            _state.value = _state.value.copy(
+                phase = AnalysisSessionPhase.RUNNING,
+                preview = frame,
+            )
+        }
     }
 
     suspend fun stop() = mutex.withLock {
         val job = activeJob ?: return@withLock
         runCatching { activeSource?.close() }
         job.cancel()
+        job.join()
         activeJob = null
         activeSource = null
         runCatching { activeCloseable?.close() }
