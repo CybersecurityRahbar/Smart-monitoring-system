@@ -1,6 +1,7 @@
 # Smart Traffic Monitoring System — Persistent Conversation / Engineering Context
 
 Last updated: 2026-09-03
+Current HEAD: 42190a49ce8a49bc0780557432d30617eccb9fe4
 Branch: main
 
 ## Mission
@@ -34,14 +35,12 @@ A second board was found: ESP32-S3-CAM N16R8 with OV5640CSP; physical pin mappin
 - android.uniquePackageNames=false retained as compatibility workaround for LiteRT 2.2.0 duplicate namespace packaging.
 
 ## Detector
-Official YOLO26n LiteRT asset is committed at:
-android/app/src/main/assets/models/yolo26n.tflite
+Official YOLO26n LiteRT asset is committed at android/app/src/main/assets/models/yolo26n.tflite.
 SHA-256: d9cef07ce652ccfa9ce58e4ac8a4df98ff037739a9dad20a8afcae21b545df73
 Size: 2,875,553 bytes.
 Registry contract: 640x640 NCHW RGB, FP32 activations, classic YOLO output [1,84,8400], COCO traffic classes car=2, motorcycle=3, bus=5, truck=7. Build task verifyYolo26nModel verifies the exact SHA-256.
 
-## Analysis pipeline state
-Implemented:
+## Analysis pipeline — implemented
 - strict frame index ordering and gap metrics
 - detector error propagation (no silent inference fallback)
 - two-stage high/low-confidence tracking
@@ -55,101 +54,90 @@ Implemented:
 - RANSAC homography fitting
 - robust median/MAD speed estimator
 - calibration quality gates
-- temporal plate consensus using actual reading timestamps
+- timestamp provenance and physical-speed timestamp gate
+- temporal plate consensus using timestamps
 - traffic rule evaluation from measured speed
 - persistent evidence records
 - live processed-frame preview and radar in Analysis Lab
+- shared persisted traffic-rule configuration
 
-Explicitly NOT yet installed as production backends:
+## Explicitly NOT installed as production backends
 - learned appearance Re-ID
 - optical-flow refinement
 - vehicle keypoint/pose model
 - dynamic keypoint homography
 - segmentation refinement
-- plate detector + OCR backend integrated into Android
-- true decoder PTS frame source
-- production evidence image/crop extraction and export
+- Android plate detector + OCR backend
+- true decoder PTS-preserving video source
+- production evidence image/crop extraction/export
 
 ## Reliability rules
 1. Pixel displacement is never physical speed.
 2. Physical speed requires validated metric calibration.
-3. Physical speed also requires exact source timestamps when configured with requireExactTimestampsForPhysicalSpeed=true.
+3. Physical speed requires exact source timestamps when requireExactTimestampsForPhysicalSpeed=true.
 4. A computed number is not a trusted measurement until all quality gates pass.
 5. Calibration must have finite non-singular homography, measured reprojection error, and sufficient inlier ratio.
-6. Detector/tracker failure must surface as an error or explicit rejected result.
-7. Tracking appearance is only a secondary cue; geometry remains mandatory.
-8. Accuracy claims require annotated ground truth and metrics such as precision/recall and MOT-style ID metrics; speed requires reference measurements.
+6. Detector/tracker failure must surface as an error or explicit rejection.
+7. Appearance is only a secondary cue; geometry remains mandatory.
+8. Accuracy claims require annotated ground truth; tracking should use IDF1/HOTA/MOTA/ID switches and speed requires reference measurements.
 
 ## Timestamp provenance
-FrameTimestampPrecision values:
-- EXACT_SOURCE_CLOCK
-- REQUESTED_SAMPLE_TIME
-- UNKNOWN
-LocalVideoFrameSource currently uses MediaMetadataRetriever sampling and marks the source as REQUESTED_SAMPLE_TIME because requested sample time is not equivalent to decoded PTS. Therefore configured exact-timestamp physical-speed runs are blocked for this source. A sequential MediaExtractor/MediaCodec source with actual presentation timestamps is required before claiming exact video speed timing.
+FrameTimestampPrecision values: EXACT_SOURCE_CLOCK, REQUESTED_SAMPLE_TIME, UNKNOWN.
+LocalVideoFrameSource currently uses MediaMetadataRetriever sampling and must not be treated as exact PTS. Therefore exact-timestamp physical-speed runs are blocked for this source until a MediaExtractor/MediaCodec-style source supplies actual presentation timestamps.
 
 ## Calibration
 CalibrationBuilder creates versioned profiles from image/ground correspondences to metric ground points using RANSAC homography and stores target-unit reprojection error + inlier statistics.
 CalibrationStore persists profiles locally.
-CalibrationValidator checks dimensions, homography validity, reprojection error, inlier ratio, and minimum inlier count.
+CalibrationValidator checks dimensions, homography validity, reprojection error, inlier ratio and minimum inlier count.
 
 ## Tracking
-ByteTrack.kt is intentionally described as ByteTrack-inspired, not reference-equivalent. Current association order:
-- IoU with Kalman prediction
-- IoU with last measured box
-- bounded predicted-center distance gate
-- optional deterministic appearance cue when both detections contain signatures
-No learned Re-ID claim is allowed until a real embedding model/backend is installed and benchmarked.
+ByteTrack.kt is ByteTrack-inspired, not reference-equivalent. Association uses predicted/measured IoU, bounded motion recovery, and optional deterministic appearance similarity. No learned Re-ID claim is allowed until a real embedding model/backend is installed and benchmarked.
 
 ## Appearance signature
-AppearanceSignature is a deterministic 2x2 spatial RGB histogram (8 bins/channel) used only as a secondary identity cue. AppearanceAugmentingDetector can compute it from Bitmap crops. It must not be described as a neural Re-ID embedding.
+AppearanceSignature is a deterministic 2x2 spatial RGB histogram with 8 bins/channel. AppearanceAugmentingDetector can compute it from Bitmap crops. It is not a neural Re-ID embedding.
 
 ## Plates / OCR
-PlateReading contains timestampMs. PlateConsensus uses temporal weighting/aggregation rather than selecting one arbitrary OCR frame. Android still lacks a real plate detector + OCR backend integration; enabling plate recognition must remain rejected until a backend is installed.
+PlateReading contains timestampMs. PlateConsensus uses temporal aggregation. Android still lacks a real plate detector + OCR backend; enabling plate recognition must remain rejected until such a backend exists.
 
 ## Rules / evidence
-TrafficRulePreferences is the shared persistence contract used by the Rules screen and analysis config.
+TrafficRulePreferences is shared between the Rules screen and analysis configuration.
 TrafficRuleEngine evaluates rules from completed tracks + validated speed estimates.
-EvidenceRecord stores event/source/frame/time/speed/threshold/confidence/track/plate/calibration/model/tracker metadata. FileEvidenceStore persists these locally. Evidence UI reads persisted records.
+EvidenceRecord stores event/source/frame/time/speed/threshold/confidence/track/plate/calibration/model/tracker metadata. FileEvidenceStore persists locally. Evidence UI reads the persisted records.
 
-## Current known issue / last CI error
-CI Run #200 failed at Kotlin compilation because ByteTrack.kt referenced non-existent Detection.centerX and Detection.centerY properties. Detection only stores left/right/top/bottom. The fix was committed by deriving center as ((left+right)/2, (top+bottom)/2).
+## Latest failure and repair
+CI Run #200 failed at Kotlin compilation in ByteTrack.kt because Detection has no centerX/centerY properties. The repair derives the detection center from left/right/top/bottom in commit ddeb1f29596b11caa769b2d2e6d88f0c6fea2e32.
+The persistent context document was then created and the shared-rule/evidence work was preserved. Current HEAD after restoring this checkpoint is 42190a49ce8a49bc0780557432d30617eccb9fe4; the latest post-fix CI must still be checked and never assumed green.
 
-A new CI run was triggered from the fix commit. Do not call it green until all Android steps (build, unit tests, lint) complete successfully.
-
-## Recent commits / milestones
-- eaaee7fa... preview drawing API fix; previous preview compile failure resolved.
-- bb1428c5... model registry/letterbox hardening.
+## Recent milestones
+- eaaee7fa... valid Compose drawing APIs for Analysis Lab preview.
+- bb1428c5... detector registry and exact letterbox/model hardening.
 - d349ad7f... temporal plate consensus + traffic rules tests.
 - 24b04f09... persisted traffic evidence UI.
 - e174c181... shared persisted traffic rule configuration.
 - a0d66871... appearance-assisted bounded vehicle tracking integration.
-- 00cd878f... timestamp provenance and exact-timestamp physical speed gating tests.
-- ddeb1f29... corrected tracker detection center calculation after CI Run #200 exposed the compile error.
+- 00cd878f... timestamp provenance / physical-speed gating tests.
+- ddeb1f29... fix Detection center calculation after Run #200.
+- 42190a49... persistent PROJECT_CONTEXT.md restored.
 
 ## UI state
-Analysis Lab shows real local-video/image selection, model readiness, detector/tracker status, live processed preview, tracking radar, and execution metrics. Speed is intentionally blocked unless calibration/timestamp gates pass. Rules screen persists rule configuration. Evidence screen lists persisted evidence records.
+Analysis Lab supports real local video/image selection, model readiness, detector/tracker status, live processed preview, tracking radar and execution metrics. Speed is intentionally blocked unless calibration/timestamp gates pass. Rules screen persists configuration. Evidence screen lists persisted evidence records.
 
 ## Current priorities
-P0: Get the current HEAD fully green in CI after the ByteTrack center fix.
-P1: Add a true PTS-preserving video FrameSource and tests proving exact timestamp provenance.
-P2: Build an in-app Calibration Lab: select source image/video frame, tap correspondences, enter measured ground distances, fit/validate homography, persist profile, load profile into Analysis Lab.
-P3: Produce real evidence frames/crops from source media, not metadata-only evidence.
-P4: Integrate optical flow as a bounded refinement module with independent tests and benchmarks.
-P5: Integrate a real learned vehicle pose/keypoint model and dynamic homography only after model contract validation.
-P6: Integrate plate detector + OCR backend; then temporal consensus and plate-format validation.
+P0: Verify current HEAD in CI; fix every build/test/lint issue before adding another backend.
+P1: Add a true PTS-preserving video FrameSource and exact timestamp tests.
+P2: Build an in-app Calibration Lab: choose source frame, tap image correspondences, enter measured ground distances, fit/validate homography, persist/load profile, and feed Analysis Lab.
+P3: Produce real evidence frames/crops from source media instead of metadata-only records.
+P4: Integrate bounded optical-flow refinement with independent tests and benchmarks.
+P5: Integrate a real learned vehicle pose/keypoint model and dynamic homography only after model-contract validation.
+P6: Integrate plate detector + OCR backend, then temporal consensus + regional plate-format validation.
 P7: Integrate learned Re-ID and benchmark IDF1/HOTA/MOTA/ID switches on annotated traffic sequences.
-P8: Add device benchmarking for model preprocessing/inference/postprocessing/E2E and accelerator verification on actual hardware.
-
-## Validation status
-Offline Python research tests have been repeatedly green in recent runs.
-Android CI has a history of green builds, but every new commit must be validated independently. A cancelled run is not a success.
+P8: Add real-device preprocessing/inference/postprocessing/E2E benchmarks and verify accelerator placement on hardware.
 
 ## Context checkpoint protocol
-After every significant implementation stage or at least every 2-3 tool operations, update this file with:
+This file is the persistent handoff source for this project. After every significant implementation stage, and at minimum every 2-3 tool operations during long work, update:
 - current HEAD commit
-- what changed
-- why it changed
+- what changed and why
 - tests/CI status
 - newly discovered issues
 - next P0/P1 task
-This protocol is mandatory so future conversations can resume without losing engineering state.
+Never mark a cancelled CI run as success. Never state that a feature exists unless it is actually connected to the runtime path and covered by an appropriate test.
