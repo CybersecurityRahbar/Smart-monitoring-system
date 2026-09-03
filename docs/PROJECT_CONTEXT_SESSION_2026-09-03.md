@@ -9,14 +9,7 @@ After confirming the previous Android build was green, the user requested contin
 The reference repository was inspected through its README/tree/frontend. It demonstrates a video-first traffic-monitoring UI and a YOLO/ByteTrack-oriented monitoring architecture. Its linked demo video asset could not be fetched directly from this execution environment, so there is no claim of frame-by-frame demo inspection. No source code from the reference repository was copied into Smart-monitoring-system and no WebRTC/backend architecture was introduced solely because the reference project uses one.
 
 ## Local video performance
-`LocalVideoFrameSource.kt` was evolved from fixed 100 ms timestamp sampling to API-28+ indexed decoding, then to small consecutive batches using `getFramesAtIndex()` where frame-count metadata is available. Android's current API documentation explicitly recommends `getFramesAtIndex()` for multiple consecutive frames. This reduces repeated decoder/index lookup overhead and removes the known artificial 100 ms sampling cadence. The source remains `REQUESTED_SAMPLE_TIME`; indexed frame position is not asserted to be exact decoded PTS.
-
-Commit sequence included:
-- `2a336c9bcfbe9e8c6a73225748bd28fe9d00a7e`: indexed sequential frame decoding.
-- `736bd038b7eb98f9f872626f933aa411e747031c`: codec-safe fallback to timestamp sampling without resetting fallback timeline.
-- `c5a82ec96fd569a5f2f79efa40aedb9881609848`: consecutive batch decoding with batch size 4 using `getFramesAtIndex()` and safe timestamp fallback.
-
-Physical-speed measurement remains blocked for local video while timestamp precision is not proven exact PTS.
+`LocalVideoFrameSource.kt` was evolved from fixed 100 ms timestamp sampling to API-28+ indexed decoding. The source now avoids the artificial 100 ms cadence and retains an explicit `REQUESTED_SAMPLE_TIME` provenance label until exact decoded PTS is available.
 
 ## Local Analysis presentation
 `AnalysisRadarPreview.kt` now provides:
@@ -29,85 +22,108 @@ Physical-speed measurement remains blocked for local video while timestamp preci
 A follow-up cleanup removed an initial size-dependent radar label overlay because its hard-coded dimensions could misplace labels on different screen sizes.
 
 ## Main Radar integration
-`IntelligentRadarScreen.kt` was changed from a mostly static shell (zero tracks/blank speed/placeholder video) to a real local-video radar session using `LocalAnalysisViewModel`, which means the same `AnalysisEngine`, LiteRT detector, ByteTrack, geometry and native speed path are reused rather than introducing a second radar algorithm.
-
-The main Radar screen now:
-- selects a local traffic video;
-- starts the real analysis session;
-- reuses the same `AnalysisRadarPreview` renderer;
-- filters the actual track results by vehicle class, minimum speed, confidence and a simple forward-direction gate;
-- displays actual track count and maximum measured speed when available.
-
-This is local-video radar functionality. ESP32 live radar is implemented separately below.
+`IntelligentRadarScreen.kt` was changed from a mostly static shell to reuse the real Local Analysis engine path rather than introducing a second radar algorithm. The radar consumes real track results and displays the same preview/tracking information.
 
 ## Native/C++ architecture
-A replaceable `GroundProjector` was introduced and the production local analysis path now uses `NativeGroundProjector.kt`, calling the already-compiled C++ homography projection through JNI while keeping the Kotlin implementation as the domain reference.
+A replaceable `GroundProjector` was introduced and the production local/live analysis path uses `NativeGroundProjector.kt` for homography projection through JNI/C++.
 
-A replaceable `SpeedEstimatorBackend` was introduced. `NativeFirstSpeedEstimator.kt` calls the C++ robust speed implementation first and falls back to the Kotlin reference estimator when the native call, linker, output shape or numerical validation fails. The speed backend name is recorded in `AnalysisMetrics.speedEstimatorBackend` so provenance is visible in results.
+A replaceable `SpeedEstimatorBackend` was introduced. `NativeFirstSpeedEstimator.kt` calls the C++ robust speed implementation first and falls back to the Kotlin reference estimator when native loading or result validation fails. `AnalysisMetrics.speedEstimatorBackend` records provenance.
 
-The current native JNI speed contract returns:
-`[metersPerSecond, confidence, errorKmh, inlierSamples]`.
-Velocity components and detailed residuals are not currently returned by JNI; direction is therefore derived from the first/last valid metric points by the Kotlin adapter. Formal Kotlin/native numerical parity tests remain required before claiming equivalence.
+### Native result contract extension — 2026-09-03
+The native C++ `SpeedResult` and JNI contract were extended from four values to seven:
+`[metersPerSecond, confidence, uncertainty/errorKmh, inlierSamples, velocityXMps, velocityYMps, medianPositionResidualMeters]`.
+`NativeFirstSpeedEstimator` now maps the complete result into `SpeedEstimate`, including velocity components, direction derived from those components, and trajectory residual.
+This makes Kotlin/C++ parity testable on the same observable mathematical outputs rather than speed alone.
 
 ## LiteRT accelerator path
-`LocalAnalysisViewModel.kt` no longer pins all local inference to CPU. It tries LiteRT `Accelerator.GPU` first and explicitly constructs a CPU detector when GPU construction fails. The selected accelerator is visible in the analysis state and executed metrics.
-
-A new `AnalysisRuntimeFactory.kt` centralizes detector construction and GPU→CPU selection so local and future live sessions share the same runtime policy.
+`AnalysisRuntimeFactory.kt` centralizes detector construction and tries LiteRT `Accelerator.GPU` first, with an explicit CPU fallback if GPU initialization is unsupported. Local and live sessions use the same factory. This is a performance policy, not an accuracy claim.
 
 ## Live ESP32/MJPEG analysis
-`MjpegFrameSource.kt` was added as a real `FrameSource` around the existing `MjpegStreamClient`.
-Its queue is deliberately conflated so stale frames are dropped rather than allowing latency to grow when inference is slower than the camera. A producer sequence number lets the consumer detect and count skipped live frames.
-Arrival timestamps use `SystemClock.elapsedRealtime()` only for ordering; the source remains `FrameTimestampPrecision.UNKNOWN`, so live MJPEG time cannot unlock measurement-grade physical speed.
+`MjpegFrameSource.kt` is a real `FrameSource` around the existing `MjpegStreamClient`.
+Its queue is deliberately conflated so stale frames are dropped rather than allowing latency to grow when inference is slower than the camera. Producer sequence numbers are used to count skipped live frames explicitly. Arrival timestamps use `SystemClock.elapsedRealtime()` only for ordering, so live MJPEG remains `UNKNOWN` timestamp precision and cannot unlock physical speed.
 
-`LiveAnalysisViewModel.kt` now creates a real session:
-`ESP32 MJPEG → MjpegFrameSource → LiteRT → ByteTrack → Native geometry/speed → AnalysisPreviewObserver`.
-It uses the same runtime factory and the same native/Kotlin backends as Local Analysis.
+`LiveAnalysisViewModel.kt` and `LiveCameraScreen.kt` now use the same analysis engine path as Local Analysis. During live analysis the raw MJPEG viewer is stopped so there is not a second simultaneous stream connection; the analysis preview becomes the displayed video/radar surface. Capture uses the configured `/capture` endpoint. Camera control remains explicitly unavailable because the current ESP32 contract has no control endpoint.
 
-`LiveCameraScreen.kt` now:
-- can start/stop live analysis using the shared engine;
-- shows the actual analysis preview/radar when active;
-- keeps the raw MJPEG stream path for ordinary viewing when analysis is stopped;
-- makes the Capture button call the configured `/capture` endpoint and decode the returned JPEG instead of doing nothing;
-- leaves Camera Control as an explicit unavailable state because the current ESP32 endpoint contract does not define a control API.
+## Unified Analysis Session — 2026-09-03
+`UnifiedAnalysisSession.kt` is now the lifecycle boundary shared by Local and Live analysis.
+It provides:
+- `AnalysisSessionPhase`: IDLE, STARTING, RUNNING, COMPLETED, FAILED, STOPPED;
+- `AnalysisSessionState`: phase, message, accelerator, latest preview and final result;
+- one active analysis job at a time;
+- explicit source/runtime ownership and cleanup;
+- cancellation-safe stop behavior;
+- execution on `Dispatchers.Default`, never on the Compose/UI dispatcher;
+- preview publication into the same session state.
 
-The live analysis path deliberately stops the raw stream job before starting the analyzed stream, avoiding two simultaneous MJPEG connections to the ESP32 during analysis.
+A deadlock risk was caught during review: an earlier `stop()` implementation held the session mutex while joining the analysis job, but the job's `finally` also needed the mutex. This was corrected so cancellation/close/join occur outside the mutex and state cleanup happens afterward.
+
+`LocalAnalysisViewModel` now creates its decoder/runtime/engine and starts them through `UnifiedAnalysisSession` rather than owning a parallel analysis Job itself.
+`LiveAnalysisViewModel` was likewise moved onto the same session abstraction.
+
+## Exact PTS video source — 2026-09-03
+`ExactPtsVideoFrameSource.kt` was added using `MediaExtractor + MediaCodec + ImageReader`.
+It decodes the video sequentially and uses `MediaCodec.BufferInfo.presentationTimeUs` as the frame timestamp. The source is marked `FrameTimestampPrecision.EXACT_SOURCE_CLOCK`, and frame dimension/rotation metadata are retained.
+
+`LocalAnalysisViewModel` now attempts `ExactPtsVideoFrameSource` first for local video. If codec initialization fails, it explicitly falls back to `LocalVideoFrameSource`; the fallback remains `REQUESTED_SAMPLE_TIME`, so the physical-speed gate still blocks measurement-grade speed. No exact-timestamp claim is made for the fallback.
+
+Android's current Media3/MediaCodec documentation confirms that decoded output buffers carry an explicit presentation timestamp, which is the temporal field used by this implementation. citeturn554474search0turn554474search1
+
+The exact PTS source has not yet been validated on the user's physical phone across all codecs; real-device media compatibility remains a hard gate. If the Android CI build reports codec/API compilation problems, the source must be corrected before enabling it broadly.
+
+## Tracker prediction/recovery hardening — 2026-09-03
+`ByteTrack.kt` was strengthened while preserving the existing ByteTrack-inspired high/low association design.
+New behavior:
+- empirical velocity prediction remains short-horizon and bounded;
+- actual timestamp `dt` determines the prediction interval;
+- observed velocity changes are constrained by a pixel-acceleration prior;
+- a strong sudden direction reversal is treated as an unreliable empirical cue so the Kalman prediction remains authoritative;
+- center-distance gating adapts modestly with the prediction time gap and target scale, but remains finite and conservative;
+- existing class-aware gating, IoU association, Hungarian assignment and low-confidence recovery remain intact.
+
+New regression coverage exercises variable timestamp intervals, rejects a large direction reversal, and preserves the existing short bounded 0→8→55 px recovery while rejecting unbounded jumps.
+
+## Native parity verification — 2026-09-03
+A standalone host-side test harness was added under `tools/native-parity/` with a CMake/CTest build. The CI workflow now runs this target independently of Android.
+Golden cases include:
+- linear metric motion;
+- diagonal metric motion;
+- variable timestamp spacing;
+- homography projection.
+
+The first parity run exposed an error in the test expectation rather than native code: the correct confidence for the 0–700 ms linear fixture is `0.9025`, not `0.6525`; the variable-duration fixture is `0.90625`. The goldens were corrected rather than weakening the tolerance.
+A mirrored Android JUnit fixture `RobustSpeedParityTest.kt` checks the Kotlin estimator against the same mathematical goldens.
+
+The native parity CI harness successfully compiles `traffic_core.cpp`; the first execution failed only because the initially written confidence goldens were mathematically wrong. The corrected vectors are now committed.
+
+## Build failure and fixes — 2026-09-03
+The user's provided Run #258 failed at `compileDebugKotlin` with four errors:
+1. `MjpegFrameSource.kt` used `throw _` inside `catch`, which Kotlin rejects because `_` cannot be referenced as an exception variable.
+2–4. `AppNavHost.kt` passed `onOpenRadar`, `onOpenLive`, and `onOpenAnalysis` to `DashboardScreen`, but the screen signature did not accept them.
+
+These were fixed by naming the caught `CancellationException` and extending `DashboardScreen` with the missing callbacks/quick actions.
+
+The subsequent native parity workflow then exposed only the incorrect golden confidence values described above.
+
+## Current CI interpretation
+Only a CI run whose `head_sha` exactly equals the current `main` commit counts as verification for that state. Earlier green runs such as #225 (`28591789...`) are historical baselines only. The workflow is now split into Android build/tests/lint, native parity, and Python research tests.
+
+At the latest inspected point, Run #279 (`33783420003`) was pending for commit `7a277c329bf5511d5a51278d7cb6e86c2af8fea5`; later feature commits were still being written, so no final green claim is made here.
 
 ## Reliability decisions retained
-- No mock or fake radar animation was introduced.
-- A reported speed must still pass calibration and timestamp gates.
-- Native failures do not silently produce zero or fabricated measurements; the speed adapter falls back to the tested Kotlin reference implementation.
-- GPU selection is a performance optimization, not an accuracy claim.
-- The user-visible playback speed and processing speed are separate concepts; removing the fixed sample interval improves source traversal, but real-device detector latency can still make processed preview slower than realtime.
-
-## CI status relevant to this append
-The last fully green baseline before the feature sequence was Run #225 on commit `28591789cf9bfaf4da656e06ec303c6d227e5c4f`. The feature sequence generated new push-triggered Android CI runs for each commit. At the time this append was written, the latest run for the current integrated work had not yet returned a completed result from the GitHub Actions API, so the feature branch state must not be called green until the exact HEAD is verified.
-
-## Exact feature commits after the green baseline
-- `2a336c9...` indexed local video.
-- `736bd038...` safe video fallback.
-- `9e8692c...` immersive preview + radar trails.
-- `143f1475...` injectable ground projection.
-- `ce73f998...` native ground projector.
-- `53329d00...` pipeline injection.
-- `7d542a19...` injectable speed backend.
-- `48f996b3...` native-first speed adapter.
-- `ec66de51...` GPU-first inference + native geometry/speed wiring.
-- `81f088e7...` radar overlay cleanup.
-- `dfb54ef...` main Radar uses real analysis engine.
-- `f596286...` bounded MJPEG FrameSource.
-- `c5a82ec...` batched local sequential frame decoding.
-- `d1bdda6...` centralized detector runtime factory.
-- `f872ad7...` live analysis ViewModel.
-- `6062cbd...` Live Camera real analysis/capture controls.
-- `dff7487...` explicit live MJPEG dropped-frame sequence accounting.
+- No mock/fake radar animation is used.
+- Physical speed requires validated calibration and exact timestamps when configured.
+- Native failures may fall back to the Kotlin reference estimator, and backend provenance is retained.
+- Live MJPEG is optimized for low latency by dropping stale frames; this does not make its timestamps suitable for measurement-grade speed.
+- Video playback traversal and AI processing throughput are separate metrics; no artificial sleep is used to make them look synchronized.
+- The reference repository is an inspiration source, not a source of copied code.
 
 ## Next hard gates
-1. Verify the exact current HEAD through Android build, unit tests and lint, plus Python tests.
-2. Run on the user's real phone with a representative phone-recorded traffic clip. Record source FPS, processed FPS, detector median/P95, frame gaps and memory/thermal observations.
-3. Compare GPU vs CPU on the same physical device and same frames.
-4. Add exact PTS-preserving video decoding before enabling physical-speed measurement on local video.
-5. Establish Kotlin/native numerical parity for homography and robust speed.
-6. Add TrackEval HOTA/IDF1/MOTA evaluation and improve tracking based on measured ID switches/fragmentation.
-7. Wire ESP32 live analysis into a shared session/state layer so Dashboard/Radar/Live screens can observe one running analysis session rather than creating independent jobs.
-8. Add native/OpenCV calibration and later research keypoint/dynamic-homography, optical flow, segmentation and learned Re-ID only after benchmarks justify them.
-9. Implement real plate detection/OCR, rule thresholds, evidence image/crop persistence, alerts and reports.
+1. Get a green Android build/tests/lint on the exact current HEAD after the unified session, exact PTS, tracker and native-result-contract changes.
+2. Validate `ExactPtsVideoFrameSource` on the user's actual phone with representative H.264/H.265 phone videos, checking timestamps, rotation, frame count and memory.
+3. Run Local Analysis with a real traffic clip and compare source FPS, processing FPS, inference latency, dropped frames and visual smoothness.
+4. Compare native and Kotlin speed outputs over randomized deterministic fixtures with a defined numerical tolerance; then treat native as the preferred production backend.
+5. Add native homography parity vectors and, after parity, move calibration SVD/RANSAC into native/OpenCV.
+6. Build a labeled tracking benchmark with HOTA/IDF1/MOTA, ID switches and fragmentation, then tune tracker parameters from measured data.
+7. Extend the unified session to selected calibration profile/runtime settings and eventually a single app-level analysis session observable by Dashboard/Radar/Live without duplicate ViewModel jobs.
+8. Add real vehicle keypoints/dynamic homography, optical flow, segmentation and learned Re-ID only after benchmark evidence justifies their cost.
+9. Complete plate detector/OCR, traffic-rule thresholds, evidence image/crop persistence, alert feed, reports persistence, and final ESP32 firmware/hardware validation.
