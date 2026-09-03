@@ -90,10 +90,11 @@ Golden cases include:
 - variable timestamp spacing;
 - homography projection.
 
-The first parity run exposed an error in the test expectation rather than native code: the correct confidence for the 0–700 ms linear fixture is `0.9025`, not `0.6525`; the variable-duration fixture is `0.90625`. The goldens were corrected rather than weakening the tolerance.
-A mirrored Android JUnit fixture `RobustSpeedParityTest.kt` checks the Kotlin estimator against the same mathematical goldens.
+The first parity run exposed an error in the test expectation rather than native code: the correct confidence for the 0–700 ms linear/diagonal fixtures is `0.9025`, not `0.6525`.
+The variable-duration fixture is `0.94375`, not `0.90625`.
+The native C++ golden was corrected first. The subsequent Android CI Run #282 then exposed that the mirrored Kotlin test still contained the stale `0.90625` value. That was corrected in commit `ce2f5ad61e656c755b5599d857e9cb762cea58e4` to `0.94375`.
 
-The native parity CI harness successfully compiles `traffic_core.cpp`; the first execution failed only because the initially written confidence goldens were mathematically wrong. The corrected vectors are now committed.
+The parity tests deliberately keep strict numerical tolerances; the fix is to correct the vector expectation, not to loosen tolerance or change the estimator merely to satisfy CI.
 
 ## Build failure and fixes — 2026-09-03
 The user's provided Run #258 failed at `compileDebugKotlin` with four errors:
@@ -102,12 +103,15 @@ The user's provided Run #258 failed at `compileDebugKotlin` with four errors:
 
 These were fixed by naming the caught `CancellationException` and extending `DashboardScreen` with the missing callbacks/quick actions.
 
-The subsequent native parity workflow then exposed only the incorrect golden confidence values described above.
+The subsequent native parity workflow exposed incorrect confidence golden values. Run #282 failed because the mirrored Kotlin variable-time parity assertion still expected `0.90625` while the native vector and the actual Kotlin estimator contract are `0.94375`.
+This failure is now corrected by updating only `RobustSpeedParityTest.kt`; the speed-estimation implementation itself was not altered for this CI failure.
 
 ## Current CI interpretation
-Only a CI run whose `head_sha` exactly equals the current `main` commit counts as verification for that state. Earlier green runs such as #225 (`28591789...`) are historical baselines only. The workflow is now split into Android build/tests/lint, native parity, and Python research tests.
+Only a CI run whose `head_sha` exactly equals the current `main` commit counts as verification for that state. Earlier green runs such as #225 (`28591789...`) are historical baselines only.
 
-At the latest inspected point, Run #279 (`33783420003`) was pending for commit `7a277c329bf5511d5a51278d7cb6e86c2af8fea5`; later feature commits were still being written, so no final green claim is made here.
+Run #282 failed in `Build & Test Android` for exactly one unit test: `RobustSpeedParityTest.variableTimestampsDoNotAssumeFixedFrameCadence`, with an assertion at line 58. The log reports 35 tests completed and 1 failed. The model verification step passed and Kotlin compilation completed/up-to-date, so this was not a source-compilation failure.
+
+A new push for commit `ce2f5ad61e656c755b5599d857e9cb762cea58e4` has now been created to align the Kotlin golden with the native golden. A fresh CI result for this exact commit is still required before declaring the repository green.
 
 ## Reliability decisions retained
 - No mock/fake radar animation is used.
