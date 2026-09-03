@@ -71,6 +71,11 @@ fun LocalAnalysisScreen(
     val modelSpec = remember { DetectorModelRegistry.requireSpec("yolo26n") }
     val modelInstalled = remember { DetectorModelRegistry.isInstalled(context, modelSpec) }
     val selectedCalibration = calibrationProfiles.firstOrNull { it.id == selectedCalibrationId }
+    val physicalSpeedStatus = when {
+        !useCalibratedHomography -> "blocked until calibration"
+        selectedCalibration == null -> "blocked: no calibration selected"
+        else -> "requires source-dimension and quality validation"
+    }
 
     LaunchedEffect(Unit) {
         calibrationProfiles = withContext(Dispatchers.IO) {
@@ -137,14 +142,7 @@ fun LocalAnalysisScreen(
                 MetricRow("Detector", "${modelSpec.id} • ${if (modelInstalled) "installed" else "MISSING"}")
                 MetricRow("Tracker", "ByteTrack + Kalman + global assignment")
                 MetricRow("Live laboratory", if (source == AnalysisSource.VIDEO) "frame-by-frame preview enabled" else "single-frame preview")
-                MetricRow(
-                    "Physical speed",
-                    when {
-                        !useCalibratedHomography -> "blocked until calibration"
-                        selectedCalibration == null -> "blocked: no calibration selected"
-                        else -> "requires source-dimension and quality validation",
-                    },
-                )
+                MetricRow("Physical speed", physicalSpeedStatus)
                 Text(
                     "The preview is driven by the same detector/tracker pipeline used for the final metrics; it is not a separate mock animation.",
                     style = MaterialTheme.typography.bodySmall,
