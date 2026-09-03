@@ -9,6 +9,7 @@ class AnalysisPipelineRunner(
     private val keypointEstimator: VehicleKeypointEstimator? = null,
     private val plateRecognizer: PlateRecognizer? = null,
     private val previewObserver: AnalysisPreviewObserver? = null,
+    private val groundProjector: GroundProjector = KotlinGroundProjector,
 ) {
     suspend fun run(source: FrameSource, config: AnalysisConfig): AnalysisResult {
         require(config.trackerInputMinimumConfidence in 0f..1f) { "trackerInputMinimumConfidence must be within [0,1]" }
@@ -133,7 +134,7 @@ class AnalysisPipelineRunner(
                             "Calibration was accepted without a calibration profile"
                         }
                         runCatching {
-                            HomographyProjector(calibration.homography).project(contact.first, contact.second)
+                            groundProjector.project(calibration, contact.first, contact.second)
                         }.getOrElse { error ->
                             throw IllegalStateException(
                                 "Ground-plane projection failed at frame=${frame.index}, track=${track.id}",
