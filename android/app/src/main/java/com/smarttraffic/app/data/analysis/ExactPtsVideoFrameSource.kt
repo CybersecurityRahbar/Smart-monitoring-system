@@ -3,6 +3,7 @@ package com.smarttraffic.app.data.analysis
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.graphics.PixelFormat
 import android.media.Image
 import android.media.ImageReader
 import android.media.MediaCodec
@@ -13,20 +14,17 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
-import android.graphics.PixelFormat
 import com.smarttraffic.app.domain.analysis.AnalysisFrame
 import com.smarttraffic.app.domain.analysis.FrameSource
 import com.smarttraffic.app.domain.analysis.FrameTimestampPrecision
 import com.smarttraffic.app.domain.analysis.MediaSource
-import java.nio.ByteBuffer
-import kotlin.math.roundToLong
 
 /**
  * Sequential MediaCodec-backed video source that preserves decoded presentation timestamps.
  *
- * Unlike timestamp-seeking MediaMetadataRetriever, this source obtains the timestamp from the
- * decoder's BufferInfo.presentationTimeUs for each rendered output buffer. Physical speed may
- * therefore use this source when calibration quality gates also pass.
+ * Each returned frame uses MediaCodec.BufferInfo.presentationTimeUs. No timestamp is synthesized
+ * from frame index or a nominal FPS. If a decoder produces an invalid/non-monotonic timestamp,
+ * the source fails explicitly rather than downgrading its precision claim.
  */
 class ExactPtsVideoFrameSource(
     private val context: Context,
@@ -38,7 +36,6 @@ class ExactPtsVideoFrameSource(
     private val readerThread: HandlerThread = HandlerThread("smarttraffic-video-reader").apply { start() }
     private val readerHandler = Handler(readerThread.looper)
     private val mime: String
-    private val durationUs: Long
     private val width: Int
     private val height: Int
     private val frameRate: Double?
@@ -46,6 +43,7 @@ class ExactPtsVideoFrameSource(
     private var inputEosQueued = false
     private var outputEosReached = false
     private var frameIndex = 0L
+    private var lastPresentationTimeUs = -1L
     private var closed = false
 
     override val source: MediaSource
@@ -64,16 +62,10 @@ class ExactPtsVideoFrameSource(
         mime = requireNotNull(format.getString(MediaFormat.KEY_MIME)) { "Video MIME type is missing" }
         width = format.getIntegerOrDefault(MediaFormat.KEY_WIDTH, 0).coerceAtLeast(1)
         height = format.getIntegerOrDefault(MediaFormat.KEY_HEIGHT, 0).coerceAtLeast(1)
-        durationUs = format.getLongOrDefault(MediaFormat.KEY_DURATION, 0L).coerceAtLeast(0L)
         frameRate = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 0)
             .toDouble()
             .takeIf { it > 0.0 }
-        rotationDegrees = normalizeRotation(
-            format.getIntegerOrDefault(
-                MediaFormat.KEY_ROTATION,
-                0,
-            ),
-        )
+        rotationDegrees = normalizeRotation(format.getIntegerOrDefault(MediaFormat.KEY_ROTATION, 0))
 
         require(width > 0 && height > 0) { "Invalid decoded video dimensions: ${width}x$height" }
         require(mime.startsWith("video/")) { "Selected track is not a video track: $mime" }
@@ -118,14 +110,19 @@ class ExactPtsVideoFrameSource(
                     val image = acquireRenderedImage()
                     if (image != null) {
                         try {
-                            val bitmap = imageToBitmap(image)
                             require(presentationTimeUs >= 0L) {
                                 "Decoder returned invalid presentation timestamp=$presentationTimeUs us"
                             }
-                            val timestampMs = presentationTimeUs / 1000L
+                            require(
+                                lastPresentationTimeUs < 0L || presentationTimeUs >= lastPresentationTimeUs,
+                            ) {
+                                "Decoder returned non-monotonic presentation timestamp=$presentationTimeUs us after $lastPresentationTimeUs us"
+                            }
+                            lastPresentationTimeUs = presentationTimeUs
+                            val bitmap = imageToBitmap(image)
                             val result = AnalysisFrame(
                                 index = frameIndex++,
-                                timestampMs = timestampMs,
+                                timestampMs = presentationTimeUs / 1000L,
                                 payload = bitmap,
                                 width = bitmap.width,
                                 height = bitmap.height,
@@ -137,17 +134,11 @@ class ExactPtsVideoFrameSource(
                         }
                     }
 
-                    if (isEos) {
-                        outputEosReached = true
-                    }
+                    if (isEos) outputEosReached = true
                 }
 
                 outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> Unit
-                outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
-                    if (inputEosQueued) {
-                        SystemClock.sleep(1L)
-                    }
-                }
+                outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> if (inputEosQueued) SystemClock.sleep(1L)
             }
         }
         return null
@@ -156,24 +147,16 @@ class ExactPtsVideoFrameSource(
     private fun feedInput() {
         val inputIndex = decoder.dequeueInputBuffer(20_000L)
         if (inputIndex < 0) return
-
         val inputBuffer = decoder.getInputBuffer(inputIndex)
             ?: error("Decoder input buffer $inputIndex is unavailable")
         inputBuffer.clear()
         val sampleTimeUs = extractor.sampleTime
         val sampleSize = extractor.readSampleData(inputBuffer, 0)
         if (sampleSize < 0) {
-            decoder.queueInputBuffer(
-                inputIndex,
-                0,
-                0,
-                0L,
-                MediaCodec.BUFFER_FLAG_END_OF_STREAM,
-            )
+            decoder.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
             inputEosQueued = true
             return
         }
-
         require(sampleTimeUs >= 0L) { "Extractor returned invalid sample timestamp=$sampleTimeUs us" }
         decoder.queueInputBuffer(inputIndex, 0, sampleSize, sampleTimeUs, 0)
         extractor.advance()
@@ -181,8 +164,7 @@ class ExactPtsVideoFrameSource(
 
     private fun acquireRenderedImage(): Image? {
         repeat(20) {
-            val image = reader.acquireNextImage()
-            if (image != null) return image
+            reader.acquireNextImage()?.let { return it }
             SystemClock.sleep(1L)
         }
         return reader.acquireNextImage()
@@ -215,26 +197,12 @@ class ExactPtsVideoFrameSource(
             }
         }
 
-        val bitmap = Bitmap.createBitmap(
-            pixels,
-            image.width,
-            image.height,
-            Bitmap.Config.ARGB_8888,
-        )
+        val bitmap = Bitmap.createBitmap(pixels, image.width, image.height, Bitmap.Config.ARGB_8888)
         if (rotationDegrees == 0) return bitmap
-
         val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
         return Bitmap.createBitmap(
-            bitmap,
-            0,
-            0,
-            bitmap.width,
-            bitmap.height,
-            matrix,
-            true,
-        ).also { rotated ->
-            if (rotated !== bitmap) bitmap.recycle()
-        }
+            bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true,
+        ).also { rotated -> if (rotated !== bitmap) bitmap.recycle() }
     }
 
     override suspend fun close() {
@@ -250,8 +218,7 @@ class ExactPtsVideoFrameSource(
 
     private fun selectVideoTrack(extractor: MediaExtractor): Int {
         for (index in 0 until extractor.trackCount) {
-            val mimeType = extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME).orEmpty()
-            if (mimeType.startsWith("video/")) return index
+            if (extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME).orEmpty().startsWith("video/")) return index
         }
         return -1
     }
@@ -261,7 +228,4 @@ class ExactPtsVideoFrameSource(
 
     private fun MediaFormat.getIntegerOrDefault(key: String, fallback: Int): Int =
         if (containsKey(key)) getInteger(key) else fallback
-
-    private fun MediaFormat.getLongOrDefault(key: String, fallback: Long): Long =
-        if (containsKey(key)) getLong(key) else fallback
 }
