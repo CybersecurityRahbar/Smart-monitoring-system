@@ -11,14 +11,12 @@ import kotlin.math.min
 /**
  * Real Android detector backend using LiteRT CompiledModel.
  *
- * The LiteRT 2.2 Android TensorBuffer API used by this project does not expose the
- * shape/type accessors used by an older implementation. The runtime contract here is
- * therefore enforced by buffer count, successful float I/O, exact flattened output
- * element count, and the explicit model-registry contract.
- *
  * Supported exports:
  * 1) YOLO26 end-to-end: [1,300,6] -> xyxy, confidence, classId.
  * 2) Traditional detection: [1,84,8400] -> xywh + class scores.
+ *
+ * The active model contract is supplied by DetectorModelRegistry. The flattened output
+ * size is also checked at runtime so an incompatible artifact cannot be silently parsed.
  */
 class LiteRtObjectDetector(
     context: Context,
@@ -49,6 +47,9 @@ class LiteRtObjectDetector(
         require(outputBuffers.size == 1) {
             "Smart Traffic detector expects one output tensor, got ${outputBuffers.size}"
         }
+        require(inputSize > 0) { "inputSize must be positive" }
+        require(classCount > 0) { "classCount must be positive" }
+        require(nmsIouThreshold in 0f..1f) { "nmsIouThreshold must be in [0,1]" }
     }
 
     override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> {
@@ -58,8 +59,6 @@ class LiteRtObjectDetector(
             "Prepared detector input has ${prepared.chwRgb.size} elements; expected $expectedInputElements"
         }
 
-        // writeFloat is the supported typed write path; an incompatible tensor contract
-        // is rejected by LiteRT rather than being silently reinterpreted.
         inputBuffers.single().writeFloat(prepared.chwRgb)
 
         val startNs = System.nanoTime()
@@ -248,7 +247,9 @@ internal object LetterboxPreprocessor {
     data class Result(
         val chwRgb: FloatArray,
         val scale: Float,
+        /** Exact pixel coordinate of the left pad inserted into the model image. */
         val padX: Float,
+        /** Exact pixel coordinate of the top pad inserted into the model image. */
         val padY: Float,
     )
 
@@ -259,12 +260,15 @@ internal object LetterboxPreprocessor {
         val scaledWidth = max(1, (bitmap.width * scale).toInt())
         val scaledHeight = max(1, (bitmap.height * scale).toInt())
         val scaled = Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
-        val padX = (size - scaledWidth) / 2f
-        val padY = (size - scaledHeight) / 2f
+
+        // Use the exact integer placement used by getPixels. The previous fractional
+        // padding value could differ by 0.5 px when the remaining padding was odd.
+        val padLeft = (size - scaledWidth) / 2
+        val padTop = (size - scaledHeight) / 2
 
         val pixels = IntArray(size * size)
         java.util.Arrays.fill(pixels, 0xFF727272.toInt())
-        val offset = padY.toInt() * size + padX.toInt()
+        val offset = padTop * size + padLeft
         scaled.getPixels(pixels, offset, size, 0, 0, scaledWidth, scaledHeight)
 
         val plane = size * size
@@ -276,6 +280,6 @@ internal object LetterboxPreprocessor {
             chw[plane * 2 + i] = (p and 0xFF) / 255f
         }
         if (scaled !== bitmap) scaled.recycle()
-        return Result(chw, scale, padX, padY)
+        return Result(chw, scale, padLeft.toFloat(), padTop.toFloat())
     }
 }
