@@ -4,6 +4,7 @@ import com.smarttraffic.app.domain.analysis.Detection
 import com.smarttraffic.app.domain.analysis.MultiObjectTracker
 import com.smarttraffic.app.domain.analysis.Track
 import com.smarttraffic.app.domain.analysis.TrackObservation
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
@@ -21,6 +22,8 @@ class ByteTrack(
     private val matchIouThreshold: Float = 0.30f,
     private val lowMatchIouThreshold: Float = 0.20f,
     private val maxLostFrames: Int = 30,
+    /** Bounded center-motion recovery for detections whose boxes no longer overlap. */
+    private val centerDistanceScale: Double = 0.75,
 ) : MultiObjectTracker {
     private val tracks = LinkedHashMap<Long, InternalTrack>()
     private var nextId = 1L
@@ -30,6 +33,7 @@ class ByteTrack(
         require(matchIouThreshold in 0f..1f)
         require(lowMatchIouThreshold in 0f..1f)
         require(maxLostFrames >= 1)
+        require(centerDistanceScale > 0.0 && centerDistanceScale.isFinite())
     }
 
     override fun reset() {
@@ -106,8 +110,8 @@ class ByteTrack(
                 if (track.lastDetection.classId != detection.classId) {
                     invalidCost
                 } else {
-                    val associationIou = associationIou(track, detection, minimumIou)
-                    if (associationIou < minimumIou) invalidCost else 1.0 - associationIou
+                    val associationScore = associationScore(track, detection, minimumIou)
+                    if (associationScore <= 0.0) invalidCost else 1.0 - associationScore
                 }
             }
         }
@@ -117,31 +121,56 @@ class ByteTrack(
             val track = trackList[row]
             val detection = detections[column]
             if (track.lastDetection.classId != detection.value.classId) return@mapNotNull null
-            val score = associationIou(track, detection.value, minimumIou)
-            if (score < minimumIou) return@mapNotNull null
+            val score = associationScore(track, detection.value, minimumIou)
+            if (score <= 0.0) return@mapNotNull null
             Match(track, detection, score)
         }
     }
 
     /**
-     * Prediction-first association gate. A valid Kalman prediction is preferred because
-     * it preserves motion-based identity through close interactions. When prediction
-     * falls below the configured gate, the latest measured box is used as a bounded fallback.
+     * Association hierarchy:
+     * 1. IoU against the Kalman prediction.
+     * 2. IoU against the last measured box.
+     * 3. A strictly bounded predicted-center distance gate when overlap is absent.
+     *
+     * The distance gate is scale-normalized and cannot accept arbitrarily distant boxes.
      */
-    private fun associationIou(
+    private fun associationScore(
         track: InternalTrack,
         detection: Detection,
         minimumIou: Float,
-    ): Float {
-        val predicted = iou(track.predicted, detection)
-        if (predicted >= minimumIou) return predicted
-        return iou(ByteTrackBox(track.lastDetection), detection)
+    ): Double {
+        val predictedIou = iou(track.predicted, detection)
+        if (predictedIou >= minimumIou) return predictedIou.toDouble()
+
+        val measuredIou = iou(ByteTrackBox(track.lastDetection), detection)
+        if (measuredIou >= minimumIou) return measuredIou.toDouble()
+
+        return centerDistanceScore(track.predicted, detection)
+    }
+
+    private fun centerDistanceScore(predicted: ByteTrackBox, detection: Detection): Double {
+        val distance = hypot(
+            predicted.centerX.toDouble() - detection.centerX.toDouble(),
+            predicted.centerY.toDouble() - detection.centerY.toDouble(),
+        )
+        if (!distance.isFinite()) return 0.0
+
+        val predictedArea = predicted.width.toDouble() * predicted.height.toDouble()
+        val detectionWidth = max(0f, detection.right - detection.left).toDouble()
+        val detectionHeight = max(0f, detection.bottom - detection.top).toDouble()
+        val detectionArea = detectionWidth * detectionHeight
+        val referenceScale = max(1.0, kotlin.math.sqrt(max(1.0, min(predictedArea, detectionArea))))
+        val allowedDistance = centerDistanceScale * referenceScale
+        if (!allowedDistance.isFinite() || allowedDistance <= 0.0 || distance > allowedDistance) return 0.0
+
+        return 1.0 - (distance / allowedDistance)
     }
 
     private data class Match(
         val track: InternalTrack,
         val detection: IndexedValue<Detection>,
-        val iou: Float,
+        val score: Double,
     )
 
     private class InternalTrack(
