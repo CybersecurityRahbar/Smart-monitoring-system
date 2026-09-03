@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -21,7 +20,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
@@ -85,12 +83,10 @@ fun AnalysisRadarPreview(
                             val right = d.right * sx
                             val bottom = d.bottom * sy
                             drawRoundRect(
-                                left,
-                                top,
-                                right - left,
-                                bottom - top,
-                                12f,
-                                12f,
+                                color = MaterialTheme.colorScheme.primary,
+                                topLeft = Offset(left, top),
+                                size = androidx.compose.ui.geometry.Size(right - left, bottom - top),
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(12f, 12f),
                                 style = Stroke(width = 3f),
                             )
                             val label = buildString {
@@ -109,7 +105,6 @@ fun AnalysisRadarPreview(
                 }
             }
         }
-
         RadarPanel(preview)
     }
 }
