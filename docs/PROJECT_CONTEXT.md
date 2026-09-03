@@ -9,6 +9,11 @@ University prototype; not certified traffic-enforcement equipment.
 Android is the command/visual center; ESP32-CAM is the camera/Wi-Fi endpoint; AI/CV is intended to run on Android/native acceleration.
 No Map Widget unless explicitly requested.
 
+## Context continuity rule
+`docs/PROJECT_CONTEXT.md` is the cumulative project handoff record. At every meaningful user request and every assistant response/work step, append the new project state, decisions, changes, failures, fixes, verification status and stopping point instead of relying on implicit chat memory.
+The root-level `PROJECT_CONTEXT.md` is intentionally preserved for now and is not the authoritative cumulative log.
+Do not invent historical messages that are no longer available; record only verified historical facts plus new conversation entries verbatim where available.
+
 ## Architecture
 `Compose UI → ViewModel/StateFlow → Use Cases/Domain → Repositories → Data Sources`
 
@@ -25,6 +30,7 @@ Runtime split:
 Initial target: ESP32-CAM + OV2640 → local Wi-Fi → Android MJPEG.
 Endpoints: `/status`, `/capture`, `/stream`.
 Exact board/pin mapping still requires physical board verification before firmware is finalized.
+User also found an ESP32-S3-CAM N16R8 with OV5640CSP; physical board/pin mapping is not yet finalized.
 
 ## Reliability principle
 A computed number is not automatically a trusted measurement. The pipeline distinguishes perception output, track association, physical geometry, robust estimation, quality gates and independent validation.
@@ -51,19 +57,27 @@ Recent failures fixed:
 - MediaMetadataRetriever wrong overload;
 - sdkmanager missing from PATH;
 - LiteRT 2.1.6 duplicate namespace;
-- LiteRT 2.2.0 duplicate namespace under AGP 9, mitigated with compatibility property.
+- LiteRT 2.2.0 duplicate namespace under AGP 9, mitigated with compatibility property;
+- preview renderer Compose compile failures fixed in commit `eaaee7fa...` (that run must not be confused with the later reliability failure).
 
-Every new source change must be judged only from the CI run for that exact commit. Cancelled/older runs do not count as verification.
+CI verification rule: only the run for the exact commit under review counts as verification. Cancelled/older runs do not count.
 
-## Detection
+## Detection / model contract
 `data/vision/LiteRtObjectDetector.kt` is the real LiteRT adapter.
-It validates runtime tensor count, input shape/type, output shape and registered model contract before inference. Current accepted detection contracts are YOLO26 `[1,300,6]` end-to-end and classic `[1,84,8400]` with NMS.
+It validates runtime input/output tensor contracts against the registered model before inference.
 
 `DetectorModelRegistry.kt` currently registers:
-- `yolo26n` → `models/yolo26n.tflite`, input 640, expected end-to-end `[1,300,6]`.
+- `yolo26n` → `models/yolo26n.tflite`
+- input 640
+- NCHW RGB FP32 input preparation
+- classic `[1,84,8400]` output contract with class-aware NMS
+- 80 COCO classes, traffic classes currently car/motorcycle/bus/truck
+- SHA-256 `d9cef07ce652ccfa9ce58e4ac8a4df98ff037739a9dad20a8afcae21b545df73`
+- source: Ultralytics `yolo-flutter-app` release `v0.6.6` w8a32 asset.
 
-No `.tflite` weights are committed. The Android app refuses to run real inference when the registered model asset is absent.
-Ultralytics current documentation says YOLO26 uses end-to-end `(N,300,6)` by default, while the classic one-to-many head is `(N,nc+4,8400)` and requires NMS. LiteRT exports use 640-pixel detection inputs. See `docs/RELIABILITY_DESIGN.md` for source links.
+The `.tflite` asset is committed at `android/app/src/main/assets/models/yolo26n.tflite` and the build task `verifyYolo26nModel` verifies its SHA-256 and byte size.
+The context must not claim that no model asset is committed.
+The classic output contract is intentional for this exact asset; a future end-to-end `[1,300,6]` export must be registered as a distinct validated contract rather than inferred at runtime.
 
 ## Tracking
 Android baseline is a ByteTrack-inspired implementation with:
@@ -73,17 +87,22 @@ Android baseline is a ByteTrack-inspired implementation with:
 - second low-confidence recovery association;
 - class-aware gating;
 - confirmation of identities;
-- explicit lost/removed handling.
+- explicit lost/removed handling;
+- optional deterministic appearance cue.
 
 This is not claimed to be byte-for-byte equivalent to the official reference implementation until evaluated on labeled MOT/traffic sequences.
 Future comparison candidates: official/reference ByteTrack behavior, BoT-SORT, OC-SORT and Deep OC-SORT.
 Tracking evaluation target: HOTA plus IDF1/MOTA, ID switches and fragmentation using TrackEval rather than a home-made imitation metric.
 
+### 2026-09-03 reliability fix
+`ByteTrack.kt` now retains the previous observation and, for a short bounded horizon, computes an observed center velocity from the last two timestamped detections. This empirical motion prior is blended with Kalman prediction at a fixed bounded weight and still passes through the existing geometric association gate. It is not an unlimited distance allowance.
+The added test verifies short non-overlap recovery and explicitly rejects a 400 px jump in 100 ms after a prior 8 px/100 ms motion observation.
+
 ## Geometry/calibration
 `GeometryAndSpeed.kt` provides validated homography projection and robust metric trajectory speed estimation.
-`HomographyEstimator.kt` now has normalized coordinate handling and deterministic RANSAC outlier rejection. The denormalization follows `H = T_target^-1 * H_normalized * T_source`.
+`HomographyEstimator.kt` has normalized coordinate handling and deterministic RANSAC outlier rejection. Denormalization follows `H = T_target^-1 * H_normalized * T_source`.
 
-For production calibration, native/OpenCV SVD/RANSAC is still planned. Calibration records now support reprojection error plus inlier count/ratio.
+For production calibration, native/OpenCV SVD/RANSAC is still planned. Calibration records support reprojection error plus inlier count/ratio.
 
 ## Speed
 Physical speed is never computed from raw pixel displacement.
@@ -92,8 +111,10 @@ It reports m/s, km/h, velocity components, direction, trajectory residual and an
 The quality/confidence score is not a calibrated probability; `errorKmh` is not ground-truth error.
 Independent reference-speed measurements are required for accuracy claims.
 
+A current data-quality limitation remains: `LocalVideoFrameSource` samples requested timestamps with `MediaMetadataRetriever`; these requested sample times are not guaranteed to be exact decoded presentation timestamps. Exact timestamp provenance is therefore explicitly tracked, and production physical-speed mode must require exact timestamps until a sequential decoder/source with trustworthy PTS is integrated.
+
 ## Pipeline
-`AnalysisPipelineRunner.kt` now:
+`AnalysisPipelineRunner.kt`:
 - keeps tracker input threshold separate from report threshold;
 - refuses unrelated detection fallback when a track has no current-frame observation;
 - records inference median/P95, processing FPS, total time, frame gaps, tracking input count, association misses and peak active tracks;
@@ -102,7 +123,16 @@ Independent reference-speed measurements are required for accuracy claims.
 
 `AnalysisEngine.kt` no longer returns an empty fake result for `MediaSource`: a `FrameSourceFactory` is required to create a real source; direct `FrameSource` execution is real.
 
-`LocalAnalysisViewModel.kt` and `LocalAnalysisScreen.kt` now execute the actual local image/video detector+tracker pipeline. The Lab shows executed metrics and explicit runtime failures. Missing model assets disable real execution.
+`LocalAnalysisViewModel.kt` and `LocalAnalysisScreen.kt` execute the actual local image/video detector+tracker pipeline. The Lab shows executed metrics and explicit runtime failures. Missing model assets disable real execution.
+
+## Live analysis preview
+The Lab now has an `AnalysisPreviewFrame` observer/state path that exposes the actual decoded bitmap, detections, current tracks and live speed estimates to `AnalysisRadarPreview`.
+The preview renderer compile defects were fixed in commit `eaaee7fa...`; the preview must still be validated on a green CI run and a real device. Display throttling may be added later without changing analysis metrics.
+
+## Plate/OCR
+Current `PlateConsensus` groups OCR readings by track and normalized text and uses exponential recency weighting based on actual timestamps.
+On 2026-09-03 a test expected `ABC123` for readings `0.90@0ms` and `XYZ999` at `0.60@100ms` with half-life 100ms. That expectation was mathematically wrong: weighted support is `0.45` versus `0.60`, so the correct expected winner is `XYZ999` at 100ms. The test was corrected accordingly.
+Temporal consensus is not yet a full production plate detector/OCR backend; those remain pending.
 
 ## Benchmarks
 `DetectorBenchmark.kt` measures model-run latency with warmup, median and P95. It is not yet a complete device benchmark. Final benchmark must compare CPU/GPU/NPU on the same physical phone, same model, same input frames, and record preprocessing, inference, postprocessing, end-to-end throughput, memory and thermal state.
@@ -112,7 +142,7 @@ Independent reference-speed measurements are required for accuracy claims.
 
 ## Offline Python
 `ai/robust_speed.py` mirrors the Android robust speed method and has unit tests.
-`ai/run_traffic_analysis.py` now reports speed confidence, uncertainty, trajectory residuals and dynamic-homography RMSE/inlier ratio. Dynamic keypoints remain research-only and must be per-track and benchmarked before production use.
+`ai/run_traffic_analysis.py` reports speed confidence, uncertainty, trajectory residuals and dynamic-homography RMSE/inlier ratio. Dynamic keypoints remain research-only and must be per-track and benchmarked before production use.
 
 ## Research-backed direction
 - ByteTrack reference: Kalman prediction + global assignment + low-score second association.
@@ -133,10 +163,11 @@ Runtime: decode FPS, inference latency, E2E latency, dropped frames, memory and 
 Test conditions should include daylight, dusk/night, glare/shadows, dense traffic, occlusion, multiple lanes, approaching/receding vehicles and varied camera geometry.
 
 ## Current blockers / not yet claimed
-- validated `.tflite` model must be installed/tested on the actual phone;
+- validated model behavior must be tested on the actual phone;
 - CPU/GPU/NPU real-device benchmark pending;
 - labeled traffic clips and TrackEval report pending;
 - independent physical-speed validation pending;
+- exact decoded PTS source for physical-speed video pending;
 - native/OpenCV production calibration pending;
 - trained vehicle-keypoint backend and dynamic homography pending;
 - optical flow/segmentation/Re-ID backends pending;
@@ -145,11 +176,31 @@ Test conditions should include daylight, dusk/night, glare/shadows, dense traffi
 
 ## Immediate execution order
 1. Pass CI for the newest reliability/execution commit.
-2. Fix any compile/test failures before further feature growth.
-3. Validate the registered LiteRT tensor contract with a real `.tflite` artifact.
+2. Fix every compile/test/lint failure before further feature growth.
+3. Validate the committed LiteRT artifact and tensor contract on the actual Android device.
 4. Build CPU/GPU/NPU benchmark UI and collect physical-device measurements.
 5. Evaluate ByteTrack baseline with TrackEval metrics on labeled traffic sequences.
-6. Add proper calibration UI and native/OpenCV RANSAC/SVD path.
-7. Add Kotlin/native speed parity tests, then route hot path to native.
-8. Implement real vehicle-keypoint/dynamic-homography research backend and compare to fixed calibration.
-9. Add OCR, traffic rules, events and evidence persistence with the same reliability gates.
+6. Replace video requested-sample timestamps with trustworthy decoded PTS for physical-speed mode.
+7. Add proper calibration UI and native/OpenCV RANSAC/SVD path.
+8. Add Kotlin/native speed parity tests, then route the hot path to native after parity.
+9. Implement real vehicle-keypoint/dynamic-homography research backend and compare to fixed calibration.
+10. Add OCR, traffic rules, events and evidence persistence with the same reliability gates.
+
+## Conversation / work log — 2026-09-03
+
+### User request
+"حسنا اكمل العمل بتفكيرا عميق وتركيزا شديد لا اريد اخطاء او نسيان هل فهمت"
+
+### Work performed
+- Re-read the current cumulative context and treated `docs/PROJECT_CONTEXT.md` as the authoritative project handoff record.
+- Preserved root `PROJECT_CONTEXT.md` as requested; did not delete it.
+- Inspected the failing reliability tests and their production implementations.
+- Corrected the timestamp-weighted plate consensus test: with half-life 100 ms, `XYZ999` has support 0.60 versus 0.45 for `ABC123`.
+- Updated `ByteTrack.kt` with a bounded, timestamp-derived empirical motion prior blended with Kalman prediction.
+- Added a regression test rejecting an implausible 400 px / 100 ms jump after a valid short-motion history.
+- Confirmed `DetectorModelRegistry.kt` currently uses the classic `[1,84,8400]` contract for the committed `yolo26n.tflite` asset and verified the registered SHA-256.
+- Updated this document to correct stale statements about the model asset and to preserve the actual project plan and blockers.
+- Latest workflow for commit `c321020ec307c775b2c8680803e975567e6ffe58` was observed as pending at the time of this entry; it had not yet earned green verification.
+
+### Current exact stopping point
+The code fixes and regression tests are committed on `main`. CI for commit `c321020ec307c775b2c8680803e975567e6ffe58` is the next verification gate. No green result is claimed until the exact run completes successfully.
