@@ -48,12 +48,24 @@ data class TrackObservation(
     val keypoints: List<VehicleKeypoint> = emptyList(),
 )
 
+enum class TrackState {
+    TENTATIVE,
+    CONFIRMED,
+    LOST,
+    REMOVED,
+}
+
 data class Track(
     val id: Long,
     val className: String,
     val observations: List<TrackObservation>,
     val trackConfidence: Float,
     val wasOccluded: Boolean = false,
+    val state: TrackState = TrackState.CONFIRMED,
+    val hits: Int = 0,
+    val misses: Int = 0,
+    val ageFrames: Int = 0,
+    val lastTimestampMs: Long = 0L,
 )
 
 data class SpeedEstimate(
@@ -117,12 +129,10 @@ data class AnalysisConfig(
     val trafficRules: TrafficRuleConfig = TrafficRuleConfig(),
     val enableEvidence: Boolean = false,
     val showRadarOverlay: Boolean = true,
-    /** Maximum number of reportable detections retained in the final result object. */
     val maxRetainedDetections: Int = 10_000,
-    /** Maximum per-track observations retained for measurement/evidence processing. */
     val maxTrackHistoryObservations: Int = 900,
-    /** Number of most-recent latency samples retained for robust percentile estimates. */
     val latencySampleWindow: Int = 2_048,
+    val maxPlateReadings: Int = 512,
 )
 
 data class AnalysisMetrics(
