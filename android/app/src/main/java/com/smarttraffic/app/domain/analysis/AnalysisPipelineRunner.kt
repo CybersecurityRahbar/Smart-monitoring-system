@@ -2,7 +2,7 @@ package com.smarttraffic.app.domain.analysis
 
 import kotlin.math.min
 
-/** Real frame-to-result coordinator. */
+/** Real frame-to-result coordinator. The caller owns the FrameSource lifecycle. */
 class AnalysisPipelineRunner(
     private val detector: ObjectDetector,
     private val tracker: MultiObjectTracker,
@@ -63,142 +63,138 @@ class AnalysisPipelineRunner(
         var calibrationReady = false
         val analysisStartNs = System.nanoTime()
 
-        try {
-            while (true) {
-                val frame = source.nextFrame() ?: break
-                frameCount++
+        while (true) {
+            val frame = source.nextFrame() ?: break
+            frameCount++
 
-                previousFrameIndex?.let { previous ->
-                    require(frame.index > previous) {
-                        "Frame indices must increase strictly: previous=$previous current=${frame.index}"
+            previousFrameIndex?.let { previous ->
+                require(frame.index > previous) {
+                    "Frame indices must increase strictly: previous=$previous current=${frame.index}"
+                }
+                if (frame.index > previous + 1L) {
+                    droppedFrames += frame.index - previous - 1L
+                }
+            }
+            previousTimestampMs?.let { previous ->
+                require(frame.timestampMs >= previous) {
+                    "Frame timestamps must be monotonic: previous=$previous current=${frame.timestampMs}"
+                }
+            }
+            previousFrameIndex = frame.index
+            previousTimestampMs = frame.timestampMs
+
+            if (!calibrationChecked) {
+                calibrationReady = config.useGroundPlane && calibrationAccepted(
+                    config = config,
+                    sourceWidth = frame.width,
+                    sourceHeight = frame.height,
+                )
+                calibrationChecked = true
+            }
+
+            val inferenceStartNs = System.nanoTime()
+            val rawDetections = try {
+                detector.detect(frame.payload, frame.timestampMs, frame.index)
+            } catch (error: Throwable) {
+                throw IllegalStateException(
+                    "Object detector failed at frame=${frame.index}, timestampMs=${frame.timestampMs}",
+                    error,
+                )
+            }
+            val inferenceLatencyMs = (System.nanoTime() - inferenceStartNs) / 1_000_000.0
+            require(inferenceLatencyMs.isFinite() && inferenceLatencyMs >= 0.0) {
+                "Measured detector latency is invalid at frame=${frame.index}"
+            }
+            inferenceSamples += inferenceLatencyMs
+
+            val trackingDetections = rawDetections.filter {
+                it.confidence.isFinite() && it.confidence in config.trackerInputMinimumConfidence..1f
+            }
+            trackingDetectionCount += trackingDetections.size.toLong()
+            val reportableDetections = trackingDetections.filter { it.confidence >= config.minimumDetectionConfidence }
+            allDetections += reportableDetections
+
+            val tracks = tracker.update(trackingDetections, frame.index, frame.timestampMs)
+            lastActiveTracks = tracks.size
+            peakActiveTracks = maxOf(peakActiveTracks, tracks.size)
+            for (track in tracks) {
+                val observation = track.observations.lastOrNull { it.frameIndex == frame.index }
+                if (observation == null) {
+                    trackingAssociationMisses++
+                    continue
+                }
+
+                val keypoints = if (config.useVehicleKeypoints) {
+                    keypointEstimator!!.estimate(frame.payload, observation.detection)
+                } else emptyList()
+
+                val contact = selectContactPoint(observation.detection, keypoints)
+                val ground = if (calibrationReady) {
+                    val calibration = requireNotNull(config.calibration) {
+                        "Calibration was accepted without a calibration profile"
                     }
-                    if (frame.index > previous + 1L) {
-                        droppedFrames += frame.index - previous - 1L
+                    runCatching {
+                        groundProjector.project(calibration, contact.first, contact.second)
+                    }.getOrElse { error ->
+                        throw IllegalStateException(
+                            "Ground-plane projection failed at frame=${frame.index}, track=${track.id}",
+                            error,
+                        )
                     }
-                }
-                previousTimestampMs?.let { previous ->
-                    require(frame.timestampMs >= previous) {
-                        "Frame timestamps must be monotonic: previous=$previous current=${frame.timestampMs}"
-                    }
-                }
-                previousFrameIndex = frame.index
-                previousTimestampMs = frame.timestampMs
+                } else null
 
-                if (!calibrationChecked) {
-                    calibrationReady = config.useGroundPlane && calibrationAccepted(
-                        config = config,
-                        sourceWidth = frame.width,
-                        sourceHeight = frame.height,
-                    )
-                    calibrationChecked = true
-                }
+                val enriched = observation.copy(groundPoint = ground, keypoints = keypoints)
+                val buffer = trackBuffers.getOrPut(track.id) { MutableTrackBuffer(track.id, track.className) }
+                buffer.wasOccluded = buffer.wasOccluded || track.wasOccluded
+                buffer.confidenceSamples += track.trackConfidence.toDouble()
+                buffer.observations += enriched
 
-                val inferenceStartNs = System.nanoTime()
-                val rawDetections = try {
-                    detector.detect(frame.payload, frame.timestampMs, frame.index)
-                } catch (error: Throwable) {
-                    throw IllegalStateException(
-                        "Object detector failed at frame=${frame.index}, timestampMs=${frame.timestampMs}",
-                        error,
-                    )
-                }
-                val inferenceLatencyMs = (System.nanoTime() - inferenceStartNs) / 1_000_000.0
-                require(inferenceLatencyMs.isFinite() && inferenceLatencyMs >= 0.0) {
-                    "Measured detector latency is invalid at frame=${frame.index}"
-                }
-                inferenceSamples += inferenceLatencyMs
-
-                val trackingDetections = rawDetections.filter {
-                    it.confidence.isFinite() && it.confidence in config.trackerInputMinimumConfidence..1f
-                }
-                trackingDetectionCount += trackingDetections.size.toLong()
-                val reportableDetections = trackingDetections.filter { it.confidence >= config.minimumDetectionConfidence }
-                allDetections += reportableDetections
-
-                val tracks = tracker.update(trackingDetections, frame.index, frame.timestampMs)
-                lastActiveTracks = tracks.size
-                peakActiveTracks = maxOf(peakActiveTracks, tracks.size)
-                for (track in tracks) {
-                    val observation = track.observations.lastOrNull { it.frameIndex == frame.index }
-                    if (observation == null) {
-                        trackingAssociationMisses++
-                        continue
-                    }
-
-                    val keypoints = if (config.useVehicleKeypoints) {
-                        keypointEstimator!!.estimate(frame.payload, observation.detection)
-                    } else emptyList()
-
-                    val contact = selectContactPoint(observation.detection, keypoints)
-                    val ground = if (calibrationReady) {
-                        val calibration = requireNotNull(config.calibration) {
-                            "Calibration was accepted without a calibration profile"
-                        }
-                        runCatching {
-                            groundProjector.project(calibration, contact.first, contact.second)
-                        }.getOrElse { error ->
-                            throw IllegalStateException(
-                                "Ground-plane projection failed at frame=${frame.index}, track=${track.id}",
-                                error,
-                            )
-                        }
-                    } else null
-
-                    val enriched = observation.copy(groundPoint = ground, keypoints = keypoints)
-                    val buffer = trackBuffers.getOrPut(track.id) { MutableTrackBuffer(track.id, track.className) }
-                    buffer.wasOccluded = buffer.wasOccluded || track.wasOccluded
-                    buffer.confidenceSamples += track.trackConfidence.toDouble()
-                    buffer.observations += enriched
-
-                    if (config.enablePlateRecognition) {
-                        plateRecognizer!!.recognize(frame.payload, observation.detection)?.let { reading ->
-                            plateReadings += reading.copy(
-                                trackId = reading.trackId ?: track.id,
-                                timestampMs = frame.timestampMs,
-                            )
-                        }
-                    }
-                }
-
-                if (previewObserver != null) {
-                    val bitmap = frame.payload as? android.graphics.Bitmap
-                    if (bitmap != null) {
-                        val liveTracks = tracks.mapNotNull { track ->
-                            val buffer = trackBuffers[track.id] ?: return@mapNotNull null
-                            Track(
-                                id = buffer.id,
-                                className = buffer.className,
-                                observations = buffer.observations.toList(),
-                                trackConfidence = buffer.confidenceSamples.average().toFloat().coerceIn(0f, 1f),
-                                wasOccluded = buffer.wasOccluded,
-                            )
-                        }
-                        val liveSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
-                        val liveSpeeds = if (liveSpeedAllowed) {
-                            liveTracks.mapNotNull { liveTrack ->
-                                speedEstimator.estimate(
-                                    observations = liveTrack.observations,
-                                    minimumSamples = config.minimumSpeedSamples,
-                                    minimumDurationMs = config.minimumTrackDurationMs,
-                                    maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
-                                )?.let { liveTrack.id to it }
-                            }.toMap()
-                        } else emptyMap()
-                        previewObserver.onFrame(
-                            AnalysisPreviewFrame(
-                                frame = frame,
-                                bitmap = bitmap,
-                                detections = reportableDetections,
-                                tracks = liveTracks,
-                                speedEstimates = liveSpeeds,
-                                calibrated = liveSpeedAllowed,
-                            ),
+                if (config.enablePlateRecognition) {
+                    plateRecognizer!!.recognize(frame.payload, observation.detection)?.let { reading ->
+                        plateReadings += reading.copy(
+                            trackId = reading.trackId ?: track.id,
+                            timestampMs = frame.timestampMs,
                         )
                     }
                 }
             }
-        } finally {
-            source.close()
+
+            if (previewObserver != null) {
+                val bitmap = frame.payload as? android.graphics.Bitmap
+                if (bitmap != null) {
+                    val liveTracks = tracks.mapNotNull { track ->
+                        val buffer = trackBuffers[track.id] ?: return@mapNotNull null
+                        Track(
+                            id = buffer.id,
+                            className = buffer.className,
+                            observations = buffer.observations.toList(),
+                            trackConfidence = buffer.confidenceSamples.average().toFloat().coerceIn(0f, 1f),
+                            wasOccluded = buffer.wasOccluded,
+                        )
+                    }
+                    val liveSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
+                    val liveSpeeds = if (liveSpeedAllowed) {
+                        liveTracks.mapNotNull { liveTrack ->
+                            speedEstimator.estimate(
+                                observations = liveTrack.observations,
+                                minimumSamples = config.minimumSpeedSamples,
+                                minimumDurationMs = config.minimumTrackDurationMs,
+                                maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
+                            )?.let { liveTrack.id to it }
+                        }.toMap()
+                    } else emptyMap()
+                    previewObserver.onFrame(
+                        AnalysisPreviewFrame(
+                            frame = frame,
+                            bitmap = bitmap,
+                            detections = reportableDetections,
+                            tracks = liveTracks,
+                            speedEstimates = liveSpeeds,
+                            calibrated = liveSpeedAllowed,
+                        ),
+                    )
+                }
+            }
         }
 
         val completedTracks = trackBuffers.values.map { buffer ->
