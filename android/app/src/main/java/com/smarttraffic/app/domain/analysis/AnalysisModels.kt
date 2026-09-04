@@ -26,7 +26,6 @@ data class Detection(
     val bottom: Float,
     val frameIndex: Long,
     val timestampMs: Long,
-    /** Optional deterministic appearance cue computed from the vehicle crop. */
     val appearanceSignature: FloatArray? = null,
 )
 
@@ -81,6 +80,18 @@ data class SpeedEstimate(
     val errorKmh: Double? = null,
 )
 
+enum class SpeedRejectionReason {
+    CALIBRATION_INVALID,
+    TIMESTAMP_INVALID,
+    INSUFFICIENT_OBSERVATIONS,
+    INSUFFICIENT_DURATION,
+    TRACK_QUALITY_LOW,
+    DISCONTINUOUS_TRACK,
+    GROUND_GEOMETRY_INCOMPLETE,
+    PLAUSIBILITY_REJECTION,
+    ROBUST_ESTIMATOR_REJECTION,
+}
+
 data class PlateReading(
     val text: String,
     val confidence: Float,
@@ -133,12 +144,12 @@ data class AnalysisConfig(
     val maxTrackHistoryObservations: Int = 900,
     val latencySampleWindow: Int = 2_048,
     val maxPlateReadings: Int = 512,
+    val minimumTrackConfidenceForSpeed: Float = 0.50f,
+    val maximumSpeedObservationGapMs: Long = 600L,
 )
 
 data class AnalysisMetrics(
-    /** Measured source-read/decode throughput, not nominal media FPS. */
     val decodeFps: Double? = null,
-    /** Nominal media FPS metadata, when supplied by the source. */
     val sourceNominalFps: Double? = null,
     val timestampPrecision: FrameTimestampPrecision = FrameTimestampPrecision.UNKNOWN,
     val inferenceLatencyMs: Double? = null,
@@ -169,6 +180,7 @@ data class AnalysisResult(
     val detections: List<Detection> = emptyList(),
     val tracks: List<Track> = emptyList(),
     val speedEstimates: Map<Long, SpeedEstimate> = emptyMap(),
+    val speedRejectionReasons: Map<Long, SpeedRejectionReason> = emptyMap(),
     val plateReadings: List<PlateReading> = emptyList(),
     val trafficEvents: List<TrafficEvent> = emptyList(),
     val metrics: AnalysisMetrics = AnalysisMetrics(),
