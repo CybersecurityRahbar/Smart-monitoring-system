@@ -1,11 +1,6 @@
 package com.smarttraffic.app.domain.analysis
 
-/** Timestamp provenance for physical measurements. */
-enum class FrameTimestampPrecision {
-    EXACT_SOURCE_CLOCK,
-    REQUESTED_SAMPLE_TIME,
-    UNKNOWN,
-}
+enum class FrameTimestampPrecision { EXACT_SOURCE_CLOCK, REQUESTED_SAMPLE_TIME, UNKNOWN }
 
 data class MediaSource(
     val id: String,
@@ -47,12 +42,7 @@ data class TrackObservation(
     val keypoints: List<VehicleKeypoint> = emptyList(),
 )
 
-enum class TrackState {
-    TENTATIVE,
-    CONFIRMED,
-    LOST,
-    REMOVED,
-}
+enum class TrackState { TENTATIVE, CONFIRMED, LOST, REMOVED }
 
 data class Track(
     val id: Long,
@@ -146,6 +136,8 @@ data class AnalysisConfig(
     val maxPlateReadings: Int = 512,
     val minimumTrackConfidenceForSpeed: Float = 0.50f,
     val maximumSpeedObservationGapMs: Long = 600L,
+    /** Maximum preview callbacks per second. Analysis itself never waits on the preview. */
+    val maximumPreviewFps: Double = 12.0,
 )
 
 data class AnalysisMetrics(
