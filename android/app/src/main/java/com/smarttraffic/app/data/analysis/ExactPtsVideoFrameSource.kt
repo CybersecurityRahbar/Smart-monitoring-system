@@ -124,15 +124,8 @@ class ExactPtsVideoFrameSource(
                     val image = acquireRenderedImage(presentationTimeUs, isEos)
                     if (image != null) {
                         try {
-                            require(presentationTimeUs >= 0L) {
-                                "Decoder returned invalid presentation timestamp=$presentationTimeUs us"
-                            }
-                            require(
-                                lastPresentationTimeUs < 0L || presentationTimeUs >= lastPresentationTimeUs,
-                            ) {
-                                "Decoder returned non-monotonic presentation timestamp=$presentationTimeUs us after $lastPresentationTimeUs us"
-                            }
-                            lastPresentationTimeUs = presentationTimeUs
+                            validatePresentationTimestamp(presentationTimeUs)
+                            validateImageTimestamp(image, presentationTimeUs)
                             val bitmap = imageToBitmap(image)
                             val result = AnalysisFrame(
                                 index = frameIndex++,
@@ -190,6 +183,29 @@ class ExactPtsVideoFrameSource(
                     "Timed out waiting for ImageReader output for presentation timestamp=$presentationTimeUs us",
                 )
             }
+        }
+    }
+
+    private fun validatePresentationTimestamp(presentationTimeUs: Long) {
+        require(presentationTimeUs >= 0L) {
+            "Decoder returned invalid presentation timestamp=$presentationTimeUs us"
+        }
+        require(
+            lastPresentationTimeUs < 0L || presentationTimeUs >= lastPresentationTimeUs,
+        ) {
+            "Decoder returned non-monotonic presentation timestamp=$presentationTimeUs us after $lastPresentationTimeUs us"
+        }
+        lastPresentationTimeUs = presentationTimeUs
+    }
+
+    private fun validateImageTimestamp(image: Image, presentationTimeUs: Long) {
+        val imageTimestampNs = image.timestamp
+        if (imageTimestampNs <= 0L || presentationTimeUs <= 0L) return
+        val presentationTimestampNs = presentationTimeUs * 1000L
+        val absoluteDeltaNs = kotlin.math.abs(imageTimestampNs - presentationTimestampNs)
+        val toleranceNs = 2_000_000L
+        require(absoluteDeltaNs <= toleranceNs) {
+            "ImageReader timestamp mismatch: image=${imageTimestampNs}ns decoder=${presentationTimestampNs}ns"
         }
     }
 
