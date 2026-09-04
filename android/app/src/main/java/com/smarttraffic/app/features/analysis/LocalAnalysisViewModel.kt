@@ -7,7 +7,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.smarttraffic.app.core.TrafficRulePreferences
 import com.smarttraffic.app.data.analysis.AnalysisRuntimeFactory
-import com.smarttraffic.app.data.analysis.ExactPtsVideoFrameSource
 import com.smarttraffic.app.data.analysis.LocalImageFrameSource
 import com.smarttraffic.app.data.analysis.LocalVideoFrameSource
 import com.smarttraffic.app.data.evidence.FileEvidenceStore
@@ -64,6 +63,10 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
         ) return
 
         _preview.value = null
+        _state.value = AnalysisRunState(
+            phase = AnalysisRunPhase.RUNNING,
+            message = "Preparing detector and media decoder…",
+        )
         viewModelScope.launch(Dispatchers.Default) {
             val app = getApplication<Application>()
             val persistedRules = TrafficRulePreferences.load(app)
@@ -71,6 +74,10 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                 enableRules = config.enableRules || persistedRules.enabled,
                 trafficRules = persistedRules,
                 enableEvidence = config.enableEvidence || persistedRules.preserveEvidence,
+                // The first field-validation path deliberately disables the optional appearance
+                // cue. It is deterministic but adds CPU/memory work and should be benchmarked
+                // independently from the core detector/tracker path.
+                useAppearanceAssociation = false,
             )
 
             val spec = runCatching {
@@ -88,19 +95,26 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
             }
 
             try {
+                _state.value = AnalysisRunState(
+                    phase = AnalysisRunPhase.RUNNING,
+                    message = "Initializing LiteRT CPU detector…",
+                )
                 val runtime = AnalysisRuntimeFactory.createDetector(
                     context = app,
                     modelId = spec.id,
                     useAppearanceAssociation = effectiveConfig.useAppearanceAssociation,
                 )
+
+                _state.value = AnalysisRunState(
+                    phase = AnalysisRunPhase.RUNNING,
+                    message = "Opening selected media…",
+                    accelerator = runtime.accelerator.name,
+                )
+                // The custom MediaCodec + ImageReader path is intentionally not used by the first
+                // field-validation route. It remains available for a separate, instrumented PTS
+                // compatibility test after the basic detector/tracker path is stable on-device.
                 val source: FrameSource = when (mediaType) {
-                    AnalysisMediaType.VIDEO -> runCatching {
-                        ExactPtsVideoFrameSource(app, uri)
-                    }.getOrElse {
-                        // Explicit fallback: precision remains REQUESTED_SAMPLE_TIME, so the
-                        // physical-speed gate will remain closed for this source.
-                        LocalVideoFrameSource(app, uri)
-                    }
+                    AnalysisMediaType.VIDEO -> LocalVideoFrameSource(app, uri)
                     AnalysisMediaType.IMAGE -> {
                         val bitmap = app.contentResolver.openInputStream(uri).use { stream ->
                             requireNotNull(stream) { "Unable to open selected image" }
@@ -118,9 +132,6 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                     detector = runtime.detector,
                     tracker = ByteTrack(),
                     previewObserver = observer,
-                    // Keep the first on-device validation run independent of Android JNI/native
-                    // loading. C++ remains covered by the native parity tests until a real-device
-                    // native smoke test has passed.
                     groundProjector = KotlinGroundProjector,
                     speedEstimator = KotlinSpeedEstimatorBackend,
                 )
