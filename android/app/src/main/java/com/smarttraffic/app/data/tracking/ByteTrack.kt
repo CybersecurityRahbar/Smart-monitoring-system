@@ -31,6 +31,7 @@ class ByteTrack(
     private val empiricalVelocityBlend: Double = 0.75,
     private val maxAccelerationPixelsPerSecond2: Double = 1_200.0,
     private val maxAdaptiveGateSeconds: Double = 0.50,
+    private val maxHistoryObservations: Int = 900,
 ) : MultiObjectTracker {
     private val tracks = LinkedHashMap<Long, InternalTrack>()
     private var nextId = 1L
@@ -47,6 +48,7 @@ class ByteTrack(
         require(empiricalVelocityBlend in 0.0..1.0 && empiricalVelocityBlend.isFinite())
         require(maxAccelerationPixelsPerSecond2 > 0.0 && maxAccelerationPixelsPerSecond2.isFinite())
         require(maxAdaptiveGateSeconds > 0.0 && maxAdaptiveGateSeconds.isFinite())
+        require(maxHistoryObservations >= 32)
     }
 
     override fun reset() {
@@ -87,6 +89,7 @@ class ByteTrack(
                 empiricalVelocityHorizonSeconds = empiricalVelocityHorizonSeconds,
                 empiricalVelocityBlend = empiricalVelocityBlend,
                 maxAccelerationPixelsPerSecond2 = maxAccelerationPixelsPerSecond2,
+                maxHistoryObservations = maxHistoryObservations,
             )
             track.hits = 1
             track.matched = true
@@ -190,6 +193,7 @@ class ByteTrack(
         private val empiricalVelocityHorizonSeconds: Double,
         private val empiricalVelocityBlend: Double,
         private val maxAccelerationPixelsPerSecond2: Double,
+        private val maxHistoryObservations: Int,
     ) {
         var lastDetection = initial
         private var previousDetection: Detection? = null
@@ -200,7 +204,7 @@ class ByteTrack(
         private var velocityY = 0.0
         private var hasVelocity = false
         private val filter = KalmanBoxPredictor(predicted)
-        private val history = ArrayList<TrackObservation>()
+        private val history = ArrayList<TrackObservation>(maxHistoryObservations)
         var hits = 0
         var lostFrames = 0
         var matched = false
@@ -249,8 +253,6 @@ class ByteTrack(
                 val dot = observedVelocityX * velocityX + observedVelocityY * velocityY
                 val currentSpeed = hypot(observedVelocityX, observedVelocityY)
                 val previousSpeed = hypot(velocityX, velocityY)
-                // A full direction reversal in one observation is treated as an unreliable
-                // empirical cue; Kalman prediction remains responsible for that transition.
                 if (dot < 0.0 && currentSpeed > previousSpeed * 0.75) return kalmanPrediction
             }
 
@@ -307,6 +309,7 @@ class ByteTrack(
             lastFrameIndex = frameIndex
             lastTimestampMs = timestampMs
             history += TrackObservation(frameIndex, timestampMs, detection)
+            if (history.size > maxHistoryObservations) history.removeAt(0)
         }
 
         fun markLost() {
