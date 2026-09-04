@@ -2,7 +2,6 @@ package com.smarttraffic.app.domain.analysis
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -36,7 +35,7 @@ class ModularAnalysisEngineLifecycleTest {
 
         val result = engine.analyze(mediaSource, AnalysisConfig(useGroundPlane = false))
 
-        assertTrue(result.source.id == mediaSource.id)
+        assertEquals("counting-source", result.source.id)
         assertEquals(1, created.closeCount.get())
     }
 
