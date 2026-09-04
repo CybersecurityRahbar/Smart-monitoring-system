@@ -38,6 +38,9 @@ Run #297 (`docs: finalize 2026-09-04 cumulative context`) exposed two stale unit
 
 These are test-contract corrections, not production-behavior changes. The production ownership boundary remains unchanged and is now tested consistently.
 
+## Post-Run-297 lifecycle hardening — 2026-09-04
+Added `factoryCreatedFrameSourceIsClosedWhenPipelineFails` to `ModularAnalysisEngineLifecycleTest.kt`. This exercises the `ModularAnalysisEngine.analyze(MediaSource, ...)` failure path with a detector that throws and verifies the factory-created source is still closed exactly once. This protects the cleanup contract against regression when analysis aborts with an exception.
+
 ## Important architectural observation
 The current Local and Live ViewModels each instantiate their own `UnifiedAnalysisSession`. They share the same lifecycle abstraction and pipeline contract, but this is not yet a single app-level session instance. A future app-level host/coordinator is still required if Dashboard/Radar/Live/Local must observe exactly one process-wide analysis execution instead of one session per ViewModel.
 
@@ -75,7 +78,9 @@ The next parity improvement is to move from duplicated hand-written goldens towa
 ## Current verification state
 Run #296 (`33875804871`) corresponded to commit `fe9062724479aec679a4632e9639d0d194df27a3`, with Native C++ Parity and Python tests passing while Android was still in progress. It was superseded by later ownership/test changes.
 
-The current `main` HEAD after the Run-#297 test corrections is commit `56fd7c206458e7bd116c5f09a180ebafb5bcb7a6`. GitHub Actions Run #299 (`33876584330`) was created for this exact HEAD and is the authoritative CI verification run for the latest correction. At the latest inspection it was still in progress; it must not be declared green until its final conclusion is confirmed.
+Run #297 on the prior documentation commit failed in Android unit tests with exactly two stale assertions. Those assertions were corrected in commits `9b61fb220c43e621e9dd431e45f29c901f709b1d` and `56fd7c206458e7bd116c5f09a180ebafb5bcb7a6`. A follow-up failure-path lifecycle test was added in `4edb21cb6346e1bd5e2204a7d3cd604c32f1a389`.
+
+A documentation synchronization commit after the test corrections is commit `4948a7f267c5bb3ec5d4c6d3523fb2a1742991a0`, which triggered Run #300 (`33876771482`). At the latest inspection Run #300 was still pending. The subsequent failure-path test commit `4edb21cb6346e1bd5e2204a7d3cd604c32f1a389` is newer and therefore requires a newer exact-HEAD CI run before the state can be called green.
 
 ## Current stopping point
 Latest code areas hardened in this session:
@@ -84,6 +89,7 @@ Latest code areas hardened in this session:
 - explicit FrameSource ownership boundary between session, engine and runner;
 - lifecycle and ownership regression tests;
 - exact-PTS decoder ImageReader queue and PTS/image timestamp consistency validation;
-- corrected stale unit-test expectations exposed by Run #297.
+- corrected stale unit-test expectations exposed by Run #297;
+- explicit cleanup verification for factory-created sources on analysis failure.
 
 The next engineering gate is a fully green CI run on the exact current `main` HEAD, followed by real-device Exact PTS validation and only then deeper tracking/speed benchmark work.
