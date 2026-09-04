@@ -1,16 +1,18 @@
 package com.smarttraffic.app.features.analysis
 
-import android.app.Application
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.smarttraffic.app.SmartTrafficApplication
+import com.smarttraffic.app.core.AnalysisDiagnostics
 import com.smarttraffic.app.core.TrafficRulePreferences
 import com.smarttraffic.app.data.analysis.AnalysisRuntimeFactory
 import com.smarttraffic.app.data.analysis.LocalImageFrameSource
 import com.smarttraffic.app.data.analysis.LocalVideoFrameSource
 import com.smarttraffic.app.data.evidence.FileEvidenceStore
 import com.smarttraffic.app.data.tracking.ByteTrack
+import com.smarttraffic.app.data.vision.DetectorModelRegistry
 import com.smarttraffic.app.domain.analysis.AnalysisConfig
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewObserver
@@ -39,9 +41,10 @@ data class AnalysisRunState(
     val result: AnalysisResult? = null,
 )
 
-/** Local Lab adapter around the same UnifiedAnalysisSession used by live analysis. */
-class LocalAnalysisViewModel(application: Application) : AndroidViewModel(application) {
-    private val session = UnifiedAnalysisSession(viewModelScope)
+/** Local Lab adapter. The execution lifecycle is owned by the application-scoped AnalysisHost. */
+class LocalAnalysisViewModel(application: android.app.Application) : AndroidViewModel(application) {
+    private val session: UnifiedAnalysisSession =
+        application.cast<SmartTrafficApplication>().analysisHost.session
     private val _state = MutableStateFlow(AnalysisRunState())
     val state: StateFlow<AnalysisRunState> = _state.asStateFlow()
 
@@ -68,52 +71,63 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
             message = "Preparing detector and media decoder…",
         )
         viewModelScope.launch(Dispatchers.Default) {
-            val app = getApplication<Application>()
-            val persistedRules = TrafficRulePreferences.load(app)
-            val effectiveConfig = config.copy(
-                enableRules = config.enableRules || persistedRules.enabled,
-                trafficRules = persistedRules,
-                enableEvidence = config.enableEvidence || persistedRules.preserveEvidence,
-                // The first field-validation path deliberately disables the optional appearance
-                // cue. It is deterministic but adds CPU/memory work and should be benchmarked
-                // independently from the core detector/tracker path.
-                useAppearanceAssociation = false,
-            )
-
-            val spec = runCatching {
-                com.smarttraffic.app.data.vision.DetectorModelRegistry.requireSpec(effectiveConfig.detectorModel)
-            }.getOrElse { error ->
-                _state.value = AnalysisRunState(AnalysisRunPhase.ERROR, error.message)
-                return@launch
-            }
-            if (!com.smarttraffic.app.data.vision.DetectorModelRegistry.isInstalled(app, spec)) {
-                _state.value = AnalysisRunState(
-                    AnalysisRunPhase.ERROR,
-                    "Detector model is not installed: ${spec.assetPath}",
-                )
-                return@launch
-            }
-
+            val app = getApplication<SmartTrafficApplication>()
+            val runId = AnalysisDiagnostics.newRun(app)
+            var runtime: AnalysisRuntimeFactory.DetectorRuntime? = null
+            var source: FrameSource? = null
+            var sessionOwnsResources = false
             try {
+                val persistedRules = TrafficRulePreferences.load(app)
+                val effectiveConfig = config.copy(
+                    enableRules = config.enableRules || persistedRules.enabled,
+                    trafficRules = persistedRules,
+                    enableEvidence = config.enableEvidence || persistedRules.preserveEvidence,
+                    // Baseline device validation isolates detector/tracker from optional appearance work.
+                    useAppearanceAssociation = false,
+                )
+
+                AnalysisDiagnostics.mark(
+                    context = app,
+                    runId = runId,
+                    stage = AnalysisDiagnostics.Stage.MODEL_VALIDATE,
+                    modelId = effectiveConfig.detectorModel,
+                )
+                val spec = DetectorModelRegistry.requireSpec(effectiveConfig.detectorModel)
+                require(DetectorModelRegistry.isInstalled(app, spec)) {
+                    "Detector model is not installed: ${spec.assetPath}"
+                }
+
+                AnalysisDiagnostics.mark(
+                    context = app,
+                    runId = runId,
+                    stage = AnalysisDiagnostics.Stage.MODEL_INITIALIZE,
+                    modelId = spec.id,
+                    accelerator = "CPU",
+                )
                 _state.value = AnalysisRunState(
                     phase = AnalysisRunPhase.RUNNING,
                     message = "Initializing LiteRT CPU detector…",
                 )
-                val runtime = AnalysisRuntimeFactory.createDetector(
+                runtime = AnalysisRuntimeFactory.createDetector(
                     context = app,
                     modelId = spec.id,
                     useAppearanceAssociation = effectiveConfig.useAppearanceAssociation,
                 )
 
+                AnalysisDiagnostics.mark(
+                    context = app,
+                    runId = runId,
+                    stage = AnalysisDiagnostics.Stage.MEDIA_OPEN,
+                    modelId = spec.id,
+                    accelerator = runtime!!.accelerator.name,
+                    mediaDescription = "type=$mediaType uri=$uri",
+                )
                 _state.value = AnalysisRunState(
                     phase = AnalysisRunPhase.RUNNING,
                     message = "Opening selected media…",
-                    accelerator = runtime.accelerator.name,
+                    accelerator = runtime!!.accelerator.name,
                 )
-                // The custom MediaCodec + ImageReader path is intentionally not used by the first
-                // field-validation route. It remains available for a separate, instrumented PTS
-                // compatibility test after the basic detector/tracker path is stable on-device.
-                val source: FrameSource = when (mediaType) {
+                source = when (mediaType) {
                     AnalysisMediaType.VIDEO -> LocalVideoFrameSource(app, uri)
                     AnalysisMediaType.IMAGE -> {
                         val bitmap = app.contentResolver.openInputStream(uri).use { stream ->
@@ -124,12 +138,21 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                     }
                 }
 
+                AnalysisDiagnostics.mark(
+                    context = app,
+                    runId = runId,
+                    stage = AnalysisDiagnostics.Stage.PIPELINE_START,
+                    modelId = spec.id,
+                    accelerator = runtime!!.accelerator.name,
+                    mediaDescription = "${source!!.source.uri} type=$mediaType",
+                    frameInfo = "${source!!.source.width}x${source!!.source.height} fps=${source!!.source.frameRate} pts=${source!!.source.timestampPrecision}",
+                )
                 val observer = AnalysisPreviewObserver { previewFrame ->
                     session.publishPreview(previewFrame)
                     _preview.value = previewFrame
                 }
                 val engine = ModularAnalysisEngine(
-                    detector = runtime.detector,
+                    detector = runtime!!.detector,
                     tracker = ByteTrack(),
                     previewObserver = observer,
                     groundProjector = KotlinGroundProjector,
@@ -137,33 +160,47 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                 )
 
                 val started = session.start(
-                    source = source,
+                    source = source!!,
                     engine = engine,
                     config = effectiveConfig,
-                    accelerator = runtime.accelerator.name,
+                    accelerator = runtime!!.accelerator.name,
                     runtime = runtime,
                 )
                 if (!started) {
-                    source.close()
-                    runtime.close()
+                    _state.value = AnalysisRunState(
+                        phase = AnalysisRunPhase.ERROR,
+                        message = "Another analysis session is already active.",
+                        accelerator = runtime!!.accelerator.name,
+                    )
                     return@launch
                 }
+                sessionOwnsResources = true
+                AnalysisDiagnostics.mark(
+                    context = app,
+                    runId = runId,
+                    stage = AnalysisDiagnostics.Stage.RUNNING,
+                    modelId = spec.id,
+                    accelerator = runtime!!.accelerator.name,
+                    mediaDescription = source!!.source.uri,
+                    frameInfo = "${source!!.source.width}x${source!!.source.height} fps=${source!!.source.frameRate} pts=${source!!.source.timestampPrecision}",
+                    completed = false,
+                )
                 session.awaitCompletion()
 
                 val finalState = session.state.value
                 _state.value = when (finalState.phase) {
-                    AnalysisSessionPhase.COMPLETED -> AnalysisRunState(
-                        phase = AnalysisRunPhase.SUCCESS,
-                        message = finalState.message,
-                        accelerator = finalState.accelerator,
-                        result = finalState.result,
-                    )
-                    AnalysisSessionPhase.FAILED -> AnalysisRunState(
-                        phase = AnalysisRunPhase.ERROR,
-                        message = finalState.message,
-                        accelerator = finalState.accelerator,
-                        result = finalState.result,
-                    )
+                    AnalysisSessionPhase.COMPLETED -> {
+                        AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.COMPLETED, completed = true)
+                        AnalysisRunState(AnalysisRunPhase.SUCCESS, finalState.message, finalState.accelerator, finalState.result)
+                    }
+                    AnalysisSessionPhase.FAILED -> {
+                        AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.FAILED, completed = false)
+                        AnalysisRunState(AnalysisRunPhase.ERROR, finalState.message, finalState.accelerator, finalState.result)
+                    }
+                    AnalysisSessionPhase.STOPPED -> {
+                        AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.STOPPED, completed = true)
+                        AnalysisRunState(AnalysisRunPhase.ERROR, finalState.message, finalState.accelerator, finalState.result)
+                    }
                     else -> _state.value
                 }
 
@@ -171,17 +208,34 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                     if (effectiveConfig.enableEvidence) persistEvidence(app, result)
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.STOPPED, completed = true)
                 throw cancelled
             } catch (t: Throwable) {
+                AnalysisDiagnostics.mark(
+                    context = app,
+                    runId = runId,
+                    stage = AnalysisDiagnostics.Stage.FAILED,
+                    modelId = config.detectorModel,
+                    accelerator = runtime?.accelerator?.name,
+                    mediaDescription = source?.source?.uri ?: uri.toString(),
+                    frameInfo = "${t::class.java.name}: ${t.message}",
+                    completed = false,
+                )
                 _state.value = AnalysisRunState(
                     phase = AnalysisRunPhase.ERROR,
                     message = t.message ?: t::class.java.simpleName,
+                    accelerator = runtime?.accelerator?.name,
                 )
+            } finally {
+                if (!sessionOwnsResources) {
+                    runCatching { source?.close() }
+                    runCatching { runtime?.close() }
+                }
             }
         }
     }
 
-    private suspend fun persistEvidence(app: Application, result: AnalysisResult) = withContext(Dispatchers.IO) {
+    private suspend fun persistEvidence(app: SmartTrafficApplication, result: AnalysisResult) = withContext(Dispatchers.IO) {
         if (result.trafficEvents.isEmpty()) return@withContext
         val store = FileEvidenceStore(app)
         result.trafficEvents.filter { it.evidenceRequested }.forEach { event ->
@@ -216,3 +270,6 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 }
+
+private inline fun <reified T : android.app.Application> android.app.Application.cast(): T =
+    this as? T ?: error("Application must be ${T::class.java.name}")
