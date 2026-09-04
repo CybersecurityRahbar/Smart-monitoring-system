@@ -126,7 +126,10 @@ data class AnalysisConfig(
 )
 
 data class AnalysisMetrics(
+    /** Measured source-read/decode throughput, not nominal media FPS. */
     val decodeFps: Double? = null,
+    /** Nominal media FPS metadata, when supplied by the source. */
+    val sourceNominalFps: Double? = null,
     val timestampPrecision: FrameTimestampPrecision = FrameTimestampPrecision.UNKNOWN,
     val inferenceLatencyMs: Double? = null,
     val inferenceMedianLatencyMs: Double? = null,
