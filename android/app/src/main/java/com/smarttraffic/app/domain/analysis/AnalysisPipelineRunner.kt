@@ -16,9 +16,7 @@ class AnalysisPipelineRunner(
     suspend fun run(source: FrameSource, config: AnalysisConfig): AnalysisResult {
         require(config.trackerInputMinimumConfidence in 0f..1f) { "trackerInputMinimumConfidence must be within [0,1]" }
         require(config.minimumDetectionConfidence in 0f..1f) { "minimumDetectionConfidence must be within [0,1]" }
-        require(config.minimumDetectionConfidence >= config.trackerInputMinimumConfidence) {
-            "minimumDetectionConfidence must not be below trackerInputMinimumConfidence"
-        }
+        require(config.minimumDetectionConfidence >= config.trackerInputMinimumConfidence) { "minimumDetectionConfidence must not be below trackerInputMinimumConfidence" }
         require(config.minimumTrackDurationMs >= 0L) { "minimumTrackDurationMs must be >= 0" }
         require(config.minimumSpeedSamples >= 4) { "minimumSpeedSamples must be >= 4" }
         require(config.maxPlausibleSpeedKmh > 0.0) { "maxPlausibleSpeedKmh must be positive" }
@@ -29,27 +27,13 @@ class AnalysisPipelineRunner(
         require(config.maxTrackHistoryObservations >= 32) { "maxTrackHistoryObservations must be >= 32" }
         require(config.latencySampleWindow >= 64) { "latencySampleWindow must be >= 64" }
         require(config.maxPlateReadings >= 1) { "maxPlateReadings must be >= 1" }
-        require(!config.useVehicleKeypoints || keypointEstimator != null) {
-            "Vehicle keypoints are enabled but no VehicleKeypointEstimator backend is installed"
-        }
-        require(!config.enablePlateRecognition || plateRecognizer != null) {
-            "Plate recognition is enabled but no PlateRecognizer backend is installed"
-        }
-        require(!config.useDynamicKeypointHomography || config.useVehicleKeypoints) {
-            "Dynamic keypoint homography requires VehicleKeypoints"
-        }
-        require(!config.useDynamicKeypointHomography || keypointEstimator != null) {
-            "Dynamic keypoint homography is enabled but no VehicleKeypointEstimator backend is installed"
-        }
-        require(!config.useOpticalFlowRefinement) {
-            "Optical-flow refinement is not installed in the current runtime"
-        }
-        require(!config.useSegmentationRefinement) {
-            "Segmentation refinement is not installed in the current runtime"
-        }
-        require(!config.useReIdentification) {
-            "Learned appearance Re-ID is not installed; deterministic appearance association is available separately"
-        }
+        require(!config.useVehicleKeypoints || keypointEstimator != null) { "Vehicle keypoints are enabled but no VehicleKeypointEstimator backend is installed" }
+        require(!config.enablePlateRecognition || plateRecognizer != null) { "Plate recognition is enabled but no PlateRecognizer backend is installed" }
+        require(!config.useDynamicKeypointHomography || config.useVehicleKeypoints) { "Dynamic keypoint homography requires VehicleKeypoints" }
+        require(!config.useDynamicKeypointHomography || keypointEstimator != null) { "Dynamic keypoint homography is enabled but no VehicleKeypointEstimator backend is installed" }
+        require(!config.useOpticalFlowRefinement) { "Optical-flow refinement is not installed in the current runtime" }
+        require(!config.useSegmentationRefinement) { "Segmentation refinement is not installed in the current runtime" }
+        require(!config.useReIdentification) { "Learned appearance Re-ID is not installed; deterministic appearance association is available separately" }
 
         tracker.reset()
         val retainedDetections = ArrayDeque<Detection>(config.maxRetainedDetections)
@@ -78,15 +62,11 @@ class AnalysisPipelineRunner(
             frameCount++
 
             previousFrameIndex?.let { previous ->
-                require(frame.index > previous) {
-                    "Frame indices must increase strictly: previous=$previous current=${frame.index}"
-                }
+                require(frame.index > previous) { "Frame indices must increase strictly: previous=$previous current=${frame.index}" }
                 if (frame.index > previous + 1L) droppedFrames += frame.index - previous - 1L
             }
             previousTimestampMs?.let { previous ->
-                require(frame.timestampMs >= previous) {
-                    "Frame timestamps must be monotonic: previous=$previous current=${frame.timestampMs}"
-                }
+                require(frame.timestampMs >= previous) { "Frame timestamps must be monotonic: previous=$previous current=${frame.timestampMs}" }
             }
             previousFrameIndex = frame.index
             previousTimestampMs = frame.timestampMs
@@ -100,21 +80,14 @@ class AnalysisPipelineRunner(
             val rawDetections = try {
                 detector.detect(frame.payload, frame.timestampMs, frame.index)
             } catch (error: Throwable) {
-                throw IllegalStateException(
-                    "Object detector failed at frame=${frame.index}, timestampMs=${frame.timestampMs}",
-                    error,
-                )
+                throw IllegalStateException("Object detector failed at frame=${frame.index}, timestampMs=${frame.timestampMs}", error)
             }
             val inferenceLatencyMs = (System.nanoTime() - inferenceStartNs) / 1_000_000.0
-            require(inferenceLatencyMs.isFinite() && inferenceLatencyMs >= 0.0) {
-                "Measured detector latency is invalid at frame=${frame.index}"
-            }
+            require(inferenceLatencyMs.isFinite() && inferenceLatencyMs >= 0.0) { "Measured detector latency is invalid at frame=${frame.index}" }
             inferenceSamples.addLast(inferenceLatencyMs)
             while (inferenceSamples.size > config.latencySampleWindow) inferenceSamples.removeFirst()
 
-            val trackingDetections = rawDetections.filter {
-                it.confidence.isFinite() && it.confidence in config.trackerInputMinimumConfidence..1f
-            }
+            val trackingDetections = rawDetections.filter { it.confidence.isFinite() && it.confidence in config.trackerInputMinimumConfidence..1f }
             trackingDetectionCount += trackingDetections.size.toLong()
             val reportableDetections = trackingDetections.filter { it.confidence >= config.minimumDetectionConfidence }
             totalReportableDetections += reportableDetections.size.toLong()
@@ -137,12 +110,7 @@ class AnalysisPipelineRunner(
                 val ground = if (calibrationReady) {
                     val calibration = requireNotNull(config.calibration) { "Calibration was accepted without a calibration profile" }
                     runCatching { groundProjector.project(calibration, contact.first, contact.second) }
-                        .getOrElse { error ->
-                            throw IllegalStateException(
-                                "Ground-plane projection failed at frame=${frame.index}, track=${track.id}",
-                                error,
-                            )
-                        }
+                        .getOrElse { error -> throw IllegalStateException("Ground-plane projection failed at frame=${frame.index}, track=${track.id}", error) }
                 } else null
 
                 val enriched = observation.copy(groundPoint = ground, keypoints = keypoints)
@@ -150,6 +118,10 @@ class AnalysisPipelineRunner(
                     MutableTrackBuffer(track.id, track.className, config.maxTrackHistoryObservations)
                 }
                 buffer.wasOccluded = buffer.wasOccluded || track.wasOccluded
+                buffer.hits = maxOf(buffer.hits, track.hits)
+                buffer.misses = maxOf(buffer.misses, track.misses)
+                buffer.ageFrames = maxOf(buffer.ageFrames, track.ageFrames)
+                buffer.lastTimestampMs = maxOf(buffer.lastTimestampMs, track.lastTimestampMs)
                 buffer.confidenceSamples.addLast(track.trackConfidence.toDouble())
                 while (buffer.confidenceSamples.size > config.maxTrackHistoryObservations) buffer.confidenceSamples.removeFirst()
                 buffer.observations.addLast(enriched)
@@ -157,9 +129,7 @@ class AnalysisPipelineRunner(
 
                 if (config.enablePlateRecognition) {
                     plateRecognizer!!.recognize(frame.payload, observation.detection)?.let { reading ->
-                        plateReadings.addLast(
-                            reading.copy(trackId = reading.trackId ?: track.id, timestampMs = frame.timestampMs),
-                        )
+                        plateReadings.addLast(reading.copy(trackId = reading.trackId ?: track.id, timestampMs = frame.timestampMs))
                         if (plateReadings.size > config.maxPlateReadings) plateReadings.removeFirst()
                     }
                 }
@@ -194,16 +164,7 @@ class AnalysisPipelineRunner(
                             )?.let { liveTrack.id to it }
                         }.toMap()
                     } else emptyMap()
-                    previewObserver.onFrame(
-                        AnalysisPreviewFrame(
-                            frame = frame,
-                            bitmap = bitmap,
-                            detections = reportableDetections,
-                            tracks = liveTracks,
-                            speedEstimates = liveSpeeds,
-                            calibrated = liveSpeedAllowed,
-                        ),
-                    )
+                    previewObserver.onFrame(AnalysisPreviewFrame(frame, bitmap, reportableDetections, liveTracks, liveSpeeds, liveSpeedAllowed))
                 }
             }
         }
@@ -227,12 +188,8 @@ class AnalysisPipelineRunner(
         val physicalSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
         val speedEstimates = if (physicalSpeedAllowed) {
             completedTracks.mapNotNull { track ->
-                speedEstimator.estimate(
-                    observations = track.observations,
-                    minimumSamples = config.minimumSpeedSamples,
-                    minimumDurationMs = config.minimumTrackDurationMs,
-                    maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
-                )?.let { speed -> track.id to speed }
+                speedEstimator.estimate(track.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
+                    ?.let { track.id to it }
             }.toMap()
         } else emptyMap()
 
@@ -256,9 +213,7 @@ class AnalysisPipelineRunner(
         val sortedInference = inferenceSamples.toList().sorted()
         val inferenceMedian = percentile(sortedInference, 0.50)
         val inferenceP95 = percentile(sortedInference, 0.95)
-        val rejectedSpeedEstimates = if (physicalSpeedAllowed) {
-            (completedTracks.size - speedEstimates.size).toLong().coerceAtLeast(0L)
-        } else completedTracks.size.toLong()
+        val rejectedSpeedEstimates = if (physicalSpeedAllowed) (completedTracks.size - speedEstimates.size).toLong().coerceAtLeast(0L) else completedTracks.size.toLong()
 
         return AnalysisResult(
             source = source.source,
@@ -322,8 +277,7 @@ class AnalysisPipelineRunner(
     }
 
     private fun selectContactPoint(detection: Detection, keypoints: List<VehicleKeypoint>): Pair<Double, Double> {
-        val learned = keypoints
-            .filter { it.confidence >= 0.50f && it.x.isFinite() && it.y.isFinite() }
+        val learned = keypoints.filter { it.confidence >= 0.50f && it.x.isFinite() && it.y.isFinite() }
             .firstOrNull { it.name.lowercase() in setOf("ground_contact", "contact", "footprint", "rear_contact", "front_contact") }
         return if (learned != null) learned.x to learned.y else ((detection.left + detection.right) / 2.0) to detection.bottom.toDouble()
     }
