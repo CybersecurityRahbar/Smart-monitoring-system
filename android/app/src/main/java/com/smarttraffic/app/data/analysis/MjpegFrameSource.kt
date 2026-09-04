@@ -14,25 +14,25 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Real live-camera FrameSource backed by the ESP32 MJPEG endpoint.
  *
- * The queue is intentionally conflated: when inference is slower than the camera, stale frames
- * are discarded so tracking follows the live scene instead of building latency. The producer
- * sequence lets the consumer count those discarded frames explicitly.
- * Arrival timestamps are not source presentation timestamps and therefore cannot unlock
- * measurement-grade physical speed.
+ * The producer keeps exactly one pending frame. A newer frame replaces an unconsumed pending
+ * frame, so inference latency can never create an unbounded queue. Analysis timestamps use local
+ * monotonic arrival time; those timestamps do not unlock measurement-grade physical speed.
  */
 class MjpegFrameSource(
     private val url: String,
     private val client: MjpegStreamClient = MjpegStreamClient(),
     private val scope: CoroutineScope,
 ) : FrameSource {
-    private val frames: Channel<FramePacket> = Channel(capacity = Channel.CONFLATED)
+    private val latest = AtomicReference<FramePacket?>(null)
+    private val wake = Channel<Unit>(capacity = Channel.CONFLATED)
     private val producedSequence = AtomicLong(-1L)
     private var producer: Job? = null
-    private var closed = false
+    @Volatile private var closed = false
     private var frameIndex = 0L
     private var lastConsumedSequence = -1L
     private var droppedFrames = 0L
@@ -40,9 +40,6 @@ class MjpegFrameSource(
     override val source: MediaSource = MediaSource(
         id = url,
         uri = url,
-        frameRate = null,
-        width = null,
-        height = null,
         timestampPrecision = FrameTimestampPrecision.UNKNOWN,
     )
 
@@ -50,52 +47,60 @@ class MjpegFrameSource(
         producer = scope.launch(Dispatchers.IO) {
             try {
                 client.collect(url) { bitmap ->
-                    val sequence = producedSequence.incrementAndGet()
-                    frames.trySend(FramePacket(sequence, bitmap))
+                    if (closed) return@collect
+                    val packet = FramePacket(producedSequence.incrementAndGet(), bitmap)
+                    val replaced = latest.getAndSet(packet)
+                    // The replaced Bitmap has no consumer and is therefore safe to release from
+                    // the source boundary. This keeps the live producer bounded at one pending frame.
+                    replaced?.bitmap?.recycleIfOwned()
+                    wake.trySend(Unit)
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                frames.close(error)
+                wake.close(error)
             } finally {
-                frames.close()
+                wake.close()
             }
         }
     }
 
     override suspend fun nextFrame(): AnalysisFrame? {
         if (closed) return null
-        return try {
-            val packet = frames.receiveCatching().getOrNull() ?: return null
+        while (true) {
+            val notified = wake.receiveCatching()
+            if (notified.isClosed && latest.get() == null) return null
+            val packet = latest.getAndSet(null) ?: continue
             if (lastConsumedSequence >= 0L && packet.sequence > lastConsumedSequence + 1L) {
                 droppedFrames += packet.sequence - lastConsumedSequence - 1L
             }
             lastConsumedSequence = packet.sequence
             val index = frameIndex++
-            AnalysisFrame(
+            return AnalysisFrame(
                 index = index,
                 timestampMs = SystemClock.elapsedRealtime(),
                 payload = packet.bitmap,
                 width = packet.bitmap.width,
                 height = packet.bitmap.height,
             )
-        } catch (error: Throwable) {
-            if (error is CancellationException) throw error
-            throw IllegalStateException("MJPEG frame source failed for $url", error)
         }
     }
 
     override suspend fun close() {
+        if (closed) return
         closed = true
         producer?.cancel()
         producer = null
-        frames.close()
+        wake.close()
+        latest.getAndSet(null)?.bitmap?.recycleIfOwned()
     }
 
     fun droppedFrameCount(): Long = droppedFrames
 
-    private data class FramePacket(
-        val sequence: Long,
-        val bitmap: Bitmap,
-    )
+    private data class FramePacket(val sequence: Long, val bitmap: Bitmap)
+}
+
+/** The frame is source-owned until handed to the analysis pipeline. Avoid double ownership. */
+private fun Bitmap.recycleIfOwned() {
+    if (!isRecycled) recycle()
 }
