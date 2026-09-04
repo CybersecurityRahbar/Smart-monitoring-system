@@ -18,13 +18,18 @@ import com.smarttraffic.app.domain.analysis.AnalysisFrame
 import com.smarttraffic.app.domain.analysis.FrameSource
 import com.smarttraffic.app.domain.analysis.FrameTimestampPrecision
 import com.smarttraffic.app.domain.analysis.MediaSource
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Sequential MediaCodec-backed video source that preserves decoded presentation timestamps.
  *
  * Each returned frame uses MediaCodec.BufferInfo.presentationTimeUs. No timestamp is synthesized
  * from frame index or a nominal FPS. If a decoder produces an invalid/non-monotonic timestamp,
- * the source fails explicitly rather than downgrading its precision claim.
+ * or if the rendered surface image for a decoded output cannot be obtained, the source fails
+ * explicitly instead of silently dropping a frame.
  */
 class ExactPtsVideoFrameSource(
     private val context: Context,
@@ -35,6 +40,7 @@ class ExactPtsVideoFrameSource(
     private val reader: ImageReader
     private val readerThread: HandlerThread = HandlerThread("smarttraffic-video-reader").apply { start() }
     private val readerHandler = Handler(readerThread.looper)
+    private val renderedImages = ArrayBlockingQueue<Image>(3)
     private val mime: String
     private val width: Int
     private val height: Int
@@ -76,7 +82,15 @@ class ExactPtsVideoFrameSource(
             PixelFormat.RGBA_8888,
             3,
         ).also { imageReader ->
-            imageReader.setOnImageAvailableListener(null, readerHandler)
+            imageReader.setOnImageAvailableListener({ readerInstance ->
+                while (true) {
+                    val image = readerInstance.acquireNextImage() ?: break
+                    if (!renderedImages.offer(image)) {
+                        image.close()
+                        break
+                    }
+                }
+            }, readerHandler)
         }
 
         decoder = MediaCodec.createDecoderByType(mime)
@@ -107,7 +121,7 @@ class ExactPtsVideoFrameSource(
                     val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
                     decoder.releaseOutputBuffer(outputIndex, true)
 
-                    val image = acquireRenderedImage()
+                    val image = acquireRenderedImage(presentationTimeUs, isEos)
                     if (image != null) {
                         try {
                             require(presentationTimeUs >= 0L) {
@@ -138,7 +152,10 @@ class ExactPtsVideoFrameSource(
                 }
 
                 outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> Unit
-                outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> if (inputEosQueued) SystemClock.sleep(1L)
+                outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> if (inputEosQueued) {
+                    currentCoroutineContext().ensureActive()
+                    SystemClock.sleep(1L)
+                }
             }
         }
         return null
@@ -162,12 +179,18 @@ class ExactPtsVideoFrameSource(
         extractor.advance()
     }
 
-    private fun acquireRenderedImage(): Image? {
-        repeat(20) {
-            reader.acquireNextImage()?.let { return it }
-            SystemClock.sleep(1L)
+    private suspend fun acquireRenderedImage(presentationTimeUs: Long, isEos: Boolean): Image? {
+        val deadlineNs = SystemClock.elapsedRealtimeNanos() + TimeUnit.SECONDS.toNanos(1)
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            renderedImages.poll(25L, TimeUnit.MILLISECONDS)?.let { return it }
+            if (SystemClock.elapsedRealtimeNanos() >= deadlineNs) {
+                if (isEos) return null
+                throw IllegalStateException(
+                    "Timed out waiting for ImageReader output for presentation timestamp=$presentationTimeUs us",
+                )
+            }
         }
-        return reader.acquireNextImage()
     }
 
     private fun imageToBitmap(image: Image): Bitmap {
@@ -208,6 +231,10 @@ class ExactPtsVideoFrameSource(
     override suspend fun close() {
         if (closed) return
         closed = true
+        while (true) {
+            val image = renderedImages.poll() ?: break
+            runCatching { image.close() }
+        }
         runCatching { decoder.stop() }
         runCatching { decoder.release() }
         runCatching { reader.close() }
