@@ -117,6 +117,12 @@ data class AnalysisConfig(
     val trafficRules: TrafficRuleConfig = TrafficRuleConfig(),
     val enableEvidence: Boolean = false,
     val showRadarOverlay: Boolean = true,
+    /** Maximum number of reportable detections retained in the final result object. */
+    val maxRetainedDetections: Int = 10_000,
+    /** Maximum per-track observations retained for measurement/evidence processing. */
+    val maxTrackHistoryObservations: Int = 900,
+    /** Number of most-recent latency samples retained for robust percentile estimates. */
+    val latencySampleWindow: Int = 2_048,
 )
 
 data class AnalysisMetrics(
