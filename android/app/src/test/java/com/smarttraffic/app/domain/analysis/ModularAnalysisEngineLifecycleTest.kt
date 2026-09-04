@@ -2,6 +2,7 @@ package com.smarttraffic.app.domain.analysis
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -39,6 +40,33 @@ class ModularAnalysisEngineLifecycleTest {
         assertEquals(1, created.closeCount.get())
     }
 
+    @Test
+    fun factoryCreatedFrameSourceIsClosedWhenPipelineFails() = runBlocking {
+        val created = CountingFrameSource()
+        val mediaSource = MediaSource(
+            id = "factory-failure-test",
+            uri = "test://factory-failure",
+            width = 320,
+            height = 240,
+        )
+        val engine = ModularAnalysisEngine(
+            detector = FailingDetector(),
+            tracker = EmptyTracker(),
+            frameSourceFactory = FrameSourceFactory { created },
+        )
+
+        var failed = false
+        try {
+            engine.analyze(mediaSource, AnalysisConfig(useGroundPlane = false))
+        } catch (error: IllegalStateException) {
+            failed = true
+            assertTrue(error.message?.contains("Object detector failed") == true)
+        }
+
+        assertTrue(failed)
+        assertEquals(1, created.closeCount.get())
+    }
+
     private fun createEngine(): ModularAnalysisEngine = ModularAnalysisEngine(
         detector = EmptyDetector(),
         tracker = EmptyTracker(),
@@ -46,6 +74,11 @@ class ModularAnalysisEngineLifecycleTest {
 
     private class EmptyDetector : ObjectDetector {
         override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> = emptyList()
+    }
+
+    private class FailingDetector : ObjectDetector {
+        override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> =
+            error("detector test failure")
     }
 
     private class EmptyTracker : MultiObjectTracker {
