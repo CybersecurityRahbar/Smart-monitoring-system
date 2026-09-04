@@ -34,7 +34,7 @@ data class AnalysisSessionState(
  * Single lifecycle owner for a real traffic-analysis execution.
  *
  * Local video, ESP32 MJPEG and future camera sources all enter the same session contract. The
- * session owns the execution Job and source close/cancellation boundary; callers only supply a
+ * session owns the execution Job and resource close/cancellation boundary; callers only supply a
  * configured engine, source and configuration.
  */
 class UnifiedAnalysisSession(
@@ -48,6 +48,8 @@ class UnifiedAnalysisSession(
     private var activeJob: Job? = null
     private var activeSource: FrameSource? = null
     private var activeCloseable: AutoCloseable? = null
+    private var activeSourceClosed = false
+    private var activeCloseableClosed = false
 
     suspend fun start(
         source: FrameSource,
@@ -60,6 +62,8 @@ class UnifiedAnalysisSession(
 
         activeSource = source
         activeCloseable = runtime
+        activeSourceClosed = false
+        activeCloseableClosed = false
         _state.value = AnalysisSessionState(
             phase = AnalysisSessionPhase.STARTING,
             message = "Starting shared traffic-analysis session…",
@@ -93,8 +97,7 @@ class UnifiedAnalysisSession(
                     message = error.message ?: error::class.java.simpleName,
                 )
             } finally {
-                runCatching { source.close() }
-                runCatching { runtime?.close() }
+                closeUnclaimedResources(source, runtime)
                 mutex.withLock {
                     if (activeSource === source) activeSource = null
                     if (activeCloseable === runtime) activeCloseable = null
@@ -116,24 +119,33 @@ class UnifiedAnalysisSession(
 
     suspend fun stop() {
         val job: Job?
-        val source: FrameSource?
-        val runtime: AutoCloseable?
+        val sourceToClose: FrameSource?
+        val runtimeToClose: AutoCloseable?
         mutex.withLock {
             job = activeJob
-            source = activeSource
-            runtime = activeCloseable
+            if (job == null) return@withLock
+
+            sourceToClose = if (!activeSourceClosed) {
+                activeSourceClosed = true
+                activeSource
+            } else null
+
+            runtimeToClose = if (!activeCloseableClosed) {
+                activeCloseableClosed = true
+                activeCloseable
+            } else null
         }
         if (job == null) return
 
-        runCatching { source?.close() }
+        runCatching { sourceToClose?.close() }
         job.cancel()
         job.join()
-        runCatching { runtime?.close() }
+        runCatching { runtimeToClose?.close() }
 
         mutex.withLock {
             if (activeJob === job) activeJob = null
-            if (activeSource === source) activeSource = null
-            if (activeCloseable === runtime) activeCloseable = null
+            if (activeSource === sourceToClose) activeSource = null
+            if (activeCloseable === runtimeToClose) activeCloseable = null
             _state.value = _state.value.copy(
                 phase = AnalysisSessionPhase.STOPPED,
                 message = "Analysis session stopped.",
@@ -148,5 +160,25 @@ class UnifiedAnalysisSession(
     fun reset() {
         require(activeJob?.isActive != true) { "Cannot reset an active analysis session" }
         _state.value = AnalysisSessionState()
+    }
+
+    private suspend fun closeUnclaimedResources(
+        source: FrameSource,
+        runtime: AutoCloseable?,
+    ) {
+        val sourceToClose: FrameSource?
+        val runtimeToClose: AutoCloseable?
+        mutex.withLock {
+            sourceToClose = if (!activeSourceClosed) {
+                activeSourceClosed = true
+                source
+            } else null
+            runtimeToClose = if (!activeCloseableClosed) {
+                activeCloseableClosed = true
+                runtime
+            } else null
+        }
+        runCatching { sourceToClose?.close() }
+        runCatching { runtimeToClose?.close() }
     }
 }
