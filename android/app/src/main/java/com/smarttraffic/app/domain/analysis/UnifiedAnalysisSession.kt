@@ -123,14 +123,11 @@ class UnifiedAnalysisSession(
         val runtimeToClose: AutoCloseable?
         mutex.withLock {
             job = activeJob
-            if (job == null) return@withLock
-
-            sourceToClose = if (!activeSourceClosed) {
+            sourceToClose = if (job != null && !activeSourceClosed) {
                 activeSourceClosed = true
                 activeSource
             } else null
-
-            runtimeToClose = if (!activeCloseableClosed) {
+            runtimeToClose = if (job != null && !activeCloseableClosed) {
                 activeCloseableClosed = true
                 activeCloseable
             } else null
