@@ -1,13 +1,14 @@
 package com.smarttraffic.app.features.analysis
 
+import android.graphics.Paint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -45,10 +46,7 @@ import com.smarttraffic.app.domain.analysis.Track
 import kotlin.math.max
 
 @Composable
-fun AnalysisRadarPreview(
-    preview: AnalysisPreviewFrame?,
-    modifier: Modifier = Modifier,
-) {
+fun AnalysisRadarPreview(preview: AnalysisPreviewFrame?, modifier: Modifier = Modifier) {
     if (preview == null) return
 
     var fullscreen by remember { mutableStateOf(false) }
@@ -63,10 +61,7 @@ fun AnalysisRadarPreview(
             onDismissRequest = { fullscreen = false },
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color.Black,
-            ) {
+            Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
                 ImmersiveVideo(
                     preview = preview,
                     primary = primary,
@@ -191,6 +186,12 @@ private fun VideoFrameWithTracks(
             val contentHeight = sourceHeight * scale
             val offsetX = (size.width - contentWidth) * 0.5f
             val offsetY = (size.height - contentHeight) * 0.5f
+            val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                textSize = 28f
+                typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                color = android.graphics.Color.WHITE
+                setShadowLayer(5f, 0f, 2f, android.graphics.Color.BLACK)
+            }
 
             preview.tracks.forEach { track ->
                 val observation = track.observations.lastOrNull { it.frameIndex == preview.frame.index }
@@ -207,6 +208,12 @@ private fun VideoFrameWithTracks(
                     size = Size((right - left).coerceAtLeast(0f), (bottom - top).coerceAtLeast(0f)),
                     cornerRadius = CornerRadius(12f, 12f),
                     style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f),
+                )
+                drawContext.canvas.nativeCanvas.drawText(
+                    "#${track.id} ${track.className}",
+                    left.coerceAtLeast(4f),
+                    (top - 8f).coerceAtLeast(30f),
+                    labelPaint,
                 )
             }
         }
@@ -272,6 +279,13 @@ private fun RadarPanel(
                         }
                     }
 
+                    val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        textSize = 24f
+                        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                        color = android.graphics.Color.WHITE
+                        setShadowLayer(5f, 0f, 2f, android.graphics.Color.BLACK)
+                    }
+
                     if (points.isNotEmpty()) {
                         val minX = points.minOf { it.x }
                         val maxX = points.maxOf { it.x }
@@ -318,6 +332,12 @@ private fun RadarPanel(
                             val py = ((1.0 - (point.y - minY) / rangeY) * 0.82 + 0.09) * size.height
                             drawCircle(primary, 8f, Offset(px.toFloat(), py.toFloat()))
                             drawCircle(background, 8f, Offset(px.toFloat(), py.toFloat()), style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
+                            drawContext.canvas.nativeCanvas.drawText(
+                                "#${point.track.id}",
+                                (px + 10.0).toFloat(),
+                                (py - 10.0).toFloat().coerceAtLeast(24f),
+                                labelPaint,
+                            )
                         }
                     }
                 }
