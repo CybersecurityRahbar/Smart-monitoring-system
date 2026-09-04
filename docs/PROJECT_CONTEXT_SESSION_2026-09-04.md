@@ -31,6 +31,13 @@ The ownership contract is now explicit:
 
 `ModularAnalysisEngineLifecycleTest.kt` verifies both sides of this boundary: a directly supplied source is not closed by the engine, while a factory-created source is closed exactly once by the `MediaSource` overload.
 
+## Run #297 failure and correction — 2026-09-04
+Run #297 (`docs: finalize 2026-09-04 cumulative context`) exposed two stale unit-test assertions after the ownership contract change:
+1. `TrafficReliabilityTest.pipelineReportsFrameGapsAndProducesMeasuredSpeed` still expected `AnalysisPipelineRunner` to close a directly supplied `FrameSource`. That expectation was changed so the test verifies the runner leaves the source open, then explicitly closes it as the caller.
+2. `ModularAnalysisEngineLifecycleTest.factoryCreatedFrameSourceIsClosedByMediaSourceOverload` compared the result source ID to the logical `MediaSource` ID. The production runner correctly reports `source.source` from the concrete factory-created `FrameSource`; therefore the assertion was corrected to the fixture's concrete source ID (`counting-source`) while retaining the important exactly-once close assertion.
+
+These are test-contract corrections, not production-behavior changes. The production ownership boundary remains unchanged and is now tested consistently.
+
 ## Important architectural observation
 The current Local and Live ViewModels each instantiate their own `UnifiedAnalysisSession`. They share the same lifecycle abstraction and pipeline contract, but this is not yet a single app-level session instance. A future app-level host/coordinator is still required if Dashboard/Radar/Live/Local must observe exactly one process-wide analysis execution instead of one session per ViewModel.
 
@@ -66,9 +73,9 @@ The next parity improvement is to move from duplicated hand-written goldens towa
 - Resource ownership must be explicit: callers own supplied `FrameSource` instances; creators own sources they create.
 
 ## Current verification state
-Run #296 (`33875804871`) corresponds to commit `fe9062724479aec679a4632e9639d0d194df27a3`, which is the current `main` ref according to the Git reference endpoint. Run #296 has Native C++ Parity and Python tests passing and Android build still in progress at the last inspection. It has not yet been declared green.
+Run #296 (`33875804871`) corresponded to commit `fe9062724479aec679a4632e9639d0d194df27a3`, with Native C++ Parity and Python tests passing while Android was still in progress. It was superseded by later ownership/test changes.
 
-The subsequent ownership-boundary and test changes are represented in the repository history as descendants of this state and may trigger newer workflow runs. Always verify the latest `refs/heads/main` SHA and its exact workflow run before declaring the final state green.
+The current `main` HEAD after the Run-#297 test corrections is commit `56fd7c206458e7bd116c5f09a180ebafb5bcb7a6`. GitHub Actions Run #299 (`33876584330`) was created for this exact HEAD and is the authoritative CI verification run for the latest correction. At the latest inspection it was still in progress; it must not be declared green until its final conclusion is confirmed.
 
 ## Current stopping point
 Latest code areas hardened in this session:
@@ -76,6 +83,7 @@ Latest code areas hardened in this session:
 - unified session exactly-once resource closure;
 - explicit FrameSource ownership boundary between session, engine and runner;
 - lifecycle and ownership regression tests;
-- exact-PTS decoder ImageReader queue and PTS/image timestamp consistency validation.
+- exact-PTS decoder ImageReader queue and PTS/image timestamp consistency validation;
+- corrected stale unit-test expectations exposed by Run #297.
 
 The next engineering gate is a fully green CI run on the exact current `main` HEAD, followed by real-device Exact PTS validation and only then deeper tracking/speed benchmark work.
