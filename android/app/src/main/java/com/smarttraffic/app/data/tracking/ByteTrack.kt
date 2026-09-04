@@ -4,6 +4,7 @@ import com.smarttraffic.app.domain.analysis.Detection
 import com.smarttraffic.app.domain.analysis.MultiObjectTracker
 import com.smarttraffic.app.domain.analysis.Track
 import com.smarttraffic.app.domain.analysis.TrackObservation
+import com.smarttraffic.app.domain.analysis.TrackState
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -99,8 +100,15 @@ class ByteTrack(
         val iterator = tracks.iterator()
         while (iterator.hasNext()) {
             val track = iterator.next().value
-            if ((track.hits == 1 && track.lostFrames > 0) || track.lostFrames > maxLostFrames) iterator.remove()
-            else track.matched = false
+            if (track.lostFrames > maxLostFrames) {
+                track.state = TrackState.REMOVED
+                iterator.remove()
+            } else if (track.hits == 1 && track.lostFrames > 0) {
+                track.state = TrackState.REMOVED
+                iterator.remove()
+            } else {
+                track.matched = false
+            }
         }
 
         return tracks.values
@@ -138,7 +146,6 @@ class ByteTrack(
         }
     }
 
-    /** Geometry is mandatory; deterministic appearance remains a secondary cue. */
     private fun associationScore(track: InternalTrack, detection: Detection, minimumIou: Float): Double {
         val predicted = track.predictedBox()
         val predictedIou = iou(predicted, detection)
@@ -157,11 +164,7 @@ class ByteTrack(
         return (1.0 - appearanceWeight) * motionScore + appearanceWeight * normalizedAppearance
     }
 
-    private fun centerDistanceScore(
-        track: InternalTrack,
-        predicted: ByteTrackBox,
-        detection: Detection,
-    ): Double {
+    private fun centerDistanceScore(track: InternalTrack, predicted: ByteTrackBox, detection: Detection): Double {
         val detectionCenterX = (detection.left + detection.right) * 0.5
         val detectionCenterY = (detection.top + detection.bottom) * 0.5
         val distance = hypot(
@@ -179,11 +182,7 @@ class ByteTrack(
         return 1.0 - distance / allowedDistance
     }
 
-    private data class Match(
-        val track: InternalTrack,
-        val detection: IndexedValue<Detection>,
-        val score: Double,
-    )
+    private data class Match(val track: InternalTrack, val detection: IndexedValue<Detection>, val score: Double)
 
     private class InternalTrack(
         val id: Long,
@@ -204,21 +203,26 @@ class ByteTrack(
         private var velocityY = 0.0
         private var hasVelocity = false
         private val filter = KalmanBoxPredictor(predicted)
-        private val history = ArrayList<TrackObservation>(maxHistoryObservations)
+        private val history = ArrayDeque<TrackObservation>(maxHistoryObservations)
+        private val confidenceHistory = ArrayDeque<Double>(maxHistoryObservations)
         var hits = 0
         var lostFrames = 0
+        var ageFrames = 1
         var matched = false
         var everOccluded = false
         var confidenceEma = initial.confidence
         var lastFrameIndex = initialFrameIndex
         var lastTimestampMs = initialTimestampMs
+        var state: TrackState = TrackState.TENTATIVE
 
         init {
             history += TrackObservation(initialFrameIndex, initialTimestampMs, initial)
+            confidenceHistory += initial.confidence.toDouble()
         }
 
         fun predictTo(timestampMs: Long) {
             matched = false
+            ageFrames += 1
             val dtMs = timestampMs - lastTimestampMs
             val dtSeconds = dtMs / 1000.0
             predictionDtSeconds = dtSeconds.coerceAtLeast(0.0)
@@ -228,18 +232,13 @@ class ByteTrack(
 
         fun predictedBox(): ByteTrackBox = predicted
 
-        private fun empiricalMotionPrediction(
-            timestampMs: Long,
-            kalmanPrediction: ByteTrackBox,
-            dtSeconds: Double,
-        ): ByteTrackBox {
+        private fun empiricalMotionPrediction(timestampMs: Long, kalmanPrediction: ByteTrackBox, dtSeconds: Double): ByteTrackBox {
             val previous = previousDetection ?: return kalmanPrediction
             if (!dtSeconds.isFinite() || dtSeconds <= 0.0 || dtSeconds > empiricalVelocityHorizonSeconds) return kalmanPrediction
             val observedDtMs = lastTimestampMs - previous.timestampMs
             if (observedDtMs <= 0L) return kalmanPrediction
             val observedDtSeconds = observedDtMs / 1000.0
             if (!observedDtSeconds.isFinite() || observedDtSeconds <= 0.0) return kalmanPrediction
-
             val lastBox = ByteTrackBox(lastDetection)
             val previousBox = ByteTrackBox(previous)
             var observedVelocityX = (lastBox.centerX - previousBox.centerX) / observedDtSeconds
@@ -260,7 +259,6 @@ class ByteTrack(
             val displacementX = (observedVelocityX * displacementSeconds).toFloat()
             val displacementY = (observedVelocityY * displacementSeconds).toFloat()
             if (!displacementX.isFinite() || !displacementY.isFinite()) return kalmanPrediction
-
             val observedPrediction = ByteTrackBox(
                 left = lastBox.left + displacementX,
                 top = lastBox.top + displacementY,
@@ -305,16 +303,21 @@ class ByteTrack(
             hits += 1
             lostFrames = 0
             matched = true
+            if (hits >= 2) state = TrackState.CONFIRMED
             confidenceEma = 0.80f * confidenceEma + 0.20f * detection.confidence
+            confidenceHistory.addLast(detection.confidence.toDouble())
+            while (confidenceHistory.size > maxHistoryObservations) confidenceHistory.removeFirst()
             lastFrameIndex = frameIndex
             lastTimestampMs = timestampMs
-            history += TrackObservation(frameIndex, timestampMs, detection)
-            if (history.size > maxHistoryObservations) history.removeAt(0)
+            history.addLast(TrackObservation(frameIndex, timestampMs, detection))
+            if (history.size > maxHistoryObservations) history.removeFirst()
+            state = TrackState.CONFIRMED
         }
 
         fun markLost() {
             lostFrames += 1
             everOccluded = true
+            if (hits >= 2) state = TrackState.LOST
         }
 
         fun toDomainTrack(): Track = Track(
@@ -323,12 +326,16 @@ class ByteTrack(
             observations = history.toList(),
             trackConfidence = confidenceEma.coerceIn(0f, 1f),
             wasOccluded = everOccluded,
+            state = if (state == TrackState.LOST) TrackState.LOST else TrackState.CONFIRMED,
+            hits = hits,
+            misses = lostFrames,
+            ageFrames = ageFrames,
+            lastTimestampMs = lastTimestampMs,
         )
     }
 }
 
 private fun clamp(value: Double, lower: Double, upper: Double): Double = value.coerceIn(lower, upper)
-
 private fun lerp(start: Float, end: Float, amount: Float): Float = start + (end - start) * amount
 
 private fun iou(a: ByteTrackBox, b: Detection): Float {
