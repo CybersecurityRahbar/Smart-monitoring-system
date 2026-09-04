@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.smarttraffic.app.SmartTrafficApplication
 import com.smarttraffic.app.core.tr
 import com.smarttraffic.app.data.analysis.FileCalibrationStore
 import com.smarttraffic.app.data.vision.DetectorModelRegistry
@@ -68,6 +69,7 @@ fun LocalAnalysisScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val preview by viewModel.preview.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
+    val previousAnalysisWarning = (context.applicationContext as? SmartTrafficApplication)?.previousAnalysisWarning
     val modelSpec = remember { DetectorModelRegistry.requireSpec("yolo26n") }
     val modelInstalled = remember { DetectorModelRegistry.isInstalled(context, modelSpec) }
     val selectedCalibration = calibrationProfiles.firstOrNull { it.id == selectedCalibrationId }
@@ -118,6 +120,20 @@ fun LocalAnalysisScreen(
             }
         }
 
+        previousAnalysisWarning?.let { warning ->
+            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Previous analysis diagnostic", style = MaterialTheme.typography.titleMedium)
+                    Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                    Text(
+                        "This marker is retained specifically so native/runtime process deaths can be located to the last risky stage.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
+        }
+
         Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -127,7 +143,7 @@ fun LocalAnalysisScreen(
                 }
                 Text(selectedUri?.toString() ?: "No media selected", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
-                    "Video analysis is uncapped: frames are decoded in source order without an artificial 100 ms sampling delay. The lab reports processing FPS separately from the source FPS.",
+                    "Video analysis processes frames in source order. Processing FPS is measured independently from nominal source FPS.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -146,7 +162,7 @@ fun LocalAnalysisScreen(
                 Text("Runtime readiness", style = MaterialTheme.typography.titleMedium)
                 MetricRow("Detector", "${modelSpec.id} • ${if (modelInstalled) "installed" else "MISSING"}")
                 MetricRow("Tracker", "ByteTrack + Kalman + global assignment")
-                MetricRow("Inference backend", state.accelerator ?: "Auto: GPU → CPU")
+                MetricRow("Inference backend", state.accelerator ?: "CPU • LiteRT")
                 MetricRow("Live laboratory", if (source == AnalysisSource.VIDEO) "frame-by-frame preview enabled" else "single-frame preview")
                 MetricRow("Physical speed", physicalSpeedStatus)
                 Text(
