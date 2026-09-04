@@ -27,6 +27,8 @@ fun interface FrameSourceFactory {
 
 interface AnalysisEngine {
     suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult
+
+    /** The caller owns and closes a FrameSource passed directly to this overload. */
     suspend fun analyze(source: FrameSource, config: AnalysisConfig): AnalysisResult
 }
 
@@ -57,7 +59,12 @@ class ModularAnalysisEngine(
     override suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult {
         val factory = frameSourceFactory
             ?: error("No FrameSourceFactory is configured for MediaSource ${source.id}")
-        return runner.run(factory.create(source), config)
+        val frameSource = factory.create(source)
+        return try {
+            runner.run(frameSource, config)
+        } finally {
+            frameSource.close()
+        }
     }
 
     override suspend fun analyze(source: FrameSource, config: AnalysisConfig): AnalysisResult =
