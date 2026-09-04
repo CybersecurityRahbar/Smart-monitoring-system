@@ -3,6 +3,7 @@ package com.smarttraffic.app.domain.analysis
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
@@ -31,7 +32,7 @@ class UnifiedAnalysisSessionTest {
             assertEquals(1, runtime.closeCount.get())
             assertEquals(AnalysisSessionPhase.STOPPED, session.state.value.phase)
         } finally {
-            scope.coroutineContext[SupervisorJob]?.cancel()
+            scope.coroutineContext[Job]?.cancel()
         }
     }
 
@@ -51,7 +52,7 @@ class UnifiedAnalysisSessionTest {
             assertEquals(1, firstSource.closeCount.get())
             assertEquals(0, secondSource.closeCount.get())
         } finally {
-            scope.coroutineContext[SupervisorJob]?.cancel()
+            scope.coroutineContext[Job]?.cancel()
         }
     }
 
@@ -70,7 +71,7 @@ class UnifiedAnalysisSessionTest {
             assertEquals(AnalysisSessionPhase.IDLE, session.state.value.phase)
             assertEquals(null, session.state.value.result)
         } finally {
-            scope.coroutineContext[SupervisorJob]?.cancel()
+            scope.coroutineContext[Job]?.cancel()
         }
     }
 
