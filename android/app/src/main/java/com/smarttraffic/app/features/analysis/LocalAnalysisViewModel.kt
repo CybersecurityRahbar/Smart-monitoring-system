@@ -11,8 +11,6 @@ import com.smarttraffic.app.data.analysis.ExactPtsVideoFrameSource
 import com.smarttraffic.app.data.analysis.LocalImageFrameSource
 import com.smarttraffic.app.data.analysis.LocalVideoFrameSource
 import com.smarttraffic.app.data.evidence.FileEvidenceStore
-import com.smarttraffic.app.data.nativecore.NativeFirstSpeedEstimator
-import com.smarttraffic.app.data.nativecore.NativeGroundProjector
 import com.smarttraffic.app.data.tracking.ByteTrack
 import com.smarttraffic.app.domain.analysis.AnalysisConfig
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
@@ -21,6 +19,8 @@ import com.smarttraffic.app.domain.analysis.AnalysisResult
 import com.smarttraffic.app.domain.analysis.AnalysisSessionPhase
 import com.smarttraffic.app.domain.analysis.EvidenceRecord
 import com.smarttraffic.app.domain.analysis.FrameSource
+import com.smarttraffic.app.domain.analysis.KotlinGroundProjector
+import com.smarttraffic.app.domain.analysis.KotlinSpeedEstimatorBackend
 import com.smarttraffic.app.domain.analysis.ModularAnalysisEngine
 import com.smarttraffic.app.domain.analysis.UnifiedAnalysisSession
 import kotlinx.coroutines.Dispatchers
@@ -118,8 +118,11 @@ class LocalAnalysisViewModel(application: Application) : AndroidViewModel(applic
                     detector = runtime.detector,
                     tracker = ByteTrack(),
                     previewObserver = observer,
-                    groundProjector = NativeGroundProjector(),
-                    speedEstimator = NativeFirstSpeedEstimator(),
+                    // Keep the first on-device validation run independent of Android JNI/native
+                    // loading. C++ remains covered by the native parity tests until a real-device
+                    // native smoke test has passed.
+                    groundProjector = KotlinGroundProjector,
+                    speedEstimator = KotlinSpeedEstimatorBackend,
                 )
 
                 val started = session.start(
