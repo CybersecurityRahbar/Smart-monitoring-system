@@ -1,8 +1,9 @@
 package com.smarttraffic.app.features.live
 
-import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.smarttraffic.app.SmartTrafficApplication
+import com.smarttraffic.app.core.AnalysisDiagnostics
 import com.smarttraffic.app.core.DeviceSettings
 import com.smarttraffic.app.core.TrafficRulePreferences
 import com.smarttraffic.app.data.analysis.AnalysisRuntimeFactory
@@ -24,7 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** Public Live state projected from the same UnifiedAnalysisSession used by the Local Lab. */
+/** Live adapter around the application-scoped analysis lifecycle. */
 enum class LiveAnalysisPhase { IDLE, STARTING, RUNNING, ERROR, STOPPED }
 
 data class LiveAnalysisState(
@@ -35,9 +36,10 @@ data class LiveAnalysisState(
     val result: AnalysisResult? = null,
 )
 
-/** Real ESP32 analysis adapter; lifecycle belongs to UnifiedAnalysisSession. */
-class LiveAnalysisViewModel(application: Application) : AndroidViewModel(application) {
-    private val session = UnifiedAnalysisSession(viewModelScope)
+class LiveAnalysisViewModel(application: android.app.Application) : AndroidViewModel(application) {
+    private val session: UnifiedAnalysisSession =
+        application as SmartTrafficApplication
+            .let { it.analysisHost.session }
     private val _state = MutableStateFlow(LiveAnalysisState())
     val state: StateFlow<LiveAnalysisState> = _state.asStateFlow()
 
@@ -50,24 +52,41 @@ class LiveAnalysisViewModel(application: Application) : AndroidViewModel(applica
 
         _preview.value = null
         viewModelScope.launch(Dispatchers.Default) {
-            val app = getApplication<Application>()
-            val rules = TrafficRulePreferences.load(app)
-            val spec = DetectorModelRegistry.requireSpec("yolo26n")
-            if (!DetectorModelRegistry.isInstalled(app, spec)) {
-                _state.value = LiveAnalysisState(
-                    LiveAnalysisPhase.ERROR,
-                    "Detector model is not installed: ${spec.assetPath}",
-                )
-                return@launch
-            }
-
+            val app = getApplication<SmartTrafficApplication>()
+            val runId = AnalysisDiagnostics.newRun(app)
+            var runtime: AnalysisRuntimeFactory.DetectorRuntime? = null
+            var source: MjpegFrameSource? = null
+            var sessionOwnsResources = false
             try {
-                val runtime = AnalysisRuntimeFactory.createDetector(
+                AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.MODEL_VALIDATE, modelId = "yolo26n")
+                val rules = TrafficRulePreferences.load(app)
+                val spec = DetectorModelRegistry.requireSpec("yolo26n")
+                require(DetectorModelRegistry.isInstalled(app, spec)) {
+                    "Detector model is not installed: ${spec.assetPath}"
+                }
+
+                AnalysisDiagnostics.mark(
+                    app,
+                    runId,
+                    AnalysisDiagnostics.Stage.MODEL_INITIALIZE,
+                    modelId = spec.id,
+                    accelerator = "CPU",
+                )
+                runtime = AnalysisRuntimeFactory.createDetector(
                     context = app,
                     modelId = spec.id,
                     useAppearanceAssociation = true,
                 )
-                val source = MjpegFrameSource(
+
+                AnalysisDiagnostics.mark(
+                    app,
+                    runId,
+                    AnalysisDiagnostics.Stage.MEDIA_OPEN,
+                    modelId = spec.id,
+                    accelerator = runtime!!.accelerator.name,
+                    mediaDescription = "MJPEG ${DeviceSettings.streamUrl()}",
+                )
+                source = MjpegFrameSource(
                     url = DeviceSettings.streamUrl(),
                     scope = viewModelScope,
                 )
@@ -76,11 +95,11 @@ class LiveAnalysisViewModel(application: Application) : AndroidViewModel(applica
                     _preview.value = frame
                     _state.value = _state.value.copy(
                         phase = LiveAnalysisPhase.RUNNING,
-                        droppedFrames = source.droppedFrameCount(),
+                        droppedFrames = source?.droppedFrameCount() ?: 0L,
                     )
                 }
                 val engine = ModularAnalysisEngine(
-                    detector = runtime.detector,
+                    detector = runtime!!.detector,
                     tracker = ByteTrack(),
                     previewObserver = observer,
                     groundProjector = NativeGroundProjector(),
@@ -100,50 +119,104 @@ class LiveAnalysisViewModel(application: Application) : AndroidViewModel(applica
                     showRadarOverlay = true,
                 )
 
+                AnalysisDiagnostics.mark(
+                    app,
+                    runId,
+                    AnalysisDiagnostics.Stage.PIPELINE_START,
+                    modelId = spec.id,
+                    accelerator = runtime!!.accelerator.name,
+                    mediaDescription = "MJPEG ${source!!.source.uri}",
+                )
                 val started = session.start(
-                    source = source,
+                    source = source!!,
                     engine = engine,
                     config = config,
-                    accelerator = runtime.accelerator.name,
+                    accelerator = runtime!!.accelerator.name,
                     runtime = runtime,
                 )
                 if (!started) {
-                    source.close()
-                    runtime.close()
+                    _state.value = LiveAnalysisState(
+                        phase = LiveAnalysisPhase.ERROR,
+                        message = "Another analysis session is already active.",
+                        accelerator = runtime!!.accelerator.name,
+                    )
                     return@launch
                 }
+                sessionOwnsResources = true
                 _state.value = LiveAnalysisState(
-                    phase = LiveAnalysisPhase.STARTING,
-                    message = "Starting live detector and tracker…",
-                    accelerator = runtime.accelerator.name,
+                    phase = LiveAnalysisPhase.RUNNING,
+                    message = "Live detector and tracker are running…",
+                    accelerator = runtime!!.accelerator.name,
+                )
+                AnalysisDiagnostics.mark(
+                    app,
+                    runId,
+                    AnalysisDiagnostics.Stage.RUNNING,
+                    modelId = spec.id,
+                    accelerator = runtime!!.accelerator.name,
+                    mediaDescription = source!!.source.uri,
+                    completed = false,
                 )
                 session.awaitCompletion()
 
                 val finalState = session.state.value
                 _state.value = when (finalState.phase) {
-                    AnalysisSessionPhase.COMPLETED -> LiveAnalysisState(
-                        phase = LiveAnalysisPhase.STOPPED,
-                        message = finalState.message,
-                        accelerator = finalState.accelerator,
-                        droppedFrames = source.droppedFrameCount(),
-                        result = finalState.result,
-                    )
-                    AnalysisSessionPhase.FAILED -> LiveAnalysisState(
-                        phase = LiveAnalysisPhase.ERROR,
-                        message = finalState.message,
-                        accelerator = finalState.accelerator,
-                        droppedFrames = source.droppedFrameCount(),
-                        result = finalState.result,
-                    )
+                    AnalysisSessionPhase.COMPLETED -> {
+                        AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.COMPLETED, completed = true)
+                        LiveAnalysisState(
+                            phase = LiveAnalysisPhase.STOPPED,
+                            message = finalState.message,
+                            accelerator = finalState.accelerator,
+                            droppedFrames = source?.droppedFrameCount() ?: 0L,
+                            result = finalState.result,
+                        )
+                    }
+                    AnalysisSessionPhase.FAILED -> {
+                        AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.FAILED, completed = false)
+                        LiveAnalysisState(
+                            phase = LiveAnalysisPhase.ERROR,
+                            message = finalState.message,
+                            accelerator = finalState.accelerator,
+                            droppedFrames = source?.droppedFrameCount() ?: 0L,
+                            result = finalState.result,
+                        )
+                    }
+                    AnalysisSessionPhase.STOPPED -> {
+                        AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.STOPPED, completed = true)
+                        LiveAnalysisState(
+                            phase = LiveAnalysisPhase.STOPPED,
+                            message = finalState.message,
+                            accelerator = finalState.accelerator,
+                            droppedFrames = source?.droppedFrameCount() ?: 0L,
+                            result = finalState.result,
+                        )
+                    }
                     else -> _state.value
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.STOPPED, completed = true)
                 throw cancelled
             } catch (t: Throwable) {
+                AnalysisDiagnostics.mark(
+                    app,
+                    runId,
+                    AnalysisDiagnostics.Stage.FAILED,
+                    modelId = "yolo26n",
+                    accelerator = runtime?.accelerator?.name,
+                    mediaDescription = source?.source?.uri,
+                    frameInfo = "${t::class.java.name}: ${t.message}",
+                    completed = false,
+                )
                 _state.value = LiveAnalysisState(
                     phase = LiveAnalysisPhase.ERROR,
                     message = t.message ?: t::class.java.simpleName,
+                    accelerator = runtime?.accelerator?.name,
                 )
+            } finally {
+                if (!sessionOwnsResources) {
+                    runCatching { source?.close() }
+                    runCatching { runtime?.close() }
+                }
             }
         }
     }
