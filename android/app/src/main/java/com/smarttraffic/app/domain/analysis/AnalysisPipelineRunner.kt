@@ -1,5 +1,6 @@
 package com.smarttraffic.app.domain.analysis
 
+import java.util.ArrayDeque
 import kotlin.math.min
 
 /** Real frame-to-result coordinator. The caller owns the FrameSource lifecycle. */
@@ -24,6 +25,9 @@ class AnalysisPipelineRunner(
         require(config.maxCalibrationReprojectionErrorPixels > 0.0) { "maxCalibrationReprojectionErrorPixels must be positive" }
         require(config.maxCalibrationReprojectionErrorTargetUnits > 0.0) { "maxCalibrationReprojectionErrorTargetUnits must be positive" }
         require(config.minimumCalibrationInlierRatio in 0.0..1.0) { "minimumCalibrationInlierRatio must be within [0,1]" }
+        require(config.maxRetainedDetections >= 1) { "maxRetainedDetections must be >= 1" }
+        require(config.maxTrackHistoryObservations >= 32) { "maxTrackHistoryObservations must be >= 32" }
+        require(config.latencySampleWindow >= 64) { "latencySampleWindow must be >= 64" }
         require(!config.useVehicleKeypoints || keypointEstimator != null) {
             "Vehicle keypoints are enabled but no VehicleKeypointEstimator backend is installed"
         }
@@ -47,11 +51,12 @@ class AnalysisPipelineRunner(
         }
 
         tracker.reset()
-        val allDetections = mutableListOf<Detection>()
+        val retainedDetections = ArrayDeque<Detection>(config.maxRetainedDetections)
         val trackBuffers = linkedMapOf<Long, MutableTrackBuffer>()
         val plateReadings = mutableListOf<PlateReading>()
-        val inferenceSamples = mutableListOf<Double>()
+        val inferenceSamples = ArrayDeque<Double>(config.latencySampleWindow)
         var frameCount = 0L
+        var totalReportableDetections = 0L
         var trackingDetectionCount = 0L
         var droppedFrames = 0L
         var trackingAssociationMisses = 0L
@@ -61,10 +66,14 @@ class AnalysisPipelineRunner(
         var previousTimestampMs: Long? = null
         var calibrationChecked = false
         var calibrationReady = false
+        var sourceReadTimeNs = 0L
         val analysisStartNs = System.nanoTime()
 
         while (true) {
-            val frame = source.nextFrame() ?: break
+            val sourceReadStartNs = System.nanoTime()
+            val frame = source.nextFrame()
+            sourceReadTimeNs += (System.nanoTime() - sourceReadStartNs).coerceAtLeast(0L)
+            if (frame == null) break
             frameCount++
 
             previousFrameIndex?.let { previous ->
@@ -105,14 +114,19 @@ class AnalysisPipelineRunner(
             require(inferenceLatencyMs.isFinite() && inferenceLatencyMs >= 0.0) {
                 "Measured detector latency is invalid at frame=${frame.index}"
             }
-            inferenceSamples += inferenceLatencyMs
+            inferenceSamples.addLast(inferenceLatencyMs)
+            while (inferenceSamples.size > config.latencySampleWindow) inferenceSamples.removeFirst()
 
             val trackingDetections = rawDetections.filter {
                 it.confidence.isFinite() && it.confidence in config.trackerInputMinimumConfidence..1f
             }
             trackingDetectionCount += trackingDetections.size.toLong()
             val reportableDetections = trackingDetections.filter { it.confidence >= config.minimumDetectionConfidence }
-            allDetections += reportableDetections
+            totalReportableDetections += reportableDetections.size.toLong()
+            reportableDetections.forEach { detection ->
+                retainedDetections.addLast(detection)
+                if (retainedDetections.size > config.maxRetainedDetections) retainedDetections.removeFirst()
+            }
 
             val tracks = tracker.update(trackingDetections, frame.index, frame.timestampMs)
             lastActiveTracks = tracks.size
@@ -144,10 +158,11 @@ class AnalysisPipelineRunner(
                 } else null
 
                 val enriched = observation.copy(groundPoint = ground, keypoints = keypoints)
-                val buffer = trackBuffers.getOrPut(track.id) { MutableTrackBuffer(track.id, track.className) }
+                val buffer = trackBuffers.getOrPut(track.id) { MutableTrackBuffer(track.id, track.className, config.maxTrackHistoryObservations) }
                 buffer.wasOccluded = buffer.wasOccluded || track.wasOccluded
                 buffer.confidenceSamples += track.trackConfidence.toDouble()
-                buffer.observations += enriched
+                buffer.observations.addLast(enriched)
+                while (buffer.observations.size > config.maxTrackHistoryObservations) buffer.observations.removeFirst()
 
                 if (config.enablePlateRecognition) {
                     plateRecognizer!!.recognize(frame.payload, observation.detection)?.let { reading ->
@@ -202,7 +217,7 @@ class AnalysisPipelineRunner(
             Track(
                 id = buffer.id,
                 className = buffer.className,
-                observations = buffer.observations.sortedWith(compareBy<TrackObservation> { it.timestampMs }.thenBy { it.frameIndex }),
+                observations = buffer.observations.toList().sortedWith(compareBy<TrackObservation> { it.timestampMs }.thenBy { it.frameIndex }),
                 trackConfidence = averageConfidence.toFloat().coerceIn(0f, 1f),
                 wasOccluded = buffer.wasOccluded,
             )
@@ -233,9 +248,11 @@ class AnalysisPipelineRunner(
 
         val elapsedMs = (System.nanoTime() - analysisStartNs) / 1_000_000.0
         val elapsedSeconds = elapsedMs / 1000.0
+        val decodedSeconds = sourceReadTimeNs / 1_000_000_000.0
+        val measuredDecodeFps = frameCount.takeIf { it > 0L && decodedSeconds > 0.0 }?.let { it / decodedSeconds }
         val processingFps = frameCount.takeIf { it > 0L && elapsedSeconds > 0.0 }?.let { it / elapsedSeconds }
         val e2ePerFrameMs = frameCount.takeIf { it > 0L }?.let { elapsedMs / it }
-        val sortedInference = inferenceSamples.sorted()
+        val sortedInference = inferenceSamples.toList().sorted()
         val inferenceMedian = percentile(sortedInference, 0.50)
         val inferenceP95 = percentile(sortedInference, 0.95)
         val rejectedSpeedEstimates = if (physicalSpeedAllowed) {
@@ -244,13 +261,14 @@ class AnalysisPipelineRunner(
 
         return AnalysisResult(
             source = source.source,
-            detections = allDetections,
+            detections = retainedDetections.toList(),
             tracks = completedTracks,
             speedEstimates = speedEstimates,
             plateReadings = PlateConsensus.resolve(plateReadings),
             trafficEvents = trafficEvents,
             metrics = AnalysisMetrics(
-                decodeFps = source.source.frameRate,
+                decodeFps = measuredDecodeFps,
+                sourceNominalFps = source.source.frameRate,
                 timestampPrecision = source.source.timestampPrecision,
                 inferenceLatencyMs = inferenceMedian,
                 inferenceMedianLatencyMs = inferenceMedian,
@@ -261,7 +279,7 @@ class AnalysisPipelineRunner(
                 droppedFrames = droppedFrames,
                 framesProcessed = frameCount,
                 trackingDetections = trackingDetectionCount,
-                detections = allDetections.size.toLong(),
+                detections = totalReportableDetections,
                 inferenceFailures = 0,
                 trackingAssociationMisses = trackingAssociationMisses,
                 activeTracks = lastActiveTracks,
@@ -317,8 +335,9 @@ class AnalysisPipelineRunner(
     private data class MutableTrackBuffer(
         val id: Long,
         val className: String,
-        val observations: MutableList<TrackObservation> = mutableListOf(),
-        val confidenceSamples: MutableList<Double> = mutableListOf(),
+        val maxObservations: Int,
+        val observations: ArrayDeque<TrackObservation> = ArrayDeque(maxObservations),
+        val confidenceSamples: ArrayDeque<Double> = ArrayDeque(maxObservations),
         var wasOccluded: Boolean = false,
     )
 }
