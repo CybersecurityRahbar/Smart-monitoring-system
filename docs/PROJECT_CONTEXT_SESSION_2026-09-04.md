@@ -66,6 +66,21 @@ Run #286 confirmed the existing native speed/parity vectors and Python research 
 
 The next parity improvement is to move from duplicated hand-written goldens toward a shared/generated deterministic fixture source so Kotlin and native tests consume exactly the same inputs and expected outputs.
 
+## Real-device crash found during first Local Analysis test — 2026-09-04
+The first practical Android test exposed a process-level crash when the user selected a local car video and pressed `Run Real Analysis`. This is a real field defect; the earlier CI state must not be described as device-ready.
+
+Repository inspection identified a high-risk startup path: `AnalysisRuntimeFactory.createDetector()` previously constructed `LiteRtObjectDetector` with `Accelerator.GPU` first and attempted CPU fallback only via Kotlin `catch (Throwable)`. GPU delegate initialization is a native operation; a vendor/driver/native abort is not necessarily catchable by Kotlin, so the app can terminate instead of reaching the fallback.
+
+The Local Analysis ViewModel also constructed `NativeGroundProjector` and `NativeFirstSpeedEstimator` for the first real-analysis path. Those JNI-backed components were not needed to validate basic detection/tracking/radar behavior and had no physical-device smoke coverage yet.
+
+### Immediate stabilization changes
+1. `AnalysisRuntimeFactory.kt` now uses `Accelerator.CPU` as the production-safe default for analysis. It no longer probes GPU implicitly. GPU acceleration is deferred until a real-device instrumented smoke test proves it safe on the target devices.
+2. `LocalAnalysisViewModel.kt` now uses `KotlinGroundProjector` and `KotlinSpeedEstimatorBackend` for the Local Analysis Lab path, keeping the first device validation independent of JNI/native loading. The C++ implementation remains protected by the existing native parity tests and can be reintroduced behind a separately validated runtime path later.
+
+These changes intentionally prioritize process survival and deterministic validation over acceleration for the first field test. They do not remove the native code from the repository.
+
+The exact cause of the observed crash cannot be declared 100% proven without the phone's logcat/stack trace; however, the GPU delegate startup path is the strongest repository-grounded suspect because it executes immediately when `Run Real Analysis` is pressed and can fail outside Kotlin exception handling. The stabilization changes remove that risk from the Local Lab path rather than masking a failure after it occurs.
+
 ## Reliability policy reinforced
 - Build-green does not imply device-green.
 - CI must always be interpreted against the exact commit SHA under review.
@@ -74,22 +89,21 @@ The next parity improvement is to move from duplicated hand-written goldens towa
 - Native speed remains preferred through the native-first adapter only after result validation; Kotlin remains the reference fallback.
 - The exact PTS path must not be promoted to a measurement-grade claim until real-device media compatibility is validated.
 - Resource ownership must be explicit: callers own supplied `FrameSource` instances; creators own sources they create.
+- JNI/native and GPU delegate paths require explicit device smoke testing before being treated as production-safe startup dependencies.
 
 ## Current verification state
-Run #296 (`33875804871`) corresponded to commit `fe9062724479aec679a4632e9639d0d194df27a3`, with Native C++ Parity and Python tests passing while Android was still in progress. It was superseded by later ownership/test changes.
+The last fully verified green run before the crash fix was Run #302 (`33876824474`) on exact commit `e77a0493616b1faaa17ee46bc8b7b9aa1a87a5ef`, with Android build/test/lint, native parity, and Python research validation all green. That run did not contain the subsequent crash-stabilization commits and did not include physical-device execution.
 
-Run #297 on the prior documentation commit failed in Android unit tests with exactly two stale assertions. Those assertions were corrected in commits `9b61fb220c43e621e9dd431e45f29c901f709b1d` and `56fd7c206458e7bd116c5f09a180ebafb5bcb7a6`. A follow-up failure-path lifecycle test was added in `4edb21cb6346e1bd5e2204a7d3cd604c32f1a389`.
+Crash-stabilization commits currently on `main`:
+- `9a10d728e54ba87dda9d06f31cea6d2d8c880267` — CPU-safe analysis runtime default.
+- `a1d297824f14448b95ab796722c476d86f70e13d` — Local Analysis Lab uses Kotlin geometry/speed path instead of JNI for device validation.
 
-A documentation synchronization commit after the test corrections is commit `4948a7f267c5bb3ec5d4c6d3523fb2a1742991a0`, which triggered Run #300 (`33876771482`). At the latest inspection Run #300 was still pending. The subsequent failure-path test commit `4edb21cb6346e1bd5e2204a7d3cd604c32f1a389` is newer and therefore requires a newer exact-HEAD CI run before the state can be called green.
+A new exact-HEAD CI run is required for these changes before another APK is treated as test-ready.
 
 ## Current stopping point
-Latest code areas hardened in this session:
-- API-26/27 guard for indexed MediaMetadataRetriever use;
-- unified session exactly-once resource closure;
-- explicit FrameSource ownership boundary between session, engine and runner;
-- lifecycle and ownership regression tests;
-- exact-PTS decoder ImageReader queue and PTS/image timestamp consistency validation;
-- corrected stale unit-test expectations exposed by Run #297;
-- explicit cleanup verification for factory-created sources on analysis failure.
-
-The next engineering gate is a fully green CI run on the exact current `main` HEAD, followed by real-device Exact PTS validation and only then deeper tracking/speed benchmark work.
+The immediate goal after the field crash is:
+1. verify CI on the exact new `main` HEAD;
+2. install that new APK on the same physical phone;
+3. repeat `Run Real Analysis` with the same car video;
+4. record whether the app survives, whether detections/tracks appear, and whether any explicit analysis error is shown instead of process termination;
+5. only after this stability gate continue with GPU/JNI device validation and deeper tracking/speed benchmarks.
