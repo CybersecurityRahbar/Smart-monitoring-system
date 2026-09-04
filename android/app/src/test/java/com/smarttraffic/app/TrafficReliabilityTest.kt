@@ -151,6 +151,8 @@ class TrafficReliabilityTest {
         assertEquals(1, result.speedEstimates.size)
         assertTrue(kotlin.math.abs(result.speedEstimates.values.single().kilometersPerHour - 3.6) < 0.35)
         assertEquals(0L, result.metrics.rejectedSpeedEstimates)
+        assertTrue("runner must not close a directly supplied source", !source.closed)
+        source.close()
         assertTrue(source.closed)
     }
 
