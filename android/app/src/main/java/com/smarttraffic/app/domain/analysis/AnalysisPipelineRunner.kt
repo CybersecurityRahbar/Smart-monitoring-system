@@ -28,6 +28,7 @@ class AnalysisPipelineRunner(
         require(config.maxRetainedDetections >= 1) { "maxRetainedDetections must be >= 1" }
         require(config.maxTrackHistoryObservations >= 32) { "maxTrackHistoryObservations must be >= 32" }
         require(config.latencySampleWindow >= 64) { "latencySampleWindow must be >= 64" }
+        require(config.maxPlateReadings >= 1) { "maxPlateReadings must be >= 1" }
         require(!config.useVehicleKeypoints || keypointEstimator != null) {
             "Vehicle keypoints are enabled but no VehicleKeypointEstimator backend is installed"
         }
@@ -53,7 +54,7 @@ class AnalysisPipelineRunner(
         tracker.reset()
         val retainedDetections = ArrayDeque<Detection>(config.maxRetainedDetections)
         val trackBuffers = linkedMapOf<Long, MutableTrackBuffer>()
-        val plateReadings = mutableListOf<PlateReading>()
+        val plateReadings = ArrayDeque<PlateReading>(config.maxPlateReadings)
         val inferenceSamples = ArrayDeque<Double>(config.latencySampleWindow)
         var frameCount = 0L
         var totalReportableDetections = 0L
@@ -80,9 +81,7 @@ class AnalysisPipelineRunner(
                 require(frame.index > previous) {
                     "Frame indices must increase strictly: previous=$previous current=${frame.index}"
                 }
-                if (frame.index > previous + 1L) {
-                    droppedFrames += frame.index - previous - 1L
-                }
+                if (frame.index > previous + 1L) droppedFrames += frame.index - previous - 1L
             }
             previousTimestampMs?.let { previous ->
                 require(frame.timestampMs >= previous) {
@@ -93,11 +92,7 @@ class AnalysisPipelineRunner(
             previousTimestampMs = frame.timestampMs
 
             if (!calibrationChecked) {
-                calibrationReady = config.useGroundPlane && calibrationAccepted(
-                    config = config,
-                    sourceWidth = frame.width,
-                    sourceHeight = frame.height,
-                )
+                calibrationReady = config.useGroundPlane && calibrationAccepted(config, frame.width, frame.height)
                 calibrationChecked = true
             }
 
@@ -132,44 +127,40 @@ class AnalysisPipelineRunner(
             lastActiveTracks = tracks.size
             peakActiveTracks = maxOf(peakActiveTracks, tracks.size)
             for (track in tracks) {
-                val observation = track.observations.lastOrNull { it.frameIndex == frame.index }
-                if (observation == null) {
+                val observation = track.observations.lastOrNull { it.frameIndex == frame.index } ?: run {
                     trackingAssociationMisses++
                     continue
                 }
 
-                val keypoints = if (config.useVehicleKeypoints) {
-                    keypointEstimator!!.estimate(frame.payload, observation.detection)
-                } else emptyList()
-
+                val keypoints = if (config.useVehicleKeypoints) keypointEstimator!!.estimate(frame.payload, observation.detection) else emptyList()
                 val contact = selectContactPoint(observation.detection, keypoints)
                 val ground = if (calibrationReady) {
-                    val calibration = requireNotNull(config.calibration) {
-                        "Calibration was accepted without a calibration profile"
-                    }
-                    runCatching {
-                        groundProjector.project(calibration, contact.first, contact.second)
-                    }.getOrElse { error ->
-                        throw IllegalStateException(
-                            "Ground-plane projection failed at frame=${frame.index}, track=${track.id}",
-                            error,
-                        )
-                    }
+                    val calibration = requireNotNull(config.calibration) { "Calibration was accepted without a calibration profile" }
+                    runCatching { groundProjector.project(calibration, contact.first, contact.second) }
+                        .getOrElse { error ->
+                            throw IllegalStateException(
+                                "Ground-plane projection failed at frame=${frame.index}, track=${track.id}",
+                                error,
+                            )
+                        }
                 } else null
 
                 val enriched = observation.copy(groundPoint = ground, keypoints = keypoints)
-                val buffer = trackBuffers.getOrPut(track.id) { MutableTrackBuffer(track.id, track.className, config.maxTrackHistoryObservations) }
+                val buffer = trackBuffers.getOrPut(track.id) {
+                    MutableTrackBuffer(track.id, track.className, config.maxTrackHistoryObservations)
+                }
                 buffer.wasOccluded = buffer.wasOccluded || track.wasOccluded
-                buffer.confidenceSamples += track.trackConfidence.toDouble()
+                buffer.confidenceSamples.addLast(track.trackConfidence.toDouble())
+                while (buffer.confidenceSamples.size > config.maxTrackHistoryObservations) buffer.confidenceSamples.removeFirst()
                 buffer.observations.addLast(enriched)
                 while (buffer.observations.size > config.maxTrackHistoryObservations) buffer.observations.removeFirst()
 
                 if (config.enablePlateRecognition) {
                     plateRecognizer!!.recognize(frame.payload, observation.detection)?.let { reading ->
-                        plateReadings += reading.copy(
-                            trackId = reading.trackId ?: track.id,
-                            timestampMs = frame.timestampMs,
+                        plateReadings.addLast(
+                            reading.copy(trackId = reading.trackId ?: track.id, timestampMs = frame.timestampMs),
                         )
+                        if (plateReadings.size > config.maxPlateReadings) plateReadings.removeFirst()
                     }
                 }
             }
@@ -185,6 +176,11 @@ class AnalysisPipelineRunner(
                             observations = buffer.observations.toList(),
                             trackConfidence = buffer.confidenceSamples.average().toFloat().coerceIn(0f, 1f),
                             wasOccluded = buffer.wasOccluded,
+                            state = track.state,
+                            hits = track.hits,
+                            misses = track.misses,
+                            ageFrames = track.ageFrames,
+                            lastTimestampMs = track.lastTimestampMs,
                         )
                     }
                     val liveSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
@@ -220,6 +216,11 @@ class AnalysisPipelineRunner(
                 observations = buffer.observations.toList().sortedWith(compareBy<TrackObservation> { it.timestampMs }.thenBy { it.frameIndex }),
                 trackConfidence = averageConfidence.toFloat().coerceIn(0f, 1f),
                 wasOccluded = buffer.wasOccluded,
+                state = TrackState.CONFIRMED,
+                hits = buffer.hits,
+                misses = buffer.misses,
+                ageFrames = buffer.ageFrames,
+                lastTimestampMs = buffer.lastTimestampMs,
             )
         }
 
@@ -264,7 +265,7 @@ class AnalysisPipelineRunner(
             detections = retainedDetections.toList(),
             tracks = completedTracks,
             speedEstimates = speedEstimates,
-            plateReadings = PlateConsensus.resolve(plateReadings),
+            plateReadings = PlateConsensus.resolve(plateReadings.toList()),
             trafficEvents = trafficEvents,
             metrics = AnalysisMetrics(
                 decodeFps = measuredDecodeFps,
@@ -289,18 +290,14 @@ class AnalysisPipelineRunner(
                 rejectedSpeedEstimates = rejectedSpeedEstimates,
                 plateReads = plateReadings.size.toLong(),
                 trafficEvents = trafficEvents.size.toLong(),
-                homographyReprojectionError = config.calibration?.reprojectionErrorPixels
-                    ?: config.calibration?.reprojectionErrorTargetUnits,
+                homographyReprojectionError = config.calibration?.reprojectionErrorPixels ?: config.calibration?.reprojectionErrorTargetUnits,
                 speedEstimatorBackend = speedEstimator.name,
             ),
         )
     }
 
-    private fun physicalSpeedAllowed(source: FrameSource, config: AnalysisConfig, calibrationReady: Boolean): Boolean {
-        if (!calibrationReady) return false
-        return !config.requireExactTimestampsForPhysicalSpeed ||
-            source.source.timestampPrecision == FrameTimestampPrecision.EXACT_SOURCE_CLOCK
-    }
+    private fun physicalSpeedAllowed(source: FrameSource, config: AnalysisConfig, calibrationReady: Boolean): Boolean =
+        calibrationReady && (!config.requireExactTimestampsForPhysicalSpeed || source.source.timestampPrecision == FrameTimestampPrecision.EXACT_SOURCE_CLOCK)
 
     private fun calibrationAccepted(config: AnalysisConfig, sourceWidth: Int, sourceHeight: Int): Boolean {
         val calibration = config.calibration ?: return false
@@ -328,8 +325,7 @@ class AnalysisPipelineRunner(
         val learned = keypoints
             .filter { it.confidence >= 0.50f && it.x.isFinite() && it.y.isFinite() }
             .firstOrNull { it.name.lowercase() in setOf("ground_contact", "contact", "footprint", "rear_contact", "front_contact") }
-        return if (learned != null) learned.x to learned.y
-        else ((detection.left + detection.right) / 2.0) to detection.bottom.toDouble()
+        return if (learned != null) learned.x to learned.y else ((detection.left + detection.right) / 2.0) to detection.bottom.toDouble()
     }
 
     private data class MutableTrackBuffer(
@@ -338,6 +334,10 @@ class AnalysisPipelineRunner(
         val maxObservations: Int,
         val observations: ArrayDeque<TrackObservation> = ArrayDeque(maxObservations),
         val confidenceSamples: ArrayDeque<Double> = ArrayDeque(maxObservations),
+        var hits: Int = 0,
+        var misses: Int = 0,
+        var ageFrames: Int = 0,
+        var lastTimestampMs: Long = 0L,
         var wasOccluded: Boolean = false,
     )
 }
