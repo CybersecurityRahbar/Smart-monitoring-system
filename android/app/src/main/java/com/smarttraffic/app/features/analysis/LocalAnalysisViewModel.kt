@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+
 enum class AnalysisRunPhase { IDLE, RUNNING, SUCCESS, ERROR }
 enum class AnalysisMediaType { VIDEO, IMAGE }
 
@@ -147,9 +148,17 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                     mediaDescription = "${source!!.source.uri} type=$mediaType",
                     frameInfo = "${source!!.source.width}x${source!!.source.height} fps=${source!!.source.frameRate} pts=${source!!.source.timestampPrecision}",
                 )
+
+                var lastPreviewNs = Long.MIN_VALUE
+                val previewIntervalNs = (1_000_000_000.0 / effectiveConfig.maximumPreviewFps.coerceAtLeast(0.1))
+                    .toLong()
                 val observer = AnalysisPreviewObserver { previewFrame ->
-                    session.publishPreview(previewFrame)
-                    _preview.value = previewFrame
+                    val nowNs = System.nanoTime()
+                    if (lastPreviewNs == Long.MIN_VALUE || nowNs - lastPreviewNs >= previewIntervalNs) {
+                        lastPreviewNs = nowNs
+                        session.publishPreview(previewFrame)
+                        _preview.value = previewFrame
+                    }
                 }
                 val engine = ModularAnalysisEngine(
                     detector = runtime!!.detector,
