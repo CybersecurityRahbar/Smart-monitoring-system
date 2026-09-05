@@ -122,6 +122,7 @@ class AnalysisPipelineRunner(
                 buffer.misses = maxOf(buffer.misses, track.misses)
                 buffer.ageFrames = maxOf(buffer.ageFrames, track.ageFrames)
                 buffer.lastTimestampMs = maxOf(buffer.lastTimestampMs, track.lastTimestampMs)
+                buffer.state = track.state
                 buffer.confidenceSamples.addLast(track.trackConfidence.toDouble())
                 while (buffer.confidenceSamples.size > config.maxTrackHistoryObservations) buffer.confidenceSamples.removeFirst()
                 buffer.observations.addLast(enriched)
@@ -174,7 +175,7 @@ class AnalysisPipelineRunner(
                 observations = buffer.observations.toList().sortedWith(compareBy<TrackObservation> { it.timestampMs }.thenBy { it.frameIndex }),
                 trackConfidence = averageConfidence.toFloat().coerceIn(0f, 1f),
                 wasOccluded = buffer.wasOccluded,
-                state = TrackState.CONFIRMED,
+                state = buffer.state,
                 hits = buffer.hits,
                 misses = buffer.misses,
                 ageFrames = buffer.ageFrames,
@@ -288,15 +289,14 @@ class AnalysisPipelineRunner(
 
     private fun calibrationAccepted(config: AnalysisConfig, sourceWidth: Int, sourceHeight: Int): Boolean {
         val calibration = config.calibration ?: return false
+        if (!config.requireValidatedCalibration) return true
         val validation = CalibrationValidator.validate(
-            profile = calibration,
-            expectedWidth = sourceWidth,
-            expectedHeight = sourceHeight,
-            maxReprojectionErrorPixels = if (config.requireValidatedCalibration) config.maxCalibrationReprojectionErrorPixels else Double.POSITIVE_INFINITY,
-            maxReprojectionErrorTargetUnits = if (config.requireValidatedCalibration) config.maxCalibrationReprojectionErrorTargetUnits else Double.POSITIVE_INFINITY,
-            minimumInlierRatio = if (config.requireValidatedCalibration) config.minimumCalibrationInlierRatio else 0.0,
+            calibration,
+            maxReprojectionErrorPixels = config.maxCalibrationReprojectionErrorPixels,
+            maxReprojectionErrorTargetUnits = config.maxCalibrationReprojectionErrorTargetUnits,
+            minimumInlierRatio = config.minimumCalibrationInlierRatio,
         )
-        return validation.accepted
+        return validation.accepted && calibration.imageWidth == sourceWidth && calibration.imageHeight == sourceHeight
     }
 
     private fun percentile(sorted: List<Double>, p: Double): Double? {
@@ -325,5 +325,6 @@ class AnalysisPipelineRunner(
         var ageFrames: Int = 0,
         var lastTimestampMs: Long = 0L,
         var wasOccluded: Boolean = false,
+        var state: TrackState = TrackState.CONFIRMED,
     )
 }
