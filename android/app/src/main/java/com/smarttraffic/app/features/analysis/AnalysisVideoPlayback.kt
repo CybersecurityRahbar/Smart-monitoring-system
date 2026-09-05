@@ -82,7 +82,6 @@ fun AnalysisVideoPlayback(
             factory = { viewContext ->
                 (LayoutInflater.from(viewContext).inflate(R.layout.view_analysis_player, null) as PlayerView).apply {
                     this.player = player
-                    setShutterBackgroundColor(android.graphics.Color.BLACK)
                 }
             },
             update = { it.player = player },
