@@ -87,11 +87,8 @@ On the next launch, inspect supported process-exit history so the UI can disting
 
 ## Testing strategy
 Detector: asset SHA + input/output contract + one-frame smoke test.
-
 Tracker: deterministic association scenarios, detector misses, crossing vehicles, adjacent vehicles, occlusion and recovery, ID stability, plus quantitative metrics.
-
 Geometry: homography/golden vectors and invalid-calibration cases.
-
 Speed: synthetic trajectories, irregular PTS, duplicates, gaps, outliers, acceleration, wrong calibration, and rejection semantics. Kotlin/native implementations must share canonical test fixtures.
 
 Media: H.264/H.265, portrait/landscape rotation, common resolutions, long files, malformed/edge files, exact-PTS consistency, memory pressure and sustained throughput.
@@ -118,9 +115,11 @@ Search and eliminate or justify all TODO/FIXME placeholders, broad silent catche
 12. Final accuracy/reliability benchmark and release gate.
 
 ## Current known non-complete areas
-The current project context already records the first physical-device crash in Local Analysis and the stabilization attempts. These attempts did not yet prove the root cause. The Local Lab was deliberately simplified to CPU + Kotlin geometry/speed + ordinary video source and appearance association disabled for isolation.
+The first physical-device crash in Local Analysis remains a historical incident whose original native/runtime root cause was not proven from device logs in the repository. Local Lab is deliberately simplified to CPU + Kotlin geometry/speed + ordinary video source and appearance association disabled for isolation.
 
-Known remaining gaps include unvalidated ExactPts decoder, eager native library loading, unimplemented ANPR/OCR, metadata-only evidence, and the need for repository-wide placeholder/static-initializer audit. Live currently uses the real shared pipeline but still needs physical ESP32 validation.
+The current repository now has real bounded evidence artifacts at `android/app/src/main/java/com/smarttraffic/app/data/evidence/FileEvidenceStore.kt`. The evidence layer is no longer metadata-only: frame/vehicle/plate artifacts (where supplied) are SHA-256 content-addressed, serialized through a coroutine mutex, flushed before publication, atomically moved when supported, integrity-verified on read, and orphan-pruned under retention limits. Existing limitations remain around capturing the exact live MJPEG event frame and wiring a real ANPR/plate crop into the evidence path.
+
+Exact source PTS for local video is still unvalidated. A real ANPR/OCR backend is still unimplemented. Physical ESP32 camera validation is still pending. Quantitative tracking quality metrics such as ID switches/fragmentation/recovery latency still need benchmark fixtures and end-to-end reporting. Stress/memory and crash/ANR validation still require actual devices.
 
 ## Professional tracking behavior requested by project owner
 The radar should visually and semantically behave like the strong Python traffic projects the user tested: each detected vehicle receives a stable numbered box such as vehicle 162 and vehicle 163, classification is attached to that same track, and the ID follows the vehicle through the scene rather than being regenerated every frame.
@@ -128,9 +127,17 @@ The radar should visually and semantically behave like the strong Python traffic
 This behavior is a core product requirement, not a cosmetic UI feature.
 
 ## Engineering-pass log — 2026-09-05
-The first CI attempt after the reliability/tracking changes failed at Kotlin compilation on Run #331. The reported defects were: duplicate LocalImageFrameSource declarations; stale/invalid sourceUri references caused by that duplicate insertion; missing Compose nativeCanvas import; and malformed LiveAnalysisViewModel session initialization. All four root defects were corrected, and the image source was restored as exactly one dedicated implementation after removing the duplicate embedded declaration. The corrected main branch is now at commit `896dc65ddf9572bb1e13c0e316dea6434ea4aa6a`, with CI Run #336 in progress. The build must be considered unverified until Run #336 completes.
+Run #331 previously failed Kotlin compilation because of duplicate LocalImageFrameSource declarations, stale/invalid sourceUri references, a missing Compose `nativeCanvas` import, and malformed LiveAnalysisViewModel session initialization. These were corrected.
 
-This CI failure is now part of the permanent context so a future session understands both the cause and the correction instead of repeating the same modifications.
+The follow-up Run #356 then failed in `LiveAnalysisViewModel.kt` because `FrameSource.droppedFrameCount` had been converted from a function to a property while four callers still invoked it with `()`. All four usages were corrected in commit `cedc14d789e05962b87d7e993ed88702883ae69d`.
+
+CI Run #357 (`33971826268`) completed successfully at that commit across all three jobs: Android build/test, Android instrumentation APK compilation, unit tests, Android lint, native C++ parity vectors, and offline research math validation all passed. This proves the current build/test layers at that exact SHA; it does not prove physical-device runtime stability.
+
+After that verification, evidence persistence was hardened in commit `55426379e908213a9bb22d763ed30f2a7ac354c2`, followed by expanded instrumentation coverage in commit `39ad0c62e46a828461f01026f93652b176974570`. The evidence store now uses immutable content-addressed artifact filenames derived from SHA-256 rather than parsing record IDs, serializes store operations, verifies referenced artifacts during reads, uses flushed file publication with atomic-move support and safe fallback, and removes unreferenced artifacts during retention. New tests cover metadata/artifact persistence, retention, missing-artifact fail-closed behavior, and concurrent saves.
+
+The current `main` HEAD at the time this document was updated is `39ad0c62e46a828461f01026f93652b176974570`. Any later commit must append a new engineering-pass log entry here with the exact commit SHA and verification status.
+
+This project owner explicitly requires the cumulative context document under `docs` to be updated as part of every material work cycle and before a response closes, recording decisions, changes, failures, tests, unresolved risks, and the exact repository state needed to resume work without reconstructing prior conversation context.
 
 ## Release honesty rule
 Never claim 'zero bugs' or 'production ready' from static inspection alone. The strongest defensible status is 'implemented and verified by [specific test layers]'. Device-specific native/runtime stability requires actual device evidence.
