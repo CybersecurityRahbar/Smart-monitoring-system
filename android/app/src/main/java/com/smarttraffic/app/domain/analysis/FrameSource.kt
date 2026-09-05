@@ -12,6 +12,11 @@ data class AnalysisFrame(
 /** Transport-independent frame source for local media, ESP32 MJPEG, or future camera sources. */
 interface FrameSource {
     val source: MediaSource
+
+    /** Number of frames discarded by the source before reaching the analysis consumer. */
+    val droppedFrameCount: Long
+        get() = 0L
+
     suspend fun nextFrame(): AnalysisFrame?
     suspend fun close()
 }
