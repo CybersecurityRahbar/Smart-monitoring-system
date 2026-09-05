@@ -37,6 +37,7 @@ import androidx.media3.ui.PlayerView
 import com.smarttraffic.app.R
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
 import com.smarttraffic.app.domain.analysis.Detection
+import com.smarttraffic.app.domain.analysis.SpeedEstimateMode
 import com.smarttraffic.app.domain.analysis.SpeedGate
 import com.smarttraffic.app.domain.analysis.Track
 import kotlin.math.max
@@ -156,7 +157,11 @@ fun AnalysisVideoPlayback(
                 )
                 val speedText = preview.speedEstimates[track.id]?.let { speed ->
                     val error = speed.errorKmh?.let { " ± %.1f".format(it) } ?: ""
-                    " | speed: %.1f km/h%s".format(speed.kilometersPerHour, error)
+                    val modeLabel = when (speed.mode) {
+                        SpeedEstimateMode.CALIBRATED_GROUND_PLANE -> ""
+                        SpeedEstimateMode.CALIBRATION_FREE_ESTIMATE -> " (calibration-free estimate)"
+                    }
+                    " | speed: %.1f km/h%s%s".format(speed.kilometersPerHour, error, modeLabel)
                 }.orEmpty()
                 drawContext.canvas.nativeCanvas.drawText(
                     "car ID: ${track.id}$speedText",
