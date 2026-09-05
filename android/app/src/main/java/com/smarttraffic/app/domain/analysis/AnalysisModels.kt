@@ -59,6 +59,13 @@ data class Track(
     val maximumRecoveryGapMs: Long = 0L,
 )
 
+enum class SpeedEstimateMode {
+    /** Metric result derived from validated ground-plane calibration. */
+    CALIBRATED_GROUND_PLANE,
+    /** Approximate result derived without camera calibration using a robust vehicle-size prior. */
+    CALIBRATION_FREE_ESTIMATE,
+}
+
 data class SpeedEstimate(
     val metersPerSecond: Double,
     val kilometersPerHour: Double,
@@ -70,6 +77,7 @@ data class SpeedEstimate(
     val directionDegrees: Double? = null,
     val positionResidualMeters: Double? = null,
     val errorKmh: Double? = null,
+    val mode: SpeedEstimateMode = SpeedEstimateMode.CALIBRATED_GROUND_PLANE,
 )
 
 enum class SpeedRejectionReason {
@@ -127,6 +135,7 @@ data class AnalysisConfig(
     val useSegmentationRefinement: Boolean = false,
     val useReIdentification: Boolean = false,
     val useAppearanceAssociation: Boolean = true,
+    val enableCalibrationFreeSpeedEstimate: Boolean = true,
     val enablePlateRecognition: Boolean = false,
     val enableRules: Boolean = false,
     val trafficRules: TrafficRuleConfig = TrafficRuleConfig(),
