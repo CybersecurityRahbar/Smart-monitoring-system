@@ -135,7 +135,9 @@ CI Run #357 (`33971826268`) completed successfully at that commit across all thr
 
 After that verification, evidence persistence was hardened in commit `55426379e908213a9bb22d763ed30f2a7ac354c2`, followed by expanded instrumentation coverage in commit `39ad0c62e46a828461f01026f93652b176974570`. The evidence store now uses immutable content-addressed artifact filenames derived from SHA-256 rather than parsing record IDs, serializes store operations, verifies referenced artifacts during reads, uses flushed file publication with atomic-move support and safe fallback, and removes unreferenced artifacts during retention. New tests cover metadata/artifact persistence, retention, missing-artifact fail-closed behavior, and concurrent saves.
 
-The current `main` HEAD at the time this document was updated is `39ad0c62e46a828461f01026f93652b176974570`. Any later commit must append a new engineering-pass log entry here with the exact commit SHA and verification status.
+The subsequent tracker-state integrity fix is commit `4dd4f597a401f68d909c6f493a0e9a7986482fe7d`. `AnalysisPipelineRunner` now preserves the tracker's terminal state in its bounded track buffer and returns that state in `AnalysisResult` instead of forcing every completed track to `CONFIRMED`. This prevents a track that ended `LOST` from being incorrectly treated as speed-eligible solely because its observations are numerically sufficient. The change is awaiting CI verification at the time of this document update.
+
+The current `main` HEAD immediately before this documentation commit was `4dd4f597a401f68d909c6f493a0e9a7986482fe7d`. This documentation update creates a new HEAD and therefore requires its own CI check; never treat the earlier successful Run #357 as validation of the new documentation HEAD.
 
 This project owner explicitly requires the cumulative context document under `docs` to be updated as part of every material work cycle and before a response closes, recording decisions, changes, failures, tests, unresolved risks, and the exact repository state needed to resume work without reconstructing prior conversation context.
 
