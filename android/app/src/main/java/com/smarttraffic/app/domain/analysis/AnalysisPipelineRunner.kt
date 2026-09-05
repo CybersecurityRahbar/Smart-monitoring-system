@@ -220,6 +220,7 @@ class AnalysisPipelineRunner(
         val sortedInference = inferenceSamples.toList().sorted()
         val inferenceMedian = percentile(sortedInference, 0.50)
         val inferenceP95 = percentile(sortedInference, 0.95)
+        val totalDroppedFrames = droppedFrames + source.droppedFrameCount
 
         return AnalysisResult(
             source = source.source,
@@ -239,7 +240,7 @@ class AnalysisPipelineRunner(
                 endToEndLatencyMs = e2ePerFrameMs,
                 totalProcessingTimeMs = elapsedMs,
                 processingFps = processingFps,
-                droppedFrames = droppedFrames,
+                droppedFrames = totalDroppedFrames,
                 framesProcessed = frameCount,
                 trackingDetections = trackingDetectionCount,
                 detections = totalReportableDetections,
