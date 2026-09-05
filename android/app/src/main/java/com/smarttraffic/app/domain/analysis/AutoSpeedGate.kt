@@ -26,12 +26,11 @@ data class SpeedGate(
 /**
  * Scene-adaptive timing-gate builder.
  *
- * The traffic-flow axis is inferred from adjacent observations within each individual track,
- * then pooled with a robust median. This prevents unrelated vehicles from creating artificial
- * velocity vectors. Gate coordinates are frozen from robust scene quantiles and never rescaled
- * when vehicles enter or leave the scene.
- *
- * Metric distance is exposed only when a validated image-to-ground calibration exists.
+ * Vehicle motion is converted into per-track velocity vectors. A 2D principal-component axis
+ * is then extracted from those vectors, which preserves the road direction even when traffic
+ * contains vehicles moving in opposite directions. Two cross-flow lines are placed at robust
+ * scene quantiles along that fixed axis and are never re-scaled by the current active tracks.
+ * Metric separation is published only for a valid image-to-ground calibration.
  */
 object AutoSpeedGateBuilder {
     fun build(
@@ -43,32 +42,12 @@ object AutoSpeedGateBuilder {
         if (imageWidth <= 1 || imageHeight <= 1) return null
         val samples = collectSamples(tracks, calibration)
         if (samples.size < 6) return null
-
-        val velocities = tracks.flatMap { track ->
-            val observations = track.observations.takeLast(40)
-            observations.zipWithNext().mapNotNull { (a, b) ->
-                val dt = (b.timestampMs - a.timestampMs) / 1000.0
-                if (!dt.isFinite() || dt <= 0.0 || dt > 1.0) return@mapNotNull null
-                val aPoint = pointFor(a, calibration) ?: return@mapNotNull null
-                val bPoint = pointFor(b, calibration) ?: return@mapNotNull null
-                val vx = (bPoint.first - aPoint.first) / dt
-                val vy = (bPoint.second - aPoint.second) / dt
-                val magnitude = hypot(vx, vy)
-                if (!magnitude.isFinite() || magnitude < 1e-6) return@mapNotNull null
-                vx to vy
-            }
-        }.filter { it.first.isFinite() && it.second.isFinite() }
+        val velocities = collectVelocities(tracks, calibration)
         if (velocities.size < 4) return null
 
-        val vx = median(velocities.map { it.first })
-        val vy = median(velocities.map { it.second })
-        val norm = hypot(vx, vy)
-        if (!norm.isFinite() || norm < 1e-6) return null
-        val ux = vx / norm
-        val uy = vy / norm
-
-        val centerX = median(samples.map { it.x })
-        val centerY = median(samples.map { it.y })
+        val axis = principalAxis(velocities) ?: return null
+        val ux = axis.first
+        val uy = axis.second
         val scalar = samples.map { it.x * ux + it.y * uy }.sorted()
         val line1Coordinate = percentile(scalar, 0.35)
         val line2Coordinate = percentile(scalar, 0.65)
@@ -76,6 +55,8 @@ object AutoSpeedGateBuilder {
         if (!separation.isFinite() || separation <= 1e-6) return null
 
         return if (calibration == null) {
+            val centerX = median(samples.map { it.x })
+            val centerY = median(samples.map { it.y })
             val centerProjection = centerX * ux + centerY * uy
             val p1 = pointAtProjection(centerProjection, centerX, centerY, ux, uy, line1Coordinate)
             val p2 = pointAtProjection(centerProjection, centerX, centerY, ux, uy, line2Coordinate)
@@ -137,6 +118,51 @@ object AutoSpeedGateBuilder {
         tracks.flatMap { it.observations.takeLast(40) }.mapNotNull { observation ->
             pointFor(observation, calibration)?.let { Sample(it.first, it.second, observation.timestampMs) }
         }.filter { it.x.isFinite() && it.y.isFinite() && it.t >= 0L }
+
+    private fun collectVelocities(tracks: List<Track>, calibration: CalibrationProfile?): List<Pair<Double, Double>> =
+        tracks.flatMap { track ->
+            track.observations.takeLast(40).zipWithNext().mapNotNull { (a, b) ->
+                val dt = (b.timestampMs - a.timestampMs) / 1000.0
+                if (!dt.isFinite() || dt <= 0.0 || dt > 1.0) return@mapNotNull null
+                val p1 = pointFor(a, calibration) ?: return@mapNotNull null
+                val p2 = pointFor(b, calibration) ?: return@mapNotNull null
+                val vx = (p2.first - p1.first) / dt
+                val vy = (p2.second - p1.second) / dt
+                if (!vx.isFinite() || !vy.isFinite()) return@mapNotNull null
+                if (hypot(vx, vy) < 1e-3) return@mapNotNull null
+                vx to vy
+            }
+        }
+
+    /** PCA of 2D velocity vectors; eigenvector sign is arbitrary because a road axis is undirected. */
+    private fun principalAxis(vectors: List<Pair<Double, Double>>): Pair<Double, Double>? {
+        if (vectors.size < 2) return null
+        val meanX = vectors.map { it.first }.average()
+        val meanY = vectors.map { it.second }.average()
+        var cxx = 0.0
+        var cxy = 0.0
+        var cyy = 0.0
+        vectors.forEach { (x, y) ->
+            val dx = x - meanX
+            val dy = y - meanY
+            cxx += dx * dx
+            cxy += dx * dy
+            cyy += dy * dy
+        }
+        val trace = cxx + cyy
+        val det = cxx * cyy - cxy * cxy
+        val discriminant = max(0.0, trace * trace - 4.0 * det)
+        val lambda = (trace + kotlin.math.sqrt(discriminant)) * 0.5
+        var ax = cxy
+        var ay = lambda - cxx
+        if (hypot(ax, ay) < 1e-9) {
+            ax = lambda - cyy
+            ay = cxy
+        }
+        val norm = hypot(ax, ay)
+        if (!norm.isFinite() || norm < 1e-9) return null
+        return ax / norm to ay / norm
+    }
 
     private fun pointAtProjection(
         centerProjection: Double,
