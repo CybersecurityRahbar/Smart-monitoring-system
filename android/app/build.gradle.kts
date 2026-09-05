@@ -91,6 +91,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
 
+    // Media3 provides an independent playback clock so slow AI inference cannot slow the video.
+    implementation("androidx.media3:media3-exoplayer:1.11.0")
+    implementation("androidx.media3:media3-ui:1.11.0")
+
     // Match the currently published Ultralytics Android LiteRT runtime baseline.
     implementation("com.google.ai.edge.litert:litert:2.1.5")
 
