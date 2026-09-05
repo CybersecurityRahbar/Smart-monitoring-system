@@ -38,8 +38,7 @@ data class LiveAnalysisState(
 
 class LiveAnalysisViewModel(application: android.app.Application) : AndroidViewModel(application) {
     private val session: UnifiedAnalysisSession =
-        application as SmartTrafficApplication
-            .let { it.analysisHost.session }
+        (application as SmartTrafficApplication).analysisHost.session
     private val _state = MutableStateFlow(LiveAnalysisState())
     val state: StateFlow<LiveAnalysisState> = _state.asStateFlow()
 
