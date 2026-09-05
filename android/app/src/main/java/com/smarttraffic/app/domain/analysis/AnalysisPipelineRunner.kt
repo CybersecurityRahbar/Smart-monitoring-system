@@ -174,10 +174,24 @@ class AnalysisPipelineRunner(
                         }.getOrNull()
                     }
 
-                    val liveSpeeds = if (speedGate?.calibrated == true && physicalSpeedAllowed(source, config, calibrationReady)) {
+                    val livePhysicalSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
+                    val liveSpeeds = if (livePhysicalSpeedAllowed) {
                         liveTracks.mapNotNull { liveTrack ->
-                            if (speedRejectionReason(liveTrack, source, config, calibrationReady) != null) return@mapNotNull null
-                            SpeedGateEstimator.estimate(liveTrack, requireNotNull(speedGate))?.let { liveTrack.id to it }
+                            if (speedRejectionReason(liveTrack, source, config, calibrationReady, requirePhysical = true) != null) return@mapNotNull null
+                            val estimate = speedGate?.takeIf { it.calibrated }?.let { SpeedGateEstimator.estimate(liveTrack, it) }
+                                ?: speedEstimator.estimate(liveTrack.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
+                            estimate?.let { liveTrack.id to it }
+                        }.toMap()
+                    } else if (config.enableCalibrationFreeSpeedEstimate) {
+                        liveTracks.mapNotNull { liveTrack ->
+                            if (speedRejectionReason(liveTrack, source, config, calibrationReady, requirePhysical = false) != null) return@mapNotNull null
+                            CalibrationFreeSpeedEstimator.estimate(
+                                track = liveTrack,
+                                minimumSamples = config.minimumSpeedSamples,
+                                minimumDurationMs = config.minimumTrackDurationMs,
+                                maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
+                                maximumObservationGapMs = config.maximumSpeedObservationGapMs,
+                            )?.let { liveTrack.id to it }
                         }.toMap()
                     } else emptyMap()
 
@@ -189,7 +203,7 @@ class AnalysisPipelineRunner(
                             detections = reportableDetections,
                             tracks = liveTracks,
                             speedEstimates = liveSpeeds,
-                            calibrated = physicalSpeedAllowed(source, config, calibrationReady),
+                            calibrated = livePhysicalSpeedAllowed,
                             radarBounds = radarBounds,
                             speedGate = speedGate,
                             uniqueVehiclesDetected = uniqueVehicles,
@@ -234,17 +248,25 @@ class AnalysisPipelineRunner(
         val speedEstimates = linkedMapOf<Long, SpeedEstimate>()
         val speedRejections = linkedMapOf<Long, SpeedRejectionReason>()
         for (track in completedTracks) {
-            val rejection = speedRejectionReason(track, source, config, calibrationReady)
-            if (rejection != null) {
-                speedRejections[track.id] = rejection
+            val physicalRejection = speedRejectionReason(track, source, config, calibrationReady, requirePhysical = physicalSpeedAllowed)
+            if (physicalSpeedAllowed && physicalRejection != null) {
+                speedRejections[track.id] = physicalRejection
                 continue
             }
-            if (!physicalSpeedAllowed) {
-                speedRejections[track.id] = if (!calibrationReady) SpeedRejectionReason.CALIBRATION_INVALID else SpeedRejectionReason.TIMESTAMP_INVALID
-                continue
-            }
-            val gated = speedGate?.takeIf { it.calibrated }?.let { SpeedGateEstimator.estimate(track, it) }
-            val estimate = gated ?: speedEstimator.estimate(track.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
+
+            val estimate = if (physicalSpeedAllowed) {
+                speedGate?.takeIf { it.calibrated }?.let { SpeedGateEstimator.estimate(track, it) }
+                    ?: speedEstimator.estimate(track.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
+            } else if (config.enableCalibrationFreeSpeedEstimate && physicalRejection == null) {
+                CalibrationFreeSpeedEstimator.estimate(
+                    track = track,
+                    minimumSamples = config.minimumSpeedSamples,
+                    minimumDurationMs = config.minimumTrackDurationMs,
+                    maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
+                    maximumObservationGapMs = config.maximumSpeedObservationGapMs,
+                )
+            } else null
+
             if (estimate != null && estimate.kilometersPerHour.isFinite() && estimate.kilometersPerHour >= 0.0 && estimate.kilometersPerHour <= config.maxPlausibleSpeedKmh) {
                 speedEstimates[track.id] = estimate
             } else {
@@ -278,6 +300,15 @@ class AnalysisPipelineRunner(
         val recoveredTracks = completedTracks.count { it.recoveryCount > 0 }.toLong()
         val maximumRecoveryGapMs = completedTracks.maxOfOrNull { it.maximumRecoveryGapMs } ?: 0L
         val uniqueVehiclesDetected = completedTracks.count { it.hits >= 2 }.toLong()
+        val speedModes = speedEstimates.values.map { it.mode }.toSet()
+        val backendName = when {
+            speedModes.contains(SpeedEstimateMode.CALIBRATION_FREE_ESTIMATE) && speedModes.contains(SpeedEstimateMode.CALIBRATED_GROUND_PLANE) ->
+                "Validated metric + calibration-free estimate"
+            speedModes.contains(SpeedEstimateMode.CALIBRATION_FREE_ESTIMATE) ->
+                "Calibration-free vehicle-size estimate"
+            speedGate?.calibrated == true && speedEstimates.isNotEmpty() -> "Automatic two-line gate"
+            else -> speedEstimator.name
+        }
 
         return AnalysisResult(
             source = source.source,
@@ -316,7 +347,7 @@ class AnalysisPipelineRunner(
                 plateReads = plateReadings.size.toLong(),
                 trafficEvents = trafficEvents.size.toLong(),
                 homographyReprojectionError = config.calibration?.reprojectionErrorPixels ?: config.calibration?.reprojectionErrorTargetUnits,
-                speedEstimatorBackend = if (speedGate?.calibrated == true && speedEstimates.isNotEmpty()) "Automatic two-line gate" else speedEstimator.name,
+                speedEstimatorBackend = backendName,
             ),
         )
     }
@@ -326,18 +357,23 @@ class AnalysisPipelineRunner(
         source: FrameSource,
         config: AnalysisConfig,
         calibrationReady: Boolean,
+        requirePhysical: Boolean,
     ): SpeedRejectionReason? {
-        if (!calibrationReady) return SpeedRejectionReason.CALIBRATION_INVALID
-        if (config.requireExactTimestampsForPhysicalSpeed && source.source.timestampPrecision != FrameTimestampPrecision.EXACT_SOURCE_CLOCK) {
+        if (requirePhysical && !calibrationReady) return SpeedRejectionReason.CALIBRATION_INVALID
+        if (requirePhysical && config.requireExactTimestampsForPhysicalSpeed && source.source.timestampPrecision != FrameTimestampPrecision.EXACT_SOURCE_CLOCK) {
             return SpeedRejectionReason.TIMESTAMP_INVALID
         }
         if (track.state != TrackState.CONFIRMED) return SpeedRejectionReason.TRACK_QUALITY_LOW
         if (track.trackConfidence < config.minimumTrackConfidenceForSpeed) return SpeedRejectionReason.TRACK_QUALITY_LOW
-        val usable = track.observations.filter { it.groundPoint != null }.sortedBy { it.timestampMs }
+        val usable = if (requirePhysical) {
+            track.observations.filter { it.groundPoint != null }.sortedBy { it.timestampMs }
+        } else {
+            track.observations.sortedBy { it.timestampMs }
+        }
         if (usable.size < config.minimumSpeedSamples) return SpeedRejectionReason.INSUFFICIENT_OBSERVATIONS
         val duration = usable.last().timestampMs - usable.first().timestampMs
         if (duration < config.minimumTrackDurationMs) return SpeedRejectionReason.INSUFFICIENT_DURATION
-        if (usable.any { it.groundPoint?.xMeters?.isFinite() != true || it.groundPoint.yMeters.isFinite() != true }) {
+        if (requirePhysical && usable.any { it.groundPoint?.xMeters?.isFinite() != true || it.groundPoint.yMeters.isFinite() != true }) {
             return SpeedRejectionReason.GROUND_GEOMETRY_INCOMPLETE
         }
         val maxGap = usable.zipWithNext().maxOfOrNull { it.second.timestampMs - it.first.timestampMs } ?: Long.MAX_VALUE
