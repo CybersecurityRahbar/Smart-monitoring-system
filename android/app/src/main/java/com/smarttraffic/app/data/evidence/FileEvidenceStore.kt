@@ -9,18 +9,14 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.io.FileOutputStream
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import kotlin.math.min
 
 /**
  * Durable local evidence vault with metadata plus bounded JPEG artifacts.
  *
- * Artifacts are content-addressed by SHA-256 and published before the metadata index is replaced.
- * Metadata and artifact operations are serialized, and orphaned/unreferenced artifacts are pruned.
+ * Metadata and artifacts are persisted behind one coroutine mutex, with temporary files published
+ * before the metadata index is replaced. Retention prevents indefinite device growth.
  */
 class FileEvidenceStore(
     context: Context,
@@ -38,53 +34,42 @@ class FileEvidenceStore(
 
     override suspend fun save(record: EvidenceRecord, artifacts: EvidenceArtifacts?): EvidenceRecord = ioMutex.withLock {
         validateRecord(record)
-        val previous = readRecords()
-        val current = previous.filterNot { it.id == record.id }.toMutableList()
-        val newlyPublished = mutableListOf<String>()
+        val current = readRecords().filterNot { it.id == record.id }.toMutableList()
 
-        try {
-            val persisted = if (artifacts != null) {
-                val frameSha = sha256(artifacts.frameJpeg)
-                val vehicleSha = sha256(artifacts.vehicleCropJpeg)
-                val plateSha = artifacts.plateCropJpeg?.let(::sha256)
-                writeArtifact(frameSha, "frame", artifacts.frameJpeg)
-                newlyPublished += artifactName(frameSha, "frame")
-                writeArtifact(vehicleSha, "vehicle", artifacts.vehicleCropJpeg)
-                newlyPublished += artifactName(vehicleSha, "vehicle")
-                if (plateSha != null) {
-                    writeArtifact(plateSha, "plate", artifacts.plateCropJpeg!!)
-                    newlyPublished += artifactName(plateSha, "plate")
-                }
-                record.copy(
-                    frameSha256 = frameSha,
-                    vehicleCropSha256 = vehicleSha,
-                    plateCropSha256 = plateSha,
-                )
-            } else record
-
-            current += persisted
-            val retained = enforceRetention(current.sortedByDescending { it.createdAtMs })
-            writeRecords(retained)
-            return@withLock persisted
-        } catch (error: Throwable) {
-            val referencedByPrevious = referencedArtifactNames(previous)
-            newlyPublished.forEach { name ->
-                if (name !in referencedByPrevious) File(artifactDir, name).delete()
+        val persisted = if (artifacts != null) {
+            val frameSha = sha256(artifacts.frameJpeg)
+            val vehicleSha = sha256(artifacts.vehicleCropJpeg)
+            val plateSha = artifacts.plateCropJpeg?.let(::sha256)
+            writeArtifact(record.id, "frame", frameSha, artifacts.frameJpeg)
+            writeArtifact(record.id, "vehicle", vehicleSha, artifacts.vehicleCropJpeg)
+            if (artifacts.plateCropJpeg != null) {
+                writeArtifact(record.id, "plate", plateSha!!, artifacts.plateCropJpeg)
             }
-            throw error
-        }
+            record.copy(
+                frameSha256 = frameSha,
+                vehicleCropSha256 = vehicleSha,
+                plateCropSha256 = plateSha,
+            )
+        } else record
+
+        current += persisted
+        val retained = enforceRetention(current.sortedByDescending { it.createdAtMs })
+        writeRecords(retained)
+        return persisted
     }
 
     override suspend fun list(): List<EvidenceRecord> = ioMutex.withLock {
         readRecords()
     }
 
-    override suspend fun clear() = ioMutex.withLock {
+    override suspend fun clear(): Unit = ioMutex.withLock {
         if (file.exists() && !file.delete()) {
             throw IllegalStateException("Unable to delete evidence store: ${file.absolutePath}")
         }
         artifactDir.listFiles()?.forEach { child ->
-            if (!child.delete()) throw IllegalStateException("Unable to delete evidence artifact: ${child.absolutePath}")
+            if (!child.delete()) {
+                throw IllegalStateException("Unable to delete evidence artifact: ${child.absolutePath}")
+            }
         }
     }
 
@@ -96,12 +81,12 @@ class FileEvidenceStore(
                 for (i in 0 until array.length()) {
                     val record = fromJson(array.getJSONObject(i))
                     validateRecord(record)
-                    verifyReferencedArtifacts(record)
+                    validateArtifactReferences(record)
                     add(record)
                 }
             }.sortedByDescending { it.createdAtMs }
         } catch (error: Throwable) {
-            throw IllegalStateException("Evidence store is unreadable or corrupted: ${file.absolutePath}", error)
+            throw IllegalStateException("Evidence store is unreadable: ${file.absolutePath}", error)
         }
     }
 
@@ -116,35 +101,41 @@ class FileEvidenceStore(
             totalBytes += bytes
         }
 
-        val keepFiles = referencedArtifactNames(retained)
+        val keep = retained.asSequence().map { it.id }.toSet()
         artifactDir.listFiles()?.forEach { child ->
-            if (child.name !in keepFiles) child.delete()
+            if (ownerIdFromArtifactName(child.name) !in keep && !child.delete()) {
+                throw IllegalStateException("Unable to remove stale evidence artifact: ${child.absolutePath}")
+            }
         }
         return retained
     }
 
-    private fun artifactBytes(record: EvidenceRecord): Long =
-        listOf(
-            artifactFile(record.frameSha256, "frame"),
-            artifactFile(record.vehicleCropSha256, "vehicle"),
-            artifactFile(record.plateCropSha256, "plate"),
-        ).filterNotNull().sumOf { it.length() }
-
-    private fun writeArtifact(sha: String, kind: String, bytes: ByteArray) {
-        val target = artifactFile(sha, kind) ?: error("Invalid artifact hash")
-        val temporary = File(target.parentFile, target.name + ".tmp")
-        if (target.exists()) {
-            verifyFileHash(target, sha)
-            return
+    private fun artifactBytes(record: EvidenceRecord): Long {
+        var total = 0L
+        listOfNotNull(
+            record.frameSha256 to "frame",
+            record.vehicleCropSha256 to "vehicle",
+            record.plateCropSha256 to "plate",
+        ).forEach { (hash, kind) ->
+            val artifact = artifactFile(record.id, kind, hash)
+            if (!artifact.exists()) {
+                throw IllegalStateException("Evidence artifact missing for ${record.id}: ${artifact.name}")
+            }
+            total += artifact.length()
         }
+        return total
+    }
+
+    private fun writeArtifact(id: String, kind: String, sha256: String, bytes: ByteArray) {
+        val target = artifactFile(id, kind, sha256)
+        val temporary = File(target.parentFile, target.name + ".tmp")
         try {
-            FileOutputStream(temporary).use { output ->
+            temporary.outputStream().use { output ->
                 output.write(bytes)
                 output.flush()
                 output.fd.sync()
             }
-            publish(temporary, target)
-            verifyFileHash(target, sha)
+            moveReplace(temporary, target)
         } finally {
             if (temporary.exists()) temporary.delete()
         }
@@ -153,28 +144,33 @@ class FileEvidenceStore(
     private fun writeRecords(records: List<EvidenceRecord>) {
         val temporary = file.resolveSibling("$FILE_NAME.tmp")
         try {
-            FileOutputStream(temporary).use { output ->
-                val bytes = JSONArray().apply { records.forEach { put(toJson(it)) } }.toString().toByteArray(Charsets.UTF_8)
-                output.write(bytes)
+            temporary.outputStream().use { output ->
+                output.write(JSONArray().apply { records.forEach { put(toJson(it)) } }.toString().toByteArray(Charsets.UTF_8))
                 output.flush()
                 output.fd.sync()
             }
-            publish(temporary, file)
+            moveReplace(temporary, file)
         } finally {
             if (temporary.exists()) temporary.delete()
         }
     }
 
-    private fun publish(temporary: File, target: File) {
+    private fun moveReplace(source: File, target: File) {
+        val sourcePath = source.toPath()
+        val targetPath = target.toPath()
         try {
-            Files.move(
-                temporary.toPath(),
-                target.toPath(),
-                StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.ATOMIC_MOVE,
+            java.nio.file.Files.move(
+                sourcePath,
+                targetPath,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
             )
-        } catch (_: AtomicMoveNotSupportedException) {
-            Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            java.nio.file.Files.move(
+                sourcePath,
+                targetPath,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            )
         }
     }
 
@@ -198,31 +194,17 @@ class FileEvidenceStore(
         }
     }
 
-    private fun verifyReferencedArtifacts(record: EvidenceRecord) {
-        verifyOptionalArtifact(record.frameSha256, "frame")
-        verifyOptionalArtifact(record.vehicleCropSha256, "vehicle")
-        verifyOptionalArtifact(record.plateCropSha256, "plate")
-    }
-
-    private fun verifyOptionalArtifact(sha: String?, kind: String) {
-        if (sha == null) return
-        val target = artifactFile(sha, kind) ?: error("Invalid artifact hash")
-        if (!target.isFile) throw IllegalStateException("Missing evidence artifact: ${target.name}")
-        verifyFileHash(target, sha)
-    }
-
-    private fun verifyFileHash(file: File, expectedSha: String) {
-        val actual = sha256(file.readBytes())
-        if (!actual.equals(expectedSha, ignoreCase = true)) {
-            throw IllegalStateException("Evidence artifact hash mismatch: ${file.name}")
-        }
-    }
-
-    private fun referencedArtifactNames(records: List<EvidenceRecord>): Set<String> = buildSet {
-        records.forEach { record ->
-            record.frameSha256?.let { add(artifactName(it, "frame")) }
-            record.vehicleCropSha256?.let { add(artifactName(it, "vehicle")) }
-            record.plateCropSha256?.let { add(artifactName(it, "plate")) }
+    private fun validateArtifactReferences(record: EvidenceRecord) {
+        listOfNotNull(
+            record.frameSha256 to "frame",
+            record.vehicleCropSha256 to "vehicle",
+            record.plateCropSha256 to "plate",
+        ).forEach { (hash, kind) ->
+            val artifact = artifactFile(record.id, kind, hash)
+            require(artifact.isFile) { "Missing evidence artifact: ${artifact.name}" }
+            require(sha256(artifact.readBytes()).equals(hash, ignoreCase = true)) {
+                "Evidence artifact hash mismatch: ${artifact.name}"
+            }
         }
     }
 
@@ -272,30 +254,27 @@ class FileEvidenceStore(
         plateCropSha256 = json.optString("plateCropSha256").takeUnless { it.isBlank() || it == "null" },
     )
 
-    private fun artifactFile(sha: String?, kind: String): File? = sha?.let { File(artifactDir, artifactName(it, kind)) }
+    private fun artifactFile(id: String, kind: String, sha256: String?): File {
+        val safeId = sanitize(id)
+        val safeKind = sanitize(kind)
+        val safeHash = requireNotNull(sha256) { "Artifact SHA is required for persisted artifacts" }
+        return File(artifactDir, "${safeId}_${safeKind}_$safeHash.jpg")
+    }
 
-    private fun artifactName(sha: String, kind: String): String = "${sha.lowercase()}_${kind}.jpg"
+    private fun ownerIdFromArtifactName(name: String): String? {
+        val marker = name.indexOf('_')
+        return marker.takeIf { it > 0 }?.let { name.substring(0, it) }
+    }
+
+    private fun sanitize(value: String): String = value.replace(Regex("[^A-Za-z0-9.-]"), "_").take(64)
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
         .digest(bytes)
         .joinToString("") { "%02x".format(it) }
 
-    private fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").let { digest ->
-        file.inputStream().use { input ->
-            val buffer = ByteArray(FILE_HASH_BUFFER_SIZE)
-            while (true) {
-                val read = input.read(buffer)
-                if (read <= 0) break
-                digest.update(buffer, 0, read)
-            }
-        }
-        digest.digest().joinToString("") { "%02x".format(it) }
-    }
-
     private companion object {
         const val FILE_NAME = "traffic_evidence.json"
         const val ARTIFACT_DIR = "traffic_evidence"
-        const val FILE_HASH_BUFFER_SIZE = 64 * 1024
         val SHA256_REGEX = Regex("^[0-9a-fA-F]{64}$")
     }
 }
