@@ -17,16 +17,19 @@ import com.smarttraffic.app.data.evidence.FileEvidenceStore
 import com.smarttraffic.app.data.tracking.ByteTrack
 import com.smarttraffic.app.data.vision.DetectorModelRegistry
 import com.smarttraffic.app.domain.analysis.AnalysisConfig
+import com.smarttraffic.app.domain.analysis.AnalysisFrame
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewObserver
 import com.smarttraffic.app.domain.analysis.AnalysisResult
 import com.smarttraffic.app.domain.analysis.AnalysisSessionPhase
+import com.smarttraffic.app.domain.analysis.AutoSpeedGateBuilder
 import com.smarttraffic.app.domain.analysis.EvidenceArtifacts
 import com.smarttraffic.app.domain.analysis.EvidenceRecord
 import com.smarttraffic.app.domain.analysis.FrameSource
 import com.smarttraffic.app.domain.analysis.KotlinGroundProjector
 import com.smarttraffic.app.domain.analysis.KotlinSpeedEstimatorBackend
 import com.smarttraffic.app.domain.analysis.ModularAnalysisEngine
+import com.smarttraffic.app.domain.analysis.RadarBounds
 import com.smarttraffic.app.domain.analysis.UnifiedAnalysisSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -127,11 +130,16 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                     val nowNs = System.nanoTime()
                     if (lastPreviewNs == Long.MIN_VALUE || nowNs - lastPreviewNs >= previewIntervalNs) {
                         lastPreviewNs = nowNs
-                        val playbackAwarePreview = if (mediaType == AnalysisMediaType.VIDEO) {
-                            previewFrame.copy(videoUri = uri.toString())
-                        } else previewFrame
-                        session.publishPreview(playbackAwarePreview)
-                        _preview.value = playbackAwarePreview
+                        if (mediaType == AnalysisMediaType.IMAGE) {
+                            session.publishPreview(previewFrame)
+                            _preview.value = previewFrame
+                        } else {
+                            // During analysis, expose progress but do not start natural-speed playback.
+                            // The final synchronized replay is published after the complete source has been analyzed.
+                            val progressPreview = previewFrame.copy(videoUri = uri.toString(), playbackReady = false)
+                            session.publishPreview(progressPreview)
+                            _preview.value = progressPreview
+                        }
                     }
                 }
                 val engine = ModularAnalysisEngine(
@@ -178,6 +186,9 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                 }
 
                 finalState.result?.let { result ->
+                    if (mediaType == AnalysisMediaType.VIDEO && finalState.phase == AnalysisSessionPhase.COMPLETED) {
+                        publishCompletedVideoPreview(app, uri, result, effectiveConfig)
+                    }
                     if (effectiveConfig.enableEvidence) persistEvidence(app, result, mediaType)
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -202,6 +213,48 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                 }
             }
         }
+    }
+
+    private fun publishCompletedVideoPreview(
+        app: SmartTrafficApplication,
+        uri: Uri,
+        result: AnalysisResult,
+        config: AnalysisConfig,
+    ) {
+        val bitmap = MediaMetadataRetriever().let { retriever ->
+            try {
+                retriever.setDataSource(app, uri)
+                retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            } finally {
+                retriever.release()
+            }
+        } ?: return
+
+        val width = bitmap.width
+        val height = bitmap.height
+        val calibrated = config.calibration != null && config.useGroundPlane && result.metrics.timestampPrecision.name == "EXACT_SOURCE_CLOCK"
+        val gate = runCatching {
+            AutoSpeedGateBuilder.build(
+                tracks = result.tracks,
+                imageWidth = width,
+                imageHeight = height,
+                calibration = config.calibration.takeIf { calibrated },
+            )
+        }.getOrNull()
+        val bounds = _preview.value?.radarBounds ?: RadarBounds(0.0, width.toDouble().coerceAtLeast(1.0), 0.0, height.toDouble().coerceAtLeast(1.0))
+        _preview.value = AnalysisPreviewFrame(
+            frame = AnalysisFrame(0L, 0L, bitmap, width, height),
+            bitmap = bitmap,
+            detections = result.detections,
+            tracks = result.tracks,
+            speedEstimates = result.speedEstimates,
+            calibrated = calibrated,
+            radarBounds = bounds,
+            speedGate = gate,
+            uniqueVehiclesDetected = result.metrics.uniqueVehiclesDetected,
+            playbackReady = true,
+            videoUri = uri.toString(),
+        )
     }
 
     private suspend fun persistEvidence(app: SmartTrafficApplication, result: AnalysisResult, mediaType: AnalysisMediaType) = withContext(Dispatchers.IO) {
