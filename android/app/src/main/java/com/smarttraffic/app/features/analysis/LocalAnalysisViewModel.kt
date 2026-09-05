@@ -127,8 +127,11 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                     val nowNs = System.nanoTime()
                     if (lastPreviewNs == Long.MIN_VALUE || nowNs - lastPreviewNs >= previewIntervalNs) {
                         lastPreviewNs = nowNs
-                        session.publishPreview(previewFrame)
-                        _preview.value = previewFrame
+                        val playbackAwarePreview = if (mediaType == AnalysisMediaType.VIDEO) {
+                            previewFrame.copy(videoUri = uri.toString())
+                        } else previewFrame
+                        session.publishPreview(playbackAwarePreview)
+                        _preview.value = playbackAwarePreview
                     }
                 }
                 val engine = ModularAnalysisEngine(
