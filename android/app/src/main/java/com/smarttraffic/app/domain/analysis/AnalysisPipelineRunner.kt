@@ -1,6 +1,7 @@
 package com.smarttraffic.app.domain.analysis
 
 import java.util.ArrayDeque
+import kotlin.math.max
 import kotlin.math.min
 
 /** Real frame-to-result coordinator. The caller owns the FrameSource lifecycle. */
@@ -53,6 +54,7 @@ class AnalysisPipelineRunner(
         var previousTimestampMs: Long? = null
         var calibrationChecked = false
         var calibrationReady = false
+        var radarBounds: RadarBounds? = null
         var sourceReadTimeNs = 0L
         val analysisStartNs = System.nanoTime()
 
@@ -75,6 +77,7 @@ class AnalysisPipelineRunner(
 
             if (!calibrationChecked) {
                 calibrationReady = config.useGroundPlane && calibrationAccepted(config, frame.width, frame.height)
+                radarBounds = buildRadarBounds(config, frame.width, frame.height, calibrationReady)
                 calibrationChecked = true
             }
 
@@ -166,7 +169,17 @@ class AnalysisPipelineRunner(
                                 ?.let { liveTrack.id to it }
                         }.toMap()
                     } else emptyMap()
-                    previewObserver.onFrame(AnalysisPreviewFrame(frame, bitmap, reportableDetections, liveTracks, liveSpeeds, liveSpeedAllowed))
+                    previewObserver.onFrame(
+                        AnalysisPreviewFrame(
+                            frame,
+                            bitmap,
+                            reportableDetections,
+                            liveTracks,
+                            liveSpeeds,
+                            liveSpeedAllowed,
+                            radarBounds,
+                        )
+                    )
                 }
             }
         }
@@ -318,6 +331,34 @@ class AnalysisPipelineRunner(
         return validation.accepted && calibration.imageWidth == sourceWidth && calibration.imageHeight == sourceHeight
     }
 
+    private fun buildRadarBounds(config: AnalysisConfig, width: Int, height: Int, calibrationReady: Boolean): RadarBounds {
+        if (!calibrationReady || config.calibration == null) {
+            return RadarBounds(0.0, width.toDouble(), 0.0, height.toDouble())
+        }
+        val calibration = config.calibration
+        val corners = listOf(
+            0.0 to 0.0,
+            width.toDouble() to 0.0,
+            width.toDouble() to height.toDouble(),
+            0.0 to height.toDouble(),
+        )
+        val groundCorners = runCatching {
+            corners.map { (x, y) -> groundProjector.project(calibration, x, y) }
+        }.getOrElse {
+            return RadarBounds(0.0, width.toDouble(), 0.0, height.toDouble())
+        }
+        val minX = groundCorners.minOf { it.xMeters }
+        val maxX = groundCorners.maxOf { it.xMeters }
+        val minY = groundCorners.minOf { it.yMeters }
+        val maxY = groundCorners.maxOf { it.yMeters }
+        return RadarBounds(
+            minX = minX,
+            maxX = maxX,
+            minY = minY,
+            maxY = maxY,
+        )
+    }
+
     private fun percentile(sorted: List<Double>, p: Double): Double? {
         if (sorted.isEmpty()) return null
         val position = p.coerceIn(0.0, 1.0) * sorted.lastIndex
@@ -360,7 +401,7 @@ class AnalysisPipelineRunner(
         var misses: Int = 0,
         var ageFrames: Int = 0,
         var lastTimestampMs: Long = 0L,
+        var state: TrackState = TrackState.TENTATIVE,
         var wasOccluded: Boolean = false,
-        var state: TrackState = TrackState.CONFIRMED,
     )
 }
