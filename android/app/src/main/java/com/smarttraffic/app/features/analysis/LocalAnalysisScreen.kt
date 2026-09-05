@@ -76,7 +76,7 @@ fun LocalAnalysisScreen(
     val physicalSpeedStatus = when {
         !useCalibratedHomography -> "blocked until calibration"
         selectedCalibration == null -> "blocked: no calibration selected"
-        else -> "requires source-dimension and quality validation"
+        else -> "requires exact source timestamps plus dimension/quality validation"
     }
 
     LaunchedEffect(Unit) {
@@ -212,8 +212,13 @@ fun LocalAnalysisScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = testMode == AnalysisTestMode.DETECTION_TRACKING, onClick = { testMode = AnalysisTestMode.DETECTION_TRACKING }, label = { Text("Detect + track") })
                     FilterChip(selected = testMode == AnalysisTestMode.SPEED_CALIBRATION, onClick = { testMode = AnalysisTestMode.SPEED_CALIBRATION }, label = { Text("Speed") })
-                    FilterChip(selected = testMode == AnalysisTestMode.PLATE_READ, onClick = { testMode = AnalysisTestMode.PLATE_READ }, label = { Text("Plate / OCR") })
+                    FilterChip(selected = testMode == AnalysisTestMode.PLATE_READ, onClick = { testMode = AnalysisTestMode.PLATE_READ }, label = { Text("Plate / OCR") }, enabled = false)
                 }
+                Text(
+                    "Plate / OCR is shown only as an architecture placeholder until a licensed Android-deployable plate detector and OCR backend is installed; it cannot be executed in this build.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 OutlinedTextField(
                     value = referenceFramesText,
                     onValueChange = { referenceFramesText = it.filter(Char::isDigit).take(4) },
@@ -245,6 +250,7 @@ fun LocalAnalysisScreen(
         Button(
             onClick = {
                 val uri = selectedUri ?: return@Button
+                if (testMode == AnalysisTestMode.PLATE_READ) return@Button
                 val effectiveConfig = config.copy(
                     useGroundPlane = testMode == AnalysisTestMode.SPEED_CALIBRATION && useCalibratedHomography,
                     enablePlateRecognition = false,
@@ -255,7 +261,7 @@ fun LocalAnalysisScreen(
                     effectiveConfig,
                 )
             },
-            enabled = selectedUri != null && modelInstalled && state.phase != AnalysisRunPhase.RUNNING,
+            enabled = selectedUri != null && modelInstalled && state.phase != AnalysisRunPhase.RUNNING && testMode != AnalysisTestMode.PLATE_READ,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(Icons.Filled.PlayArrow, null, Modifier.size(18.dp))
@@ -300,6 +306,9 @@ private fun AnalysisResultCard(result: AnalysisResult, accelerator: String?) {
             MetricRow("Frames", m.framesProcessed.toString())
             MetricRow("Detections", m.detections.toString())
             MetricRow("Tracks", result.tracks.size.toString())
+            MetricRow("Confirmed tracks", m.confirmedTracks.toString())
+            MetricRow("Recovered tracks", m.recoveredTracks.toString())
+            MetricRow("Maximum recovery gap", if (m.maximumRecoveryGapMs > 0L) "${m.maximumRecoveryGapMs} ms" else "—")
             MetricRow("Peak active tracks", m.peakActiveTracks.toString())
             MetricRow("Inference median", formatMs(m.inferenceMedianLatencyMs))
             MetricRow("Inference P95", formatMs(m.inferenceP95LatencyMs))
@@ -309,8 +318,10 @@ private fun AnalysisResultCard(result: AnalysisResult, accelerator: String?) {
             MetricRow("Tracking misses", m.trackingAssociationMisses.toString())
             MetricRow("Speed estimates", m.speedEstimates.toString())
             MetricRow("Rejected speed tracks", m.rejectedSpeedEstimates.toString())
+            MetricRow("ID switches", m.idSwitches?.toString() ?: "Not benchmarked")
+            MetricRow("Track fragmentations", m.trackFragmentations?.toString() ?: "Not benchmarked")
             Text(
-                "A speed value is published only after calibration and trajectory quality gates pass. The uncertainty field is dispersion, not ground-truth error.",
+                "A speed value is published only after calibration and trajectory quality gates pass. ID-switch and fragmentation metrics require external ground-truth annotations and are therefore not guessed here.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
