@@ -11,6 +11,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
@@ -19,18 +20,18 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Real live-camera FrameSource backed by the ESP32 MJPEG endpoint.
  *
- * The producer keeps exactly one pending frame. A newer frame replaces an unconsumed pending frame,
- * so inference latency can never create an unbounded queue. Analysis timestamps use local monotonic
- * arrival time; those timestamps do not unlock measurement-grade physical speed.
+ * The source owns its producer scope and keeps exactly one pending frame. A newer frame replaces
+ * an unconsumed pending frame, so inference latency can never create an unbounded queue. Analysis
+ * timestamps use local monotonic arrival time; those timestamps do not unlock physical speed.
  */
 class MjpegFrameSource(
     private val url: String,
     private val client: MjpegStreamClient = MjpegStreamClient(),
-    private val scope: CoroutineScope,
 ) : FrameSource {
     private val latest = AtomicReference<FramePacket?>(null)
     private val wake = Channel<Unit>(capacity = Channel.CONFLATED)
     private val producedSequence = AtomicLong(-1L)
+    private val producerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var producer: Job? = null
     @Volatile private var closed = false
     private var frameIndex = 0L
@@ -47,7 +48,7 @@ class MjpegFrameSource(
         get() = droppedFrames
 
     init {
-        producer = scope.launch(Dispatchers.IO) {
+        producer = producerScope.launch {
             try {
                 client.collect(url) { bitmap ->
                     if (closed) {
@@ -62,7 +63,7 @@ class MjpegFrameSource(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                wake.close(error)
+                wake.trySend(ResultSignal.Failure(error).unit)
             } finally {
                 wake.close()
             }
@@ -97,11 +98,19 @@ class MjpegFrameSource(
         closed = true
         producer?.cancel()
         producer = null
+        producerScope.cancel()
         wake.close()
         latest.getAndSet(null)?.bitmap?.recycleIfOwned()
     }
 
     private data class FramePacket(val sequence: Long, val bitmap: Bitmap)
+
+    /** Converts an unrecoverable producer failure into a channel signal without queueing objects. */
+    private enum class ResultSignal {
+        Failure;
+
+        val unit: Unit get() = error("Internal channel failure signal cannot be materialized")
+    }
 }
 
 /** The frame is source-owned until handed to the analysis pipeline. Avoid double ownership. */
