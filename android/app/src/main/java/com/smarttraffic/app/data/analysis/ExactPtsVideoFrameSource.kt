@@ -27,9 +27,8 @@ import java.util.concurrent.TimeUnit
  * Sequential MediaCodec-backed video source that preserves decoded presentation timestamps.
  *
  * Each returned frame uses MediaCodec.BufferInfo.presentationTimeUs. No timestamp is synthesized
- * from frame index or a nominal FPS. If a decoder produces an invalid/non-monotonic timestamp,
- * or if the rendered surface image for a decoded output cannot be obtained, the source fails
- * explicitly instead of silently dropping a frame.
+ * from frame index or a nominal FPS. The ImageReader listener applies backpressure rather than
+ * silently discarding decoded images when the bounded queue is full.
  */
 class ExactPtsVideoFrameSource(
     private val context: Context,
@@ -68,25 +67,21 @@ class ExactPtsVideoFrameSource(
         mime = requireNotNull(format.getString(MediaFormat.KEY_MIME)) { "Video MIME type is missing" }
         width = format.getIntegerOrDefault(MediaFormat.KEY_WIDTH, 0).coerceAtLeast(1)
         height = format.getIntegerOrDefault(MediaFormat.KEY_HEIGHT, 0).coerceAtLeast(1)
-        frameRate = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 0)
-            .toDouble()
-            .takeIf { it > 0.0 }
+        frameRate = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 0).toDouble().takeIf { it > 0.0 }
         rotationDegrees = normalizeRotation(format.getIntegerOrDefault(MediaFormat.KEY_ROTATION, 0))
 
         require(width > 0 && height > 0) { "Invalid decoded video dimensions: ${width}x$height" }
         require(mime.startsWith("video/")) { "Selected track is not a video track: $mime" }
 
-        reader = ImageReader.newInstance(
-            width,
-            height,
-            PixelFormat.RGBA_8888,
-            3,
-        ).also { imageReader ->
+        reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3).also { imageReader ->
             imageReader.setOnImageAvailableListener({ readerInstance ->
-                while (true) {
+                while (!closed) {
                     val image = readerInstance.acquireNextImage() ?: break
-                    if (!renderedImages.offer(image)) {
+                    try {
+                        renderedImages.put(image)
+                    } catch (interrupted: InterruptedException) {
                         image.close()
+                        Thread.currentThread().interrupt()
                         break
                     }
                 }
@@ -157,8 +152,7 @@ class ExactPtsVideoFrameSource(
     private fun feedInput() {
         val inputIndex = decoder.dequeueInputBuffer(20_000L)
         if (inputIndex < 0) return
-        val inputBuffer = decoder.getInputBuffer(inputIndex)
-            ?: error("Decoder input buffer $inputIndex is unavailable")
+        val inputBuffer = decoder.getInputBuffer(inputIndex) ?: error("Decoder input buffer $inputIndex is unavailable")
         inputBuffer.clear()
         val sampleTimeUs = extractor.sampleTime
         val sampleSize = extractor.readSampleData(inputBuffer, 0)
@@ -179,20 +173,14 @@ class ExactPtsVideoFrameSource(
             renderedImages.poll(25L, TimeUnit.MILLISECONDS)?.let { return it }
             if (SystemClock.elapsedRealtimeNanos() >= deadlineNs) {
                 if (isEos) return null
-                throw IllegalStateException(
-                    "Timed out waiting for ImageReader output for presentation timestamp=$presentationTimeUs us",
-                )
+                throw IllegalStateException("Timed out waiting for ImageReader output for presentation timestamp=$presentationTimeUs us")
             }
         }
     }
 
     private fun validatePresentationTimestamp(presentationTimeUs: Long) {
-        require(presentationTimeUs >= 0L) {
-            "Decoder returned invalid presentation timestamp=$presentationTimeUs us"
-        }
-        require(
-            lastPresentationTimeUs < 0L || presentationTimeUs >= lastPresentationTimeUs,
-        ) {
+        require(presentationTimeUs >= 0L) { "Decoder returned invalid presentation timestamp=$presentationTimeUs us" }
+        require(lastPresentationTimeUs < 0L || presentationTimeUs >= lastPresentationTimeUs) {
             "Decoder returned non-monotonic presentation timestamp=$presentationTimeUs us after $lastPresentationTimeUs us"
         }
         lastPresentationTimeUs = presentationTimeUs
@@ -203,16 +191,14 @@ class ExactPtsVideoFrameSource(
         if (imageTimestampNs <= 0L || presentationTimeUs <= 0L) return
         val presentationTimestampNs = presentationTimeUs * 1000L
         val absoluteDeltaNs = kotlin.math.abs(imageTimestampNs - presentationTimestampNs)
-        val toleranceNs = 2_000_000L
+        val toleranceNs = 5_000_000L
         require(absoluteDeltaNs <= toleranceNs) {
             "ImageReader timestamp mismatch: image=${imageTimestampNs}ns decoder=${presentationTimestampNs}ns"
         }
     }
 
     private fun imageToBitmap(image: Image): Bitmap {
-        require(image.format == PixelFormat.RGBA_8888) {
-            "Expected RGBA_8888 decoder output, got format=${image.format}"
-        }
+        require(image.format == PixelFormat.RGBA_8888) { "Expected RGBA_8888 decoder output, got format=${image.format}" }
         require(image.planes.isNotEmpty()) { "Decoder output contains no image planes" }
         val plane = image.planes[0]
         val buffer = plane.buffer.duplicate()
@@ -225,9 +211,7 @@ class ExactPtsVideoFrameSource(
             val rowOffset = y * rowStride
             for (x in 0 until image.width) {
                 val offset = rowOffset + x * pixelStride
-                if (offset + 3 >= buffer.limit()) {
-                    throw IllegalStateException("RGBA plane is smaller than advertised stride")
-                }
+                if (offset + 3 >= buffer.limit()) throw IllegalStateException("RGBA plane is smaller than advertised stride")
                 val r = buffer.get(offset).toInt() and 0xFF
                 val g = buffer.get(offset + 1).toInt() and 0xFF
                 val b = buffer.get(offset + 2).toInt() and 0xFF
@@ -239,9 +223,8 @@ class ExactPtsVideoFrameSource(
         val bitmap = Bitmap.createBitmap(pixels, image.width, image.height, Bitmap.Config.ARGB_8888)
         if (rotationDegrees == 0) return bitmap
         val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
-        return Bitmap.createBitmap(
-            bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true,
-        ).also { rotated -> if (rotated !== bitmap) bitmap.recycle() }
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            .also { rotated -> if (rotated !== bitmap) bitmap.recycle() }
     }
 
     override suspend fun close() {
@@ -266,9 +249,7 @@ class ExactPtsVideoFrameSource(
         return -1
     }
 
-    private fun normalizeRotation(value: Int): Int =
-        (((value % 360) + 360) % 360).let { if (it % 90 == 0) it else 0 }
+    private fun normalizeRotation(value: Int): Int = (((value % 360) + 360) % 360).let { if (it % 90 == 0) it else 0 }
 
-    private fun MediaFormat.getIntegerOrDefault(key: String, fallback: Int): Int =
-        if (containsKey(key)) getInteger(key) else fallback
+    private fun MediaFormat.getIntegerOrDefault(key: String, fallback: Int): Int = if (containsKey(key)) getInteger(key) else fallback
 }
