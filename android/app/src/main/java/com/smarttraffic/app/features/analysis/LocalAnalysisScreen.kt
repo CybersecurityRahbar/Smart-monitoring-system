@@ -80,12 +80,8 @@ fun LocalAnalysisScreen(
     }
 
     LaunchedEffect(Unit) {
-        calibrationProfiles = withContext(Dispatchers.IO) {
-            FileCalibrationStore(context).list()
-        }
-        if (selectedCalibrationId == null) {
-            selectedCalibrationId = calibrationProfiles.firstOrNull()?.id
-        }
+        calibrationProfiles = withContext(Dispatchers.IO) { FileCalibrationStore(context).list() }
+        if (selectedCalibrationId == null) selectedCalibrationId = calibrationProfiles.firstOrNull()?.id
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -104,11 +100,7 @@ fun LocalAnalysisScreen(
     )
 
     Column(
-        Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(paddingValues)
-            .padding(horizontal = 18.dp, vertical = 16.dp),
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(paddingValues).padding(horizontal = 18.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -125,11 +117,7 @@ fun LocalAnalysisScreen(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Previous analysis diagnostic", style = MaterialTheme.typography.titleMedium)
                     Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
-                    Text(
-                        "This marker is retained specifically so native/runtime process deaths can be located to the last risky stage.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                    )
+                    Text("This marker is retained specifically so native/runtime process deaths can be located to the last risky stage.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
                 }
             }
         }
@@ -142,18 +130,12 @@ fun LocalAnalysisScreen(
                     Text("Analysis media", style = MaterialTheme.typography.titleMedium)
                 }
                 Text(selectedUri?.toString() ?: "No media selected", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(
-                    "Video analysis processes frames in source order. Processing FPS is measured independently from nominal source FPS.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text("Each recorded video is analyzed on its original timestamp timeline. After analysis completes, the lab replays the original video at natural speed with the complete tracked history synchronized to the source timestamps.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = source == AnalysisSource.VIDEO, onClick = { source = AnalysisSource.VIDEO }, label = { Text("Video") })
                     FilterChip(selected = source == AnalysisSource.IMAGE, onClick = { source = AnalysisSource.IMAGE }, label = { Text("Image") })
                 }
-                Button(onClick = { picker.launch(arrayOf(if (source == AnalysisSource.VIDEO) "video/*" else "image/*")) }) {
-                    Text("Choose from device")
-                }
+                Button(onClick = { picker.launch(arrayOf(if (source == AnalysisSource.VIDEO) "video/*" else "image/*")) }) { Text("Choose from device") }
             }
         }
 
@@ -163,13 +145,9 @@ fun LocalAnalysisScreen(
                 MetricRow("Detector", "${modelSpec.id} • ${if (modelInstalled) "installed" else "MISSING"}")
                 MetricRow("Tracker", "ByteTrack + Kalman + global assignment")
                 MetricRow("Inference backend", state.accelerator ?: "CPU • LiteRT")
-                MetricRow("Live laboratory", if (source == AnalysisSource.VIDEO) "frame-by-frame preview enabled" else "single-frame preview")
+                MetricRow("Recorded lab", if (source == AnalysisSource.VIDEO) "analyze → synchronized natural-speed replay" else "single-frame analysis")
                 MetricRow("Physical speed", physicalSpeedStatus)
-                Text(
-                    "The preview is driven by the same detector/tracker pipeline used for final metrics; there is no separate mock animation.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text("The video replay is not a mock animation. Bounding boxes, IDs and speed results come from the actual detector/tracker result stored on the video's source timestamp timeline.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 
@@ -177,24 +155,12 @@ fun LocalAnalysisScreen(
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Calibration profile", style = MaterialTheme.typography.titleMedium)
                 if (calibrationProfiles.isEmpty()) {
-                    Text(
-                        "No saved calibration profile. Create one in More → Camera Calibration before enabling physical speed.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Text("No saved calibration profile. Create one in More → Camera Calibration before enabling physical speed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
-                    Text(
-                        "Select a validated profile produced by the calibration lab. The analysis pipeline will still validate its dimensions and quality against the selected media.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Text("Select a validated profile produced by the calibration lab. The analysis pipeline will still validate its dimensions and quality against the selected media.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         calibrationProfiles.forEach { profile ->
-                            FilterChip(
-                                selected = profile.id == selectedCalibrationId,
-                                onClick = { selectedCalibrationId = profile.id },
-                                label = { Text("${profile.id} v${profile.version}") },
-                            )
+                            FilterChip(selected = profile.id == selectedCalibrationId, onClick = { selectedCalibrationId = profile.id }, label = { Text("${profile.id} v${profile.version}") })
                         }
                     }
                     selectedCalibration?.let { profile ->
@@ -214,35 +180,15 @@ fun LocalAnalysisScreen(
                     FilterChip(selected = testMode == AnalysisTestMode.SPEED_CALIBRATION, onClick = { testMode = AnalysisTestMode.SPEED_CALIBRATION }, label = { Text("Speed") })
                     FilterChip(selected = testMode == AnalysisTestMode.PLATE_READ, onClick = { testMode = AnalysisTestMode.PLATE_READ }, label = { Text("Plate / OCR") }, enabled = false)
                 }
-                Text(
-                    "Plate / OCR is shown only as an architecture placeholder until a licensed Android-deployable plate detector and OCR backend is installed; it cannot be executed in this build.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = referenceFramesText,
-                    onValueChange = { referenceFramesText = it.filter(Char::isDigit).take(4) },
-                    label = { Text("Minimum speed samples") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = confidenceText,
-                    onValueChange = { confidenceText = it.filter(Char::isDigit).take(3) },
-                    label = { Text("Detection confidence (%)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Text("Plate / OCR is shown only as an architecture placeholder until a licensed Android-deployable plate detector and OCR backend is installed; it cannot be executed in this build.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(value = referenceFramesText, onValueChange = { referenceFramesText = it.filter(Char::isDigit).take(4) }, label = { Text("Minimum speed samples") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = confidenceText, onValueChange = { confidenceText = it.filter(Char::isDigit).take(3) }, label = { Text("Detection confidence (%)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Validated road homography", style = MaterialTheme.typography.bodyMedium)
                         Text("Requires a selected saved calibration profile. Source dimensions and quality gates are checked by the real analysis pipeline.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Switch(
-                        checked = useCalibratedHomography,
-                        enabled = selectedCalibration != null,
-                        onCheckedChange = { useCalibratedHomography = it },
-                    )
+                    Switch(checked = useCalibratedHomography, enabled = selectedCalibration != null, onCheckedChange = { useCalibratedHomography = it })
                 }
             }
         }
@@ -251,15 +197,8 @@ fun LocalAnalysisScreen(
             onClick = {
                 val uri = selectedUri ?: return@Button
                 if (testMode == AnalysisTestMode.PLATE_READ) return@Button
-                val effectiveConfig = config.copy(
-                    useGroundPlane = testMode == AnalysisTestMode.SPEED_CALIBRATION && useCalibratedHomography,
-                    enablePlateRecognition = false,
-                )
-                viewModel.run(
-                    uri,
-                    if (source == AnalysisSource.VIDEO) AnalysisMediaType.VIDEO else AnalysisMediaType.IMAGE,
-                    effectiveConfig,
-                )
+                val effectiveConfig = config.copy(useGroundPlane = testMode == AnalysisTestMode.SPEED_CALIBRATION && useCalibratedHomography, enablePlateRecognition = false)
+                viewModel.run(uri, if (source == AnalysisSource.VIDEO) AnalysisMediaType.VIDEO else AnalysisMediaType.IMAGE, effectiveConfig)
             },
             enabled = selectedUri != null && modelInstalled && state.phase != AnalysisRunPhase.RUNNING && testMode != AnalysisTestMode.PLATE_READ,
             modifier = Modifier.fillMaxWidth(),
@@ -273,7 +212,7 @@ fun LocalAnalysisScreen(
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Analysis running", style = MaterialTheme.typography.titleMedium)
-                    Text("The newest decoded frame and the tracking radar are shown as processing progresses. Playback is never intentionally delayed to match a slower analysis speed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("The analysis engine is processing the recorded source in timestamp order. Playback is held until the complete track history is available, so the replay cannot outrun the analyzer.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -305,6 +244,7 @@ private fun AnalysisResultCard(result: AnalysisResult, accelerator: String?) {
             MetricRow("Timestamp precision", m.timestampPrecision.name)
             MetricRow("Frames", m.framesProcessed.toString())
             MetricRow("Detections", m.detections.toString())
+            MetricRow("Unique cars detected", m.uniqueVehiclesDetected.toString())
             MetricRow("Tracks", result.tracks.size.toString())
             MetricRow("Confirmed tracks", m.confirmedTracks.toString())
             MetricRow("Recovered tracks", m.recoveredTracks.toString())
@@ -320,21 +260,7 @@ private fun AnalysisResultCard(result: AnalysisResult, accelerator: String?) {
             MetricRow("Rejected speed tracks", m.rejectedSpeedEstimates.toString())
             MetricRow("ID switches", m.idSwitches?.toString() ?: "Not benchmarked")
             MetricRow("Track fragmentations", m.trackFragmentations?.toString() ?: "Not benchmarked")
-            Text(
-                "A speed value is published only after calibration and trajectory quality gates pass. ID-switch and fragmentation metrics require external ground-truth annotations and are therefore not guessed here.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Text("A physical speed value is published only after validated calibration, exact source timestamps and trajectory-quality gates pass. ID-switch and fragmentation metrics require external ground-truth annotations and are not guessed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
-
-@Composable
-private fun MetricRow(title: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text(title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        Text(value, style = MaterialTheme.typography.labelLarge)
-    }
-}
-
-private fun formatMs(value: Double?): String = value?.let { "%.2f ms".format(it) } ?: "—"
