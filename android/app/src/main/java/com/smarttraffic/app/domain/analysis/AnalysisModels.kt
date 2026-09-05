@@ -55,6 +55,8 @@ data class Track(
     val misses: Int = 0,
     val ageFrames: Int = 0,
     val lastTimestampMs: Long = 0L,
+    val recoveryCount: Int = 0,
+    val maximumRecoveryGapMs: Long = 0L,
 )
 
 data class SpeedEstimate(
@@ -156,6 +158,10 @@ data class AnalysisMetrics(
     val detections: Long = 0,
     val inferenceFailures: Long = 0,
     val trackingAssociationMisses: Long = 0,
+    val trackBirths: Long = 0,
+    val confirmedTracks: Long = 0,
+    val recoveredTracks: Long = 0,
+    val maximumRecoveryGapMs: Long = 0,
     val activeTracks: Int = 0,
     val peakActiveTracks: Int = 0,
     val completedTracks: Long = 0,
@@ -165,6 +171,10 @@ data class AnalysisMetrics(
     val trafficEvents: Long = 0,
     val homographyReprojectionError: Double? = null,
     val speedEstimatorBackend: String = "Kotlin reference",
+    /** Requires an external ground-truth benchmark; null means it has not been evaluated. */
+    val idSwitches: Long? = null,
+    /** Requires an external ground-truth benchmark; null means it has not been evaluated. */
+    val trackFragmentations: Long? = null,
 )
 
 data class AnalysisResult(
