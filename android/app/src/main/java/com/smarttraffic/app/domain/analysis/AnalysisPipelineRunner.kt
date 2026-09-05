@@ -55,6 +55,7 @@ class AnalysisPipelineRunner(
         var calibrationChecked = false
         var calibrationReady = false
         var radarBounds: RadarBounds? = null
+        var speedGate: SpeedGate? = null
         var sourceReadTimeNs = 0L
         val analysisStartNs = System.nanoTime()
 
@@ -161,23 +162,37 @@ class AnalysisPipelineRunner(
                             maximumRecoveryGapMs = recovery.maximumGapMs,
                         )
                     }
-                    val liveSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
-                    val liveSpeeds = if (liveSpeedAllowed) {
+
+                    if (speedGate == null) {
+                        speedGate = runCatching {
+                            AutoSpeedGateBuilder.build(
+                                tracks = liveTracks,
+                                imageWidth = frame.width,
+                                imageHeight = frame.height,
+                                calibration = config.calibration.takeIf { calibrationReady },
+                            )
+                        }.getOrNull()
+                    }
+
+                    val liveSpeeds = if (speedGate?.calibrated == true && physicalSpeedAllowed(source, config, calibrationReady)) {
                         liveTracks.mapNotNull { liveTrack ->
                             if (speedRejectionReason(liveTrack, source, config, calibrationReady) != null) return@mapNotNull null
-                            speedEstimator.estimate(liveTrack.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
-                                ?.let { liveTrack.id to it }
+                            SpeedGateEstimator.estimate(liveTrack, requireNotNull(speedGate))?.let { liveTrack.id to it }
                         }.toMap()
                     } else emptyMap()
+
+                    val uniqueVehicles = trackBuffers.values.count { it.hits >= 2 }.toLong()
                     previewObserver.onFrame(
                         AnalysisPreviewFrame(
-                            frame,
-                            bitmap,
-                            reportableDetections,
-                            liveTracks,
-                            liveSpeeds,
-                            liveSpeedAllowed,
-                            radarBounds,
+                            frame = frame,
+                            bitmap = bitmap,
+                            detections = reportableDetections,
+                            tracks = liveTracks,
+                            speedEstimates = liveSpeeds,
+                            calibrated = physicalSpeedAllowed(source, config, calibrationReady),
+                            radarBounds = radarBounds,
+                            speedGate = speedGate,
+                            uniqueVehiclesDetected = uniqueVehicles,
                         )
                     )
                 }
@@ -204,6 +219,17 @@ class AnalysisPipelineRunner(
             )
         }
 
+        if (speedGate == null) {
+            speedGate = runCatching {
+                AutoSpeedGateBuilder.build(
+                    tracks = completedTracks,
+                    imageWidth = source.source.width ?: 0,
+                    imageHeight = source.source.height ?: 0,
+                    calibration = config.calibration.takeIf { calibrationReady },
+                )
+            }.getOrNull()
+        }
+
         val physicalSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
         val speedEstimates = linkedMapOf<Long, SpeedEstimate>()
         val speedRejections = linkedMapOf<Long, SpeedRejectionReason>()
@@ -217,7 +243,8 @@ class AnalysisPipelineRunner(
                 speedRejections[track.id] = if (!calibrationReady) SpeedRejectionReason.CALIBRATION_INVALID else SpeedRejectionReason.TIMESTAMP_INVALID
                 continue
             }
-            val estimate = speedEstimator.estimate(track.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
+            val gated = speedGate?.takeIf { it.calibrated }?.let { SpeedGateEstimator.estimate(track, it) }
+            val estimate = gated ?: speedEstimator.estimate(track.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
             if (estimate != null && estimate.kilometersPerHour.isFinite() && estimate.kilometersPerHour >= 0.0 && estimate.kilometersPerHour <= config.maxPlausibleSpeedKmh) {
                 speedEstimates[track.id] = estimate
             } else {
@@ -250,6 +277,7 @@ class AnalysisPipelineRunner(
         val totalDroppedFrames = droppedFrames + source.droppedFrameCount
         val recoveredTracks = completedTracks.count { it.recoveryCount > 0 }.toLong()
         val maximumRecoveryGapMs = completedTracks.maxOfOrNull { it.maximumRecoveryGapMs } ?: 0L
+        val uniqueVehiclesDetected = completedTracks.count { it.hits >= 2 }.toLong()
 
         return AnalysisResult(
             source = source.source,
@@ -282,12 +310,13 @@ class AnalysisPipelineRunner(
                 activeTracks = lastActiveTracks,
                 peakActiveTracks = peakActiveTracks,
                 completedTracks = completedTracks.size.toLong(),
+                uniqueVehiclesDetected = uniqueVehiclesDetected,
                 speedEstimates = speedEstimates.size.toLong(),
                 rejectedSpeedEstimates = speedRejections.size.toLong(),
                 plateReads = plateReadings.size.toLong(),
                 trafficEvents = trafficEvents.size.toLong(),
                 homographyReprojectionError = config.calibration?.reprojectionErrorPixels ?: config.calibration?.reprojectionErrorTargetUnits,
-                speedEstimatorBackend = speedEstimator.name,
+                speedEstimatorBackend = if (speedGate?.calibrated == true && speedEstimates.isNotEmpty()) "Automatic two-line gate" else speedEstimator.name,
             ),
         )
     }
@@ -347,15 +376,11 @@ class AnalysisPipelineRunner(
         }.getOrElse {
             return RadarBounds(0.0, width.toDouble(), 0.0, height.toDouble())
         }
-        val minX = groundCorners.minOf { it.xMeters }
-        val maxX = groundCorners.maxOf { it.xMeters }
-        val minY = groundCorners.minOf { it.yMeters }
-        val maxY = groundCorners.maxOf { it.yMeters }
         return RadarBounds(
-            minX = minX,
-            maxX = maxX,
-            minY = minY,
-            maxY = maxY,
+            minX = groundCorners.minOf { it.xMeters },
+            maxX = groundCorners.maxOf { it.xMeters },
+            minY = groundCorners.minOf { it.yMeters },
+            maxY = groundCorners.maxOf { it.yMeters },
         )
     }
 
