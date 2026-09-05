@@ -115,27 +115,33 @@ Run #400 was `33975048887` from commit `1165b2dc...`; Native parity, Research Ma
 
 Run #401 was `33975138919` from `3fe3b98...` and completed successfully across Android Build & Test, Android instrumentation APK compilation, unit tests, lint, Native C++ parity, Research Math, and both ESP32 firmware targets.
 
-## Local playback decoupling CI verification target
-The local playback pass introduced the following sequential commits:
+## Local playback decoupling work and CI failures
+The local playback work introduced these commits:
 - `399be09efacca68da09be3058db275bfc199fc90`: initial independent Media3 playback composable.
 - `130ee297128ac240de35224ccfb47f57b8451b96`: Media3 ExoPlayer/UI dependencies.
-- `c1128680b678728e14d56eb2d82557aa6843cca8`: local analysis preview wired to the independent video player.
+- `c1128680b678728e14d56eb2d82557aa6843cca8`: local analysis preview wired to independent video player.
 - `f416044fff771b0d57e93663de8739e21e2f3a97`: `videoUri` added to `AnalysisPreviewFrame`.
-- `7b13f29c886dab0a3241b1070e6328cc68e86928`: local video preview attaches the selected URI.
+- `7b13f29c886dab0a3241b1070e6328cc68e86928`: local video preview attaches selected URI.
 - `3aeaabc80d5a029138a13fa92c5c95e5f52cebba`: texture-view player layout added.
 - `b0bd913661cc4f960008f1d57b569219d9602194`: final Media3 texture-view binding cleanup.
 
-CI Run #411 (`33981920129`) is the current verification run for `b0bd913...`. At the time this document update began, Native/Research had already progressed successfully and Android/ESP32 were still running. No full green claim is recorded until the exact current SHA finishes successfully.
+Run #412 (`33981996456`) failed at Android `compileDebugKotlin` because `AnalysisVideoPlayback.kt` omitted the Compose imports for `nativeCanvas` and `dp`. No runtime/media failure was observed; the failure was a source-import oversight.
 
-## Current next practical phase
-After the local playback decoupling code is proven green by CI, the next practical test is physical APK installation and the local lab:
-1. select a normal recorded traffic video;
-2. run Detect + Track without enabling calibrated speed;
-3. verify that the video runs at its original playback rate rather than analysis speed;
-4. verify fluorescent-green stable Track IDs over moving vehicles;
-5. inspect measured Processing FPS, frame gaps, track recoveries, and crash diagnostics;
-6. repeat with multiple clips and a longer clip;
-7. only after local stability is proven, proceed to calibrated exact-PTS speed testing and then ESP32 hardware integration.
+Fixed in commit `459a499a11001b55d92308c2a9bbe6a61b7f6fe6` by adding:
+`import androidx.compose.ui.graphics.nativeCanvas`
+and
+`import androidx.compose.ui.unit.dp`.
+
+Run #413 (`33983045596`) then completed Debug APK build, instrumentation APK compilation, unit tests, Native C++ parity, Research Math, and both ESP32 firmware targets successfully, but Android lint failed with exactly one new `UnsafeOptInUsageError` for the unnecessary call `PlayerView.setShutterBackgroundColor(...)` in `AnalysisVideoPlayback.kt:85`.
+
+Fixed in commit `b72a512cc9db17600affecd25b48966ebc5ad9e3e` by removing that unstable cosmetic API call. No lint baseline or project-wide suppression was added.
+
+Process correction recorded: material engineering changes must not be called ready after compilation alone. The affected files must be reviewed together, and the CI gate must include build, instrumentation compilation, unit tests, lint, native parity and ESP32 builds. The context document must be updated in the same material cycle with exact failure, root cause, fix and verification state.
+
+## Current verification target
+Current repository HEAD is `b72a512cc9db17600affecd25b48966ebc5ad9e3e`. A new CI run for that exact SHA is required because #413 failed only at lint and the correction was committed afterward. Do not issue a new APK-testing instruction until the current SHA has a verified green Android job.
+
+Once green, physical testing should use a normal recorded traffic video in the local lab and verify independently: original video playback rate, fluorescent-green stable tracking boxes/IDs, analysis FPS/frame gaps, lifecycle stability, and absence of regression in image analysis. Do not treat the independent playback architecture as proof of exact synchronization until observed on a real device.
 
 ## Non-negotiable honesty rules
 No map integration unless explicitly requested; previous map integration caused UI/display problems and is intentionally excluded.
