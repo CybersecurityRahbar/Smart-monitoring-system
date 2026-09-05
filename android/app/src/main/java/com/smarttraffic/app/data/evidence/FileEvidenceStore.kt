@@ -43,7 +43,7 @@ class FileEvidenceStore(
             writeArtifact(record.id, "frame", frameSha, artifacts.frameJpeg)
             writeArtifact(record.id, "vehicle", vehicleSha, artifacts.vehicleCropJpeg)
             if (artifacts.plateCropJpeg != null) {
-                writeArtifact(record.id, "plate", plateSha!!, artifacts.plateCropJpeg)
+                writeArtifact(record.id, "plate", requireNotNull(plateSha), artifacts.plateCropJpeg)
             }
             record.copy(
                 frameSha256 = frameSha,
@@ -112,11 +112,12 @@ class FileEvidenceStore(
 
     private fun artifactBytes(record: EvidenceRecord): Long {
         var total = 0L
-        listOfNotNull(
-            record.frameSha256 to "frame",
-            record.vehicleCropSha256 to "vehicle",
-            record.plateCropSha256 to "plate",
-        ).forEach { (hash, kind) ->
+        val artifacts = buildList {
+            record.frameSha256?.let { add(it to "frame") }
+            record.vehicleCropSha256?.let { add(it to "vehicle") }
+            record.plateCropSha256?.let { add(it to "plate") }
+        }
+        for ((hash, kind) in artifacts) {
             val artifact = artifactFile(record.id, kind, hash)
             if (!artifact.exists()) {
                 throw IllegalStateException("Evidence artifact missing for ${record.id}: ${artifact.name}")
@@ -195,11 +196,12 @@ class FileEvidenceStore(
     }
 
     private fun validateArtifactReferences(record: EvidenceRecord) {
-        listOfNotNull(
-            record.frameSha256 to "frame",
-            record.vehicleCropSha256 to "vehicle",
-            record.plateCropSha256 to "plate",
-        ).forEach { (hash, kind) ->
+        val artifacts = buildList {
+            record.frameSha256?.let { add(it to "frame") }
+            record.vehicleCropSha256?.let { add(it to "vehicle") }
+            record.plateCropSha256?.let { add(it to "plate") }
+        }
+        for ((hash, kind) in artifacts) {
             val artifact = artifactFile(record.id, kind, hash)
             require(artifact.isFile) { "Missing evidence artifact: ${artifact.name}" }
             require(sha256(artifact.readBytes()).equals(hash, ignoreCase = true)) {
@@ -254,11 +256,10 @@ class FileEvidenceStore(
         plateCropSha256 = json.optString("plateCropSha256").takeUnless { it.isBlank() || it == "null" },
     )
 
-    private fun artifactFile(id: String, kind: String, sha256: String?): File {
+    private fun artifactFile(id: String, kind: String, sha256: String): File {
         val safeId = sanitize(id)
         val safeKind = sanitize(kind)
-        val safeHash = requireNotNull(sha256) { "Artifact SHA is required for persisted artifacts" }
-        return File(artifactDir, "${safeId}_${safeKind}_$safeHash.jpg")
+        return File(artifactDir, "${safeId}_${safeKind}_$sha256.jpg")
     }
 
     private fun ownerIdFromArtifactName(name: String): String? {
