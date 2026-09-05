@@ -120,12 +120,17 @@ Search and eliminate or justify all TODO/FIXME placeholders, broad silent catche
 ## Current known non-complete areas
 The current project context already records the first physical-device crash in Local Analysis and the stabilization attempts. These attempts did not yet prove the root cause. The Local Lab was deliberately simplified to CPU + Kotlin geometry/speed + ordinary video source and appearance association disabled for isolation.
 
-Known remaining gaps include stale UI runtime text, nominal-vs-measured decode FPS semantics, speed rejection conflation, insufficient track-quality gates for physical speed, unvalidated ExactPts decoder, eager native library loading, unimplemented ANPR/OCR, metadata-only evidence, ViewModel-scoped sessions instead of app-level orchestration, and the need for a repository-wide placeholder/resource/static-initializer audit.
+Known remaining gaps include unvalidated ExactPts decoder, eager native library loading, unimplemented ANPR/OCR, metadata-only evidence, and the need for repository-wide placeholder/static-initializer audit. Live currently uses the real shared pipeline but still needs physical ESP32 validation.
 
 ## Professional tracking behavior requested by project owner
 The radar should visually and semantically behave like the strong Python traffic projects the user tested: each detected vehicle receives a stable numbered box such as vehicle 162 and vehicle 163, classification is attached to that same track, and the ID follows the vehicle through the scene rather than being regenerated every frame.
 
 This behavior is a core product requirement, not a cosmetic UI feature.
+
+## Engineering-pass log — 2026-09-05
+The first CI attempt after the reliability/tracking changes failed at Kotlin compilation on Run #331. The reported defects were: duplicate LocalImageFrameSource declarations; stale/invalid sourceUri references caused by that duplicate insertion; missing Compose nativeCanvas import; and malformed LiveAnalysisViewModel session initialization. All four root defects were corrected, and the image source was restored as exactly one dedicated implementation after removing the duplicate embedded declaration. The corrected main branch is now at commit `896dc65ddf9572bb1e13c0e316dea6434ea4aa6a`, with CI Run #336 in progress. The build must be considered unverified until Run #336 completes.
+
+This CI failure is now part of the permanent context so a future session understands both the cause and the correction instead of repeating the same modifications.
 
 ## Release honesty rule
 Never claim 'zero bugs' or 'production ready' from static inspection alone. The strongest defensible status is 'implemented and verified by [specific test layers]'. Device-specific native/runtime stability requires actual device evidence.
