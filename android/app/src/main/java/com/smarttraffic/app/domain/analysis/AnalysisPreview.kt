@@ -23,6 +23,10 @@ data class AnalysisPreviewFrame(
     val calibrated: Boolean,
     /** Fixed coordinate viewport used by the radar; it must not be recomputed from current tracks. */
     val radarBounds: RadarBounds? = null,
+    /** Automatically inferred pair of virtual timing lines, if enough track geometry exists. */
+    val speedGate: SpeedGate? = null,
+    /** Unique vehicle IDs observed during the current analysis session. */
+    val uniqueVehiclesDetected: Long = 0L,
     /** Local recorded-video URI used by the independent playback surface; null for images/live. */
     val videoUri: String? = null,
 )
