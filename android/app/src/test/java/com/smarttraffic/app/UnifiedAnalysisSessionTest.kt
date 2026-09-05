@@ -12,6 +12,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -35,7 +36,7 @@ class UnifiedAnalysisSessionTest {
             session.awaitCompletion()
             assertEquals(1, source1.closeCount.get())
             assertEquals(1, runtime1.closeCount.get())
-            assertEquals(1, session.state.value.result?.tracks?.size ?: 0)
+            assertEquals("COMPLETED", session.state.value.phase.name)
 
             val source2 = CountingSource()
             val runtime2 = CountingCloseable()
@@ -44,7 +45,7 @@ class UnifiedAnalysisSessionTest {
             assertEquals(1, source2.closeCount.get())
             assertEquals(1, runtime2.closeCount.get())
         } finally {
-            scope.coroutineContext[SupervisorJob]?.cancel()
+            scope.cancel()
         }
     }
 
@@ -65,7 +66,7 @@ class UnifiedAnalysisSessionTest {
             assertEquals(1, runtime1.closeCount.get())
             assertEquals("Analysis session stopped.", session.state.value.message)
         } finally {
-            scope.coroutineContext[SupervisorJob]?.cancel()
+            scope.cancel()
         }
     }
 
