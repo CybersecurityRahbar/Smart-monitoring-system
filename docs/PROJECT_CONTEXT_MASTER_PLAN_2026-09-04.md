@@ -122,7 +122,9 @@ The first physical-device crash in Local Analysis remains a historical incident 
 
 The current repository has real bounded evidence artifacts at `android/app/src/main/java/com/smarttraffic/app/data/evidence/FileEvidenceStore.kt`. The evidence layer is no longer metadata-only: frame/vehicle/plate artifacts (where supplied) are SHA-256 content-addressed, serialized through a coroutine mutex, flushed before publication, atomically moved when supported, integrity-verified on read, and orphan-pruned under retention limits. Existing limitations remain around capturing the exact live MJPEG event frame and wiring a real ANPR/plate crop into the evidence path.
 
-Exact source PTS for local video is still unvalidated. A real ANPR/OCR backend is still unimplemented. Physical ESP32 camera validation is still pending. Quantitative tracking quality metrics such as ID switches/fragmentation/recovery latency still need benchmark fixtures and end-to-end reporting. Stress/memory and crash/ANR validation still require actual devices.
+Exact source PTS for local video is now implemented through `ExactPtsVideoFrameSource`, including decoder PTS propagation to the output surface and bounded ImageReader backpressure. It is still not certified by physical-device media testing.
+
+A real ANPR/OCR backend remains unimplemented and the UI explicitly keeps plate/OCR execution disabled until a licensed Android-deployable backend is installed. Physical ESP32 camera validation is still pending. Quantitative ID-switch and fragmentation metrics remain `null` until an external ground-truth benchmark is available. Stress/memory and crash/ANR validation still require actual devices.
 
 ## Professional tracking behavior requested by project owner
 The radar should visually and semantically behave like the strong Python traffic projects the user tested: each detected vehicle receives a stable numbered box such as vehicle 162 and vehicle 163, classification is attached to that same track, and the ID follows the vehicle through the scene rather than being regenerated every frame.
@@ -144,13 +146,26 @@ CI Run #362 (`33972356642`) failed in Android `compileDebugKotlin`. The compiler
 
 The associated instrumentation test was updated in commit `9e014dad1553408beb070d04024d3064366ba5c9` for hashed artifact names, concurrent writes, and tamper detection.
 
-During pre-verification review of those changes, an additional latent bug was found in `artifactBytes`: constructing pairs containing nullable hashes with `listOfNotNull` does not remove the pair itself, so a metadata-only record could incorrectly reach `requireNotNull`. This was corrected in commit `02fc5e83e1c909b36ac64140297cc905cdba991b`, using only non-null hashes when calculating artifact sizes. The instrumentation suite then gained an explicit metadata-only evidence regression test in commit `64e38afc33130571892d068af42023d42029715d`.
+During pre-verification review of those changes, an additional latent bug was found in `artifactBytes`: nullable SHA values must be filtered before constructing artifact pairs so metadata-only records do not dereference missing artifacts. This was corrected in commit `02fc5e83e1c909b36ac64140297cc905cdba991b`, and regression coverage was expanded in commit `64e38afc33130571892d068af42023d42029715d`.
 
-This review caught the issue before another CI result and reinforces the required protocol: after every code change, reread the complete modified implementation, inspect nullable/control-flow/API contracts, reconcile all affected tests, and only then push. A successful CI result is validation evidence, not a substitute for pre-push code review.
+The subsequent full-system integration pass added persistent incident-report storage and tests, real dashboard/alerts state sourced from the shared analysis session, rule settings bound to `TrafficRulePreferences`, artifact rendering in the evidence screen, measurable tracking recovery fields, and a lifecycle-focused `UnifiedAnalysisSessionTest`.
 
-The current `main` HEAD at the time of this context update is `64e38afc33130571892d068af42023d42029715d`. Its CI result is pending. The previous Run #357 success does not validate this later state, and the failed Run #362 does not represent the corrected latest tree.
+The local media path now selects exact-PTS decoding for calibrated speed tests. `ExactPtsVideoFrameSource` uses MediaExtractor/MediaCodec/ImageReader, transfers decoder presentation time to the output surface, validates monotonic PTS and rendered-image timestamps, and uses a bounded blocking image queue. The physical-device/media matrix remains a mandatory validation step before treating speed as certified.
 
-This project owner explicitly requires the cumulative context document under `docs` to be updated as part of every material work cycle and before a response closes, recording decisions, changes, failures, tests, unresolved risks, and the exact repository state needed to resume work without reconstructing prior conversation context.
+The MJPEG source was hardened to own its producer lifecycle independently of any screen ViewModel scope, while retaining constructor compatibility. It keeps one pending frame, recycles replaced frames, counts source-level drops, propagates producer failures through channel closure, and explicitly uses `LOCAL_MONOTONIC_ARRIVAL`, so live physical speed remains blocked.
+
+The ESP32 side is now an actual PlatformIO firmware project. `esp32/platformio.ini` defines AI-Thinker ESP32-CAM and ESP32-S3-N16R8 build targets; `esp32/src/main.cpp` implements `/stream`, `/capture`, `/status`, and `/control`; local credentials are supplied via ignored `src/secrets.h` using `secrets.example.h`. The workflow was expanded with an ESP32 firmware job so firmware buildability becomes part of CI rather than an unverified source-only feature. The S3 pin map is documented as board-revision-dependent and must be checked against the exact PCB before wiring.
+
+The Android UI now explicitly avoids presenting unavailable ANPR/OCR as executable functionality, exposes real analysis metrics including recovery counts and unbenchmarked ID-switch/fragmentation fields, and displays actual persisted evidence artifacts rather than metadata-only cards.
+
+A full-cycle review also corrected a subtle lifecycle ownership risk: session finalization now uses resource identity checks so a stale session cannot close a newer session's source or runtime. Dedicated lifecycle tests cover completed-run cleanup, restart, duplicate-start rejection, and stop-time exact-once cleanup.
+
+## Verification gate after the full-system pass
+The latest tracked `main` commit is `fdcc2327ee66112b594327aca9e74997a35e689b` with tree `4a6c78b0b7f0a93f09a7c8ca1e30cd382ac4f612`. The newest CI run observed before this documentation commit was run #395 (`33974088625`) for its parent commit `6105aa06b614f86c2af035ec1fafa718aaa978a3`, so it does not validate the latest `fdcc2327...` tree. The full-system documentation commit that follows this log creates a new HEAD and therefore requires a fresh CI run. Do not infer success for that new HEAD from any earlier green run.
+
+The required user-facing baseline for the next practical test is: Android local image/video detection and tracking; authoritative stable Track IDs; rule configuration and real rule-engine alerts; bounded evidence storage with verified artifacts; persistent incident reports; local exact-PTS speed path behind calibration/quality gates; real live MJPEG ingestion architecture; and buildable ESP32 firmware targets. The next stage after this verification gate is physical APK testing on the user's Android device, then exact media tests and ESP32 hardware integration.
 
 ## Release honesty rule
 Never claim 'zero bugs' or 'production ready' from static inspection alone. The strongest defensible status is 'implemented and verified by [specific test layers]'. Device-specific native/runtime stability requires actual device evidence.
+
+This project owner explicitly requires the cumulative context document under `docs` to be updated as part of every material work cycle and before a response closes, recording decisions, changes, failures, tests, unresolved risks, and the exact repository state needed to resume work without reconstructing prior conversation context.
