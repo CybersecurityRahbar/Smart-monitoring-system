@@ -27,10 +27,9 @@ data class SpeedGate(
  * Scene-adaptive timing-gate builder.
  *
  * Vehicle motion is converted into per-track velocity vectors. A 2D principal-component axis
- * is then extracted from those vectors, which preserves the road direction even when traffic
- * contains vehicles moving in opposite directions. Two cross-flow lines are placed at robust
- * scene quantiles along that fixed axis and are never re-scaled by the current active tracks.
- * Metric separation is published only for a valid image-to-ground calibration.
+ * is extracted from those vectors, while a mean-vector fallback is used for perfectly coherent
+ * traffic where covariance is zero. This preserves a useful axis for both one-way and
+ * bidirectional traffic. Two cross-flow lines are then frozen at robust scene quantiles.
  */
 object AutoSpeedGateBuilder {
     fun build(
@@ -134,7 +133,6 @@ object AutoSpeedGateBuilder {
             }
         }
 
-    /** PCA of 2D velocity vectors; eigenvector sign is arbitrary because a road axis is undirected. */
     private fun principalAxis(vectors: List<Pair<Double, Double>>): Pair<Double, Double>? {
         if (vectors.size < 2) return null
         val meanX = vectors.map { it.first }.average()
@@ -159,32 +157,22 @@ object AutoSpeedGateBuilder {
             ax = lambda - cyy
             ay = cxy
         }
-        val norm = hypot(ax, ay)
+        var norm = hypot(ax, ay)
+        if (!norm.isFinite() || norm < 1e-9) {
+            ax = meanX
+            ay = meanY
+            norm = hypot(ax, ay)
+        }
         if (!norm.isFinite() || norm < 1e-9) return null
         return ax / norm to ay / norm
     }
 
-    private fun pointAtProjection(
-        centerProjection: Double,
-        centerX: Double,
-        centerY: Double,
-        ux: Double,
-        uy: Double,
-        targetProjection: Double,
-    ): Pair<Double, Double> {
+    private fun pointAtProjection(centerProjection: Double, centerX: Double, centerY: Double, ux: Double, uy: Double, targetProjection: Double): Pair<Double, Double> {
         val delta = targetProjection - centerProjection
         return centerX + ux * delta to centerY + uy * delta
     }
 
-    private fun imageLine(
-        cx: Double,
-        cy: Double,
-        ux: Double,
-        uy: Double,
-        width: Double,
-        height: Double,
-        coordinate: Double,
-    ): SpeedGateLine {
+    private fun imageLine(cx: Double, cy: Double, ux: Double, uy: Double, width: Double, height: Double, coordinate: Double): SpeedGateLine {
         val nx = -uy
         val ny = ux
         val candidates = ArrayList<Pair<Double, Double>>(4)
@@ -232,14 +220,7 @@ object AutoSpeedGateBuilder {
         return ((inv[0] * x + inv[1] * y + inv[2]) / w) to ((inv[3] * x + inv[4] * y + inv[5]) / w)
     }
 
-    private fun clipSegment(
-        x0: Double,
-        y0: Double,
-        x1: Double,
-        y1: Double,
-        width: Double,
-        height: Double,
-    ): Pair<Pair<Double, Double>, Pair<Double, Double>>? {
+    private fun clipSegment(x0: Double, y0: Double, x1: Double, y1: Double, width: Double, height: Double): Pair<Pair<Double, Double>, Pair<Double, Double>>? {
         var t0 = 0.0
         var t1 = 1.0
         val dx = x1 - x0
@@ -312,11 +293,7 @@ object SpeedGateEstimator {
         )
     }
 
-    private fun crossings(
-        observations: List<TrackObservation>,
-        coordinate: (TrackObservation) -> Double?,
-        line: Double,
-    ): List<Crossing> {
+    private fun crossings(observations: List<TrackObservation>, coordinate: (TrackObservation) -> Double?, line: Double): List<Crossing> {
         val result = ArrayList<Crossing>()
         for (i in 1 until observations.size) {
             val a = observations[i - 1]
@@ -332,11 +309,7 @@ object SpeedGateEstimator {
             val denom = db - da
             if (abs(denom) < 1e-9) continue
             val ratio = (-da / denom).coerceIn(0.0, 1.0)
-            result += Crossing(
-                timestampMs = a.timestampMs + dt * ratio,
-                direction = cb - ca,
-                bracketMs = dt,
-            )
+            result += Crossing(a.timestampMs + dt * ratio, cb - ca, dt)
         }
         return result
     }
