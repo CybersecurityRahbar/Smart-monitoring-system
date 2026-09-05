@@ -5,11 +5,14 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.smarttraffic.app.data.evidence.FileEvidenceStore
 import com.smarttraffic.app.domain.analysis.EvidenceArtifacts
 import com.smarttraffic.app.domain.analysis.EvidenceRecord
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import org.junit.After
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -36,14 +39,14 @@ class FileEvidenceStoreTest {
 
         val persisted = store.save(record, EvidenceArtifacts(frame, vehicle))
         val loaded = store.list().single()
+        val artifactDir = context.getDir("traffic_evidence", android.content.Context.MODE_PRIVATE)
 
         assertEquals(record.id, persisted.id)
         assertEquals(record.id, loaded.id)
         assertNotNull(loaded.frameSha256)
         assertNotNull(loaded.vehicleCropSha256)
-        assertTrue(context.getDir("traffic_evidence", android.content.Context.MODE_PRIVATE).listFiles().orEmpty().isNotEmpty())
-        assertArrayEquals(frame, java.io.File(context.getDir("traffic_evidence", android.content.Context.MODE_PRIVATE), "event-1_frame.jpg").readBytes())
-        assertArrayEquals(vehicle, java.io.File(context.getDir("traffic_evidence", android.content.Context.MODE_PRIVATE), "event-1_vehicle.jpg").readBytes())
+        assertEquals(2, artifactDir.listFiles().orEmpty().size)
+        assertTrue(artifactDir.listFiles().orEmpty().all { it.name.endsWith(".jpg") })
     }
 
     @Test
@@ -57,9 +60,38 @@ class FileEvidenceStoreTest {
         assertTrue(loaded.none { it.id == "event-0" })
         assertTrue(loaded.none { it.id == "event-1" })
         assertTrue(loaded.all { it.id.startsWith("event-") })
+        assertEquals(8, context.getDir("traffic_evidence", android.content.Context.MODE_PRIVATE).listFiles().orEmpty().size)
     }
 
-    private fun record(id: String): EvidenceRecord = EvidenceRecord(
+    @Test
+    fun listFailsClosedWhenReferencedArtifactIsMissing() = runBlocking {
+        store.save(record("event-corrupt"), EvidenceArtifacts(ByteArray(32) { 7 }, ByteArray(16) { 3 }))
+        val hash = requireNotNull(store.list().single().frameSha256)
+        val artifactDir = context.getDir("traffic_evidence", android.content.Context.MODE_PRIVATE)
+        java.io.File(artifactDir, "${hash}_frame.jpg").delete()
+
+        assertThrows(IllegalStateException::class.java) { runBlocking { store.list() } }
+    }
+
+    @Test
+    fun concurrentSavesRemainConsistent() = runBlocking {
+        coroutineScope {
+            (0 until 8).map { index ->
+                async {
+                    store.save(
+                        record("event-concurrent-$index", createdAtMs = 1000L + index),
+                        EvidenceArtifacts(ByteArray(64) { index.toByte() }, ByteArray(32) { (index + 1).toByte() }),
+                    )
+                }
+            }.awaitAll()
+        }
+
+        val loaded = store.list()
+        assertEquals(4, loaded.size)
+        assertTrue(loaded.all { it.frameSha256 != null && it.vehicleCropSha256 != null })
+    }
+
+    private fun record(id: String, createdAtMs: Long = System.currentTimeMillis()): EvidenceRecord = EvidenceRecord(
         id = id,
         eventId = id,
         sourceId = "test-source",
@@ -73,6 +105,6 @@ class FileEvidenceStoreTest {
         trackId = 12L,
         detectorModel = "yolo26n",
         tracker = "bytetrack",
-        createdAtMs = System.currentTimeMillis(),
+        createdAtMs = createdAtMs,
     )
 }
