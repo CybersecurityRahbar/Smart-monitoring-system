@@ -1,6 +1,7 @@
 package com.smarttraffic.app.features.analysis
 
 import android.graphics.Paint
+import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -33,13 +34,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
@@ -47,7 +47,11 @@ import com.smarttraffic.app.domain.analysis.Track
 import kotlin.math.max
 
 @Composable
-fun AnalysisRadarPreview(preview: AnalysisPreviewFrame?, modifier: Modifier = Modifier) {
+fun AnalysisRadarPreview(
+    preview: AnalysisPreviewFrame?,
+    videoUri: Uri? = null,
+    modifier: Modifier = Modifier,
+) {
     if (preview == null) return
 
     var fullscreen by remember { mutableStateOf(false) }
@@ -65,6 +69,7 @@ fun AnalysisRadarPreview(preview: AnalysisPreviewFrame?, modifier: Modifier = Mo
             Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
                 ImmersiveVideo(
                     preview = preview,
+                    videoUri = videoUri,
                     primary = primary,
                     onSurface = Color.White,
                     onSurfaceVariant = Color(0xFFD0D7DA),
@@ -109,12 +114,20 @@ fun AnalysisRadarPreview(preview: AnalysisPreviewFrame?, modifier: Modifier = Mo
                         .aspectRatio(ratio)
                         .background(surfaceVariant, RoundedCornerShape(16.dp)),
                 ) {
-                    VideoFrameWithTracks(
-                        preview = preview,
-                        modifier = Modifier.fillMaxSize(),
-                        primary = primary,
-                        showClose = false,
-                    )
+                    if (videoUri != null) {
+                        AnalysisVideoPlayback(
+                            videoUri = videoUri,
+                            preview = preview,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        VideoFrameWithTracks(
+                            preview = preview,
+                            modifier = Modifier.fillMaxSize(),
+                            primary = primary,
+                            showClose = false,
+                        )
+                    }
                 }
             }
         }
@@ -132,19 +145,30 @@ fun AnalysisRadarPreview(preview: AnalysisPreviewFrame?, modifier: Modifier = Mo
 @Composable
 private fun ImmersiveVideo(
     preview: AnalysisPreviewFrame,
+    videoUri: Uri?,
     primary: Color,
     onSurface: Color,
     onSurfaceVariant: Color,
     onClose: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        VideoFrameWithTracks(
-            preview = preview,
-            modifier = Modifier.fillMaxSize(),
-            primary = primary,
-            showClose = true,
-            onClose = onClose,
-        )
+        if (videoUri != null) {
+            AnalysisVideoPlayback(
+                videoUri = videoUri,
+                preview = preview,
+                modifier = Modifier.fillMaxSize(),
+                showClose = true,
+                onClose = onClose,
+            )
+        } else {
+            VideoFrameWithTracks(
+                preview = preview,
+                modifier = Modifier.fillMaxSize(),
+                primary = primary,
+                showClose = true,
+                onClose = onClose,
+            )
+        }
         Surface(
             modifier = Modifier
                 .align(Alignment.TopStart)
@@ -187,6 +211,7 @@ private fun VideoFrameWithTracks(
             val contentHeight = sourceHeight * scale
             val offsetX = (size.width - contentWidth) * 0.5f
             val offsetY = (size.height - contentHeight) * 0.5f
+            val trackColor = Color(0xFF39FF14)
             val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 textSize = 28f
                 typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
@@ -204,11 +229,11 @@ private fun VideoFrameWithTracks(
                 val right = offsetX + d.right * scale
                 val bottom = offsetY + d.bottom * scale
                 drawRoundRect(
-                    color = primary,
+                    color = trackColor,
                     topLeft = Offset(left, top),
-                    size = Size((right - left).coerceAtLeast(0f), (bottom - top).coerceAtLeast(0f)),
+                    size = androidx.compose.ui.geometry.Size((right - left).coerceAtLeast(0f), (bottom - top).coerceAtLeast(0f)),
                     cornerRadius = CornerRadius(12f, 12f),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f),
                 )
                 drawContext.canvas.nativeCanvas.drawText(
                     "#${track.id} ${track.className}",
