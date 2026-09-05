@@ -165,6 +165,7 @@ data class AnalysisMetrics(
     val activeTracks: Int = 0,
     val peakActiveTracks: Int = 0,
     val completedTracks: Long = 0,
+    val uniqueVehiclesDetected: Long = 0,
     val speedEstimates: Long = 0,
     val rejectedSpeedEstimates: Long = 0,
     val plateReads: Long = 0,
