@@ -4,17 +4,23 @@ import android.content.Context
 import com.smarttraffic.app.domain.analysis.EvidenceArtifacts
 import com.smarttraffic.app.domain.analysis.EvidenceRecord
 import com.smarttraffic.app.domain.analysis.EvidenceStore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import kotlin.math.min
 
 /**
  * Durable local evidence vault with metadata plus bounded JPEG artifacts.
  *
- * Each artifact is written to a temporary file and published before the metadata index is updated.
- * A retention cap prevents a long-running project from filling the device indefinitely.
+ * Artifacts are content-addressed by SHA-256 and published before the metadata index is replaced.
+ * Metadata and artifact operations are serialized, and orphaned/unreferenced artifacts are pruned.
  */
 class FileEvidenceStore(
     context: Context,
@@ -23,39 +29,57 @@ class FileEvidenceStore(
 ) : EvidenceStore {
     private val file = context.getFileStreamPath(FILE_NAME)
     private val artifactDir = context.getDir(ARTIFACT_DIR, Context.MODE_PRIVATE)
+    private val ioMutex = Mutex()
 
     init {
         require(maxRecords >= 1) { "maxRecords must be >= 1" }
         require(maxTotalArtifactBytes >= 1L) { "maxTotalArtifactBytes must be positive" }
     }
 
-    override suspend fun save(record: EvidenceRecord, artifacts: EvidenceArtifacts?): EvidenceRecord {
+    override suspend fun save(record: EvidenceRecord, artifacts: EvidenceArtifacts?): EvidenceRecord = ioMutex.withLock {
         validateRecord(record)
-        val current = readRecords().filterNot { it.id == record.id }.toMutableList()
+        val previous = readRecords()
+        val current = previous.filterNot { it.id == record.id }.toMutableList()
+        val newlyPublished = mutableListOf<String>()
 
-        val persisted = if (artifacts != null) {
-            val frameSha = sha256(artifacts.frameJpeg)
-            val vehicleSha = sha256(artifacts.vehicleCropJpeg)
-            val plateSha = artifacts.plateCropJpeg?.let(::sha256)
-            writeArtifact(record.id, "frame", artifacts.frameJpeg)
-            writeArtifact(record.id, "vehicle", artifacts.vehicleCropJpeg)
-            if (artifacts.plateCropJpeg != null) writeArtifact(record.id, "plate", artifacts.plateCropJpeg)
-            record.copy(
-                frameSha256 = frameSha,
-                vehicleCropSha256 = vehicleSha,
-                plateCropSha256 = plateSha,
-            )
-        } else record
+        try {
+            val persisted = if (artifacts != null) {
+                val frameSha = sha256(artifacts.frameJpeg)
+                val vehicleSha = sha256(artifacts.vehicleCropJpeg)
+                val plateSha = artifacts.plateCropJpeg?.let(::sha256)
+                writeArtifact(frameSha, "frame", artifacts.frameJpeg)
+                newlyPublished += artifactName(frameSha, "frame")
+                writeArtifact(vehicleSha, "vehicle", artifacts.vehicleCropJpeg)
+                newlyPublished += artifactName(vehicleSha, "vehicle")
+                if (plateSha != null) {
+                    writeArtifact(plateSha, "plate", artifacts.plateCropJpeg!!)
+                    newlyPublished += artifactName(plateSha, "plate")
+                }
+                record.copy(
+                    frameSha256 = frameSha,
+                    vehicleCropSha256 = vehicleSha,
+                    plateCropSha256 = plateSha,
+                )
+            } else record
 
-        current += persisted
-        val retained = enforceRetention(current.sortedByDescending { it.createdAtMs })
-        writeRecords(retained)
-        return persisted
+            current += persisted
+            val retained = enforceRetention(current.sortedByDescending { it.createdAtMs })
+            writeRecords(retained)
+            return@withLock persisted
+        } catch (error: Throwable) {
+            val referencedByPrevious = referencedArtifactNames(previous)
+            newlyPublished.forEach { name ->
+                if (name !in referencedByPrevious) File(artifactDir, name).delete()
+            }
+            throw error
+        }
     }
 
-    override suspend fun list(): List<EvidenceRecord> = readRecords()
+    override suspend fun list(): List<EvidenceRecord> = ioMutex.withLock {
+        readRecords()
+    }
 
-    override suspend fun clear() {
+    override suspend fun clear() = ioMutex.withLock {
         if (file.exists() && !file.delete()) {
             throw IllegalStateException("Unable to delete evidence store: ${file.absolutePath}")
         }
@@ -72,11 +96,12 @@ class FileEvidenceStore(
                 for (i in 0 until array.length()) {
                     val record = fromJson(array.getJSONObject(i))
                     validateRecord(record)
+                    verifyReferencedArtifacts(record)
                     add(record)
                 }
             }.sortedByDescending { it.createdAtMs }
         } catch (error: Throwable) {
-            throw IllegalStateException("Evidence store is unreadable: ${file.absolutePath}", error)
+            throw IllegalStateException("Evidence store is unreadable or corrupted: ${file.absolutePath}", error)
         }
     }
 
@@ -91,29 +116,35 @@ class FileEvidenceStore(
             totalBytes += bytes
         }
 
-        val keep = retained.asSequence().map { it.id }.toSet()
+        val keepFiles = referencedArtifactNames(retained)
         artifactDir.listFiles()?.forEach { child ->
-            val ownerId = child.name.substringBefore('_')
-            if (ownerId !in keep) child.delete()
+            if (child.name !in keepFiles) child.delete()
         }
         return retained
     }
 
     private fun artifactBytes(record: EvidenceRecord): Long =
-        artifactFile(record.id, "frame").length() +
-            artifactFile(record.id, "vehicle").length() +
-            artifactFile(record.id, "plate").length()
+        listOf(
+            artifactFile(record.frameSha256, "frame"),
+            artifactFile(record.vehicleCropSha256, "vehicle"),
+            artifactFile(record.plateCropSha256, "plate"),
+        ).filterNotNull().sumOf { it.length() }
 
-    private fun writeArtifact(id: String, kind: String, bytes: ByteArray) {
-        val target = artifactFile(id, kind)
+    private fun writeArtifact(sha: String, kind: String, bytes: ByteArray) {
+        val target = artifactFile(sha, kind) ?: error("Invalid artifact hash")
         val temporary = File(target.parentFile, target.name + ".tmp")
+        if (target.exists()) {
+            verifyFileHash(target, sha)
+            return
+        }
         try {
-            temporary.outputStream().use { output ->
+            FileOutputStream(temporary).use { output ->
                 output.write(bytes)
                 output.flush()
+                output.fd.sync()
             }
-            if (target.exists() && !target.delete()) throw IllegalStateException("Unable to replace evidence artifact ${target.name}")
-            if (!temporary.renameTo(target)) throw IllegalStateException("Unable to publish evidence artifact ${target.name}")
+            publish(temporary, target)
+            verifyFileHash(target, sha)
         } finally {
             if (temporary.exists()) temporary.delete()
         }
@@ -122,11 +153,28 @@ class FileEvidenceStore(
     private fun writeRecords(records: List<EvidenceRecord>) {
         val temporary = file.resolveSibling("$FILE_NAME.tmp")
         try {
-            temporary.writeText(JSONArray().apply { records.forEach { put(toJson(it)) } }.toString())
-            if (file.exists() && !file.delete()) throw IllegalStateException("Unable to replace existing evidence store")
-            if (!temporary.renameTo(file)) throw IllegalStateException("Unable to publish evidence store")
+            FileOutputStream(temporary).use { output ->
+                val bytes = JSONArray().apply { records.forEach { put(toJson(it)) } }.toString().toByteArray(Charsets.UTF_8)
+                output.write(bytes)
+                output.flush()
+                output.fd.sync()
+            }
+            publish(temporary, file)
         } finally {
             if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    private fun publish(temporary: File, target: File) {
+        try {
+            Files.move(
+                temporary.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
+            )
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
     }
 
@@ -146,7 +194,35 @@ class FileEvidenceStore(
         require(record.tracker.isNotBlank()) { "Evidence tracker must not be blank" }
         require(record.createdAtMs > 0L) { "Evidence createdAtMs must be positive" }
         listOf(record.frameSha256, record.vehicleCropSha256, record.plateCropSha256).forEach { hash ->
-            if (hash != null) require(hash.matches(Regex("^[0-9a-fA-F]{64}$"))) { "Invalid evidence SHA-256" }
+            if (hash != null) require(hash.matches(SHA256_REGEX)) { "Invalid evidence SHA-256" }
+        }
+    }
+
+    private fun verifyReferencedArtifacts(record: EvidenceRecord) {
+        verifyOptionalArtifact(record.frameSha256, "frame")
+        verifyOptionalArtifact(record.vehicleCropSha256, "vehicle")
+        verifyOptionalArtifact(record.plateCropSha256, "plate")
+    }
+
+    private fun verifyOptionalArtifact(sha: String?, kind: String) {
+        if (sha == null) return
+        val target = artifactFile(sha, kind) ?: error("Invalid artifact hash")
+        if (!target.isFile) throw IllegalStateException("Missing evidence artifact: ${target.name}")
+        verifyFileHash(target, sha)
+    }
+
+    private fun verifyFileHash(file: File, expectedSha: String) {
+        val actual = sha256(file.readBytes())
+        if (!actual.equals(expectedSha, ignoreCase = true)) {
+            throw IllegalStateException("Evidence artifact hash mismatch: ${file.name}")
+        }
+    }
+
+    private fun referencedArtifactNames(records: List<EvidenceRecord>): Set<String> = buildSet {
+        records.forEach { record ->
+            record.frameSha256?.let { add(artifactName(it, "frame")) }
+            record.vehicleCropSha256?.let { add(artifactName(it, "vehicle")) }
+            record.plateCropSha256?.let { add(artifactName(it, "plate")) }
         }
     }
 
@@ -196,16 +272,30 @@ class FileEvidenceStore(
         plateCropSha256 = json.optString("plateCropSha256").takeUnless { it.isBlank() || it == "null" },
     )
 
-    private fun artifactFile(id: String, kind: String): File = File(artifactDir, "${sanitize(id)}_${sanitize(kind)}.jpg")
+    private fun artifactFile(sha: String?, kind: String): File? = sha?.let { File(artifactDir, artifactName(it, kind)) }
 
-    private fun sanitize(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_").take(96)
+    private fun artifactName(sha: String, kind: String): String = "${sha.lowercase()}_${kind}.jpg"
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
         .digest(bytes)
         .joinToString("") { "%02x".format(it) }
 
+    private fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").let { digest ->
+        file.inputStream().use { input ->
+            val buffer = ByteArray(FILE_HASH_BUFFER_SIZE)
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
     private companion object {
         const val FILE_NAME = "traffic_evidence.json"
         const val ARTIFACT_DIR = "traffic_evidence"
+        const val FILE_HASH_BUFFER_SIZE = 64 * 1024
+        val SHA256_REGEX = Regex("^[0-9a-fA-F]{64}$")
     }
 }
