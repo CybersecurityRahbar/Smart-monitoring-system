@@ -9,6 +9,8 @@ data class AnalysisPreviewFrame(
     val tracks: List<Track>,
     val speedEstimates: Map<Long, SpeedEstimate>,
     val calibrated: Boolean,
+    /** Local recorded-video URI used by the independent playback surface; null for images/live. */
+    val videoUri: String? = null,
 )
 
 fun interface AnalysisPreviewObserver {
