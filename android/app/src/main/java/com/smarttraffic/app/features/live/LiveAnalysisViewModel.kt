@@ -94,7 +94,7 @@ class LiveAnalysisViewModel(application: android.app.Application) : AndroidViewM
                     _preview.value = frame
                     _state.value = _state.value.copy(
                         phase = LiveAnalysisPhase.RUNNING,
-                        droppedFrames = source?.droppedFrameCount() ?: 0L,
+                        droppedFrames = source?.droppedFrameCount ?: 0L,
                     )
                 }
                 val engine = ModularAnalysisEngine(
@@ -166,7 +166,7 @@ class LiveAnalysisViewModel(application: android.app.Application) : AndroidViewM
                             phase = LiveAnalysisPhase.STOPPED,
                             message = finalState.message,
                             accelerator = finalState.accelerator,
-                            droppedFrames = source?.droppedFrameCount() ?: 0L,
+                            droppedFrames = source?.droppedFrameCount ?: 0L,
                             result = finalState.result,
                         )
                     }
@@ -176,7 +176,7 @@ class LiveAnalysisViewModel(application: android.app.Application) : AndroidViewM
                             phase = LiveAnalysisPhase.ERROR,
                             message = finalState.message,
                             accelerator = finalState.accelerator,
-                            droppedFrames = source?.droppedFrameCount() ?: 0L,
+                            droppedFrames = source?.droppedFrameCount ?: 0L,
                             result = finalState.result,
                         )
                     }
@@ -186,7 +186,7 @@ class LiveAnalysisViewModel(application: android.app.Application) : AndroidViewM
                             phase = LiveAnalysisPhase.STOPPED,
                             message = finalState.message,
                             accelerator = finalState.accelerator,
-                            droppedFrames = source?.droppedFrameCount() ?: 0L,
+                            droppedFrames = source?.droppedFrameCount ?: 0L,
                             result = finalState.result,
                         )
                     }
