@@ -27,8 +27,9 @@ import java.util.concurrent.TimeUnit
  * Sequential MediaCodec-backed video source that preserves decoded presentation timestamps.
  *
  * Each returned frame uses MediaCodec.BufferInfo.presentationTimeUs. No timestamp is synthesized
- * from frame index or a nominal FPS. The ImageReader listener applies backpressure rather than
- * silently discarding decoded images when the bounded queue is full.
+ * from frame index or a nominal FPS. The output surface timestamp is explicitly set to that same
+ * media timestamp in nanoseconds before the image is rendered, allowing the ImageReader timestamp
+ * check to validate the binding instead of assuming unrelated timebases are comparable.
  */
 class ExactPtsVideoFrameSource(
     private val context: Context,
@@ -114,13 +115,17 @@ class ExactPtsVideoFrameSource(
                 outputIndex >= 0 -> {
                     val presentationTimeUs = bufferInfo.presentationTimeUs
                     val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                    decoder.releaseOutputBuffer(outputIndex, true)
+                    require(presentationTimeUs >= 0L) {
+                        "Decoder returned invalid presentation timestamp=$presentationTimeUs us"
+                    }
+                    val presentationTimestampNs = presentationTimeUs * 1000L
+                    decoder.releaseOutputBuffer(outputIndex, presentationTimestampNs)
 
                     val image = acquireRenderedImage(presentationTimeUs, isEos)
                     if (image != null) {
                         try {
                             validatePresentationTimestamp(presentationTimeUs)
-                            validateImageTimestamp(image, presentationTimeUs)
+                            validateImageTimestamp(image, presentationTimestampNs)
                             val bitmap = imageToBitmap(image)
                             val result = AnalysisFrame(
                                 index = frameIndex++,
@@ -179,21 +184,19 @@ class ExactPtsVideoFrameSource(
     }
 
     private fun validatePresentationTimestamp(presentationTimeUs: Long) {
-        require(presentationTimeUs >= 0L) { "Decoder returned invalid presentation timestamp=$presentationTimeUs us" }
         require(lastPresentationTimeUs < 0L || presentationTimeUs >= lastPresentationTimeUs) {
             "Decoder returned non-monotonic presentation timestamp=$presentationTimeUs us after $lastPresentationTimeUs us"
         }
         lastPresentationTimeUs = presentationTimeUs
     }
 
-    private fun validateImageTimestamp(image: Image, presentationTimeUs: Long) {
+    private fun validateImageTimestamp(image: Image, presentationTimestampNs: Long) {
         val imageTimestampNs = image.timestamp
-        if (imageTimestampNs <= 0L || presentationTimeUs <= 0L) return
-        val presentationTimestampNs = presentationTimeUs * 1000L
+        if (imageTimestampNs <= 0L || presentationTimestampNs <= 0L) return
         val absoluteDeltaNs = kotlin.math.abs(imageTimestampNs - presentationTimestampNs)
         val toleranceNs = 5_000_000L
         require(absoluteDeltaNs <= toleranceNs) {
-            "ImageReader timestamp mismatch: image=${imageTimestampNs}ns decoder=${presentationTimestampNs}ns"
+            "ImageReader timestamp mismatch: image=${imageTimestampNs}ns decoderSurface=$presentationTimestampNs ns"
         }
     }
 
