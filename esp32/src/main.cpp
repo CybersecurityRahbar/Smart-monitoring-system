@@ -2,14 +2,18 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <esp_camera.h>
-#include <esp_timer.h>
+
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#define SMARTTRAFFIC_WIFI_SSID ""
+#define SMARTTRAFFIC_WIFI_PASSWORD ""
+#define SMARTTRAFFIC_AP_SSID "SmartTraffic-CAM"
+#define SMARTTRAFFIC_AP_PASSWORD "smarttraffic"
+#endif
 
 namespace {
 
-constexpr char kSsid[] = "SMART_TRAFFIC_WIFI";
-constexpr char kPassword[] = "CHANGE_ME";
-constexpr char kApSsid[] = "SmartTraffic-CAM";
-constexpr char kApPassword[] = "smarttraffic";
 constexpr uint16_t kHttpPort = 80;
 constexpr uint32_t kFrameIntervalMs = 66;  // ~15 FPS request ceiling.
 
@@ -62,16 +66,14 @@ framesize_t currentFrameSize = FRAMESIZE_VGA;
 
 String jsonStatus() {
   const sensor_t* sensor = esp_camera_sensor_get();
-  const uint32_t heap = ESP.getFreeHeap();
-  const uint32_t psram = ESP.getFreePsram();
   String json = "{";
   json += "\"service\":\"smart-traffic-camera\",";
   json += "\"stream\":\"/stream\",";
   json += "\"capture\":\"/capture\",";
   json += "\"control\":\"/control\",";
   json += "\"uptime_ms\":" + String(millis()) + ",";
-  json += "\"free_heap\":" + String(heap) + ",";
-  json += "\"free_psram\":" + String(psram) + ",";
+  json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
+  json += "\"free_psram\":" + String(ESP.getFreePsram()) + ",";
   json += "\"frames_served\":" + String(framesServed) + ",";
   json += "\"framesize\":" + String(static_cast<int>(currentFrameSize)) + ",";
   json += "\"width\":" + String(sensor ? sensor->status.width : 0) + ",";
@@ -115,16 +117,28 @@ bool initializeCamera() {
   }
 
   sensor_t* sensor = esp_camera_sensor_get();
-  if (sensor != nullptr) {
-#if defined(SMARTTRAFFIC_CAMERA_S3_N16R8)
-    sensor->set_framesize(sensor, FRAMESIZE_VGA);
-#else
-    sensor->set_framesize(sensor, FRAMESIZE_VGA);
-#endif
-    sensor->set_quality(sensor, 10);
-    currentFrameSize = FRAMESIZE_VGA;
+  if (sensor == nullptr) {
+    Serial.println("Camera sensor handle unavailable");
+    esp_camera_deinit();
+    return false;
   }
+  sensor->set_framesize(sensor, FRAMESIZE_VGA);
+  sensor->set_quality(sensor, 10);
+  currentFrameSize = FRAMESIZE_VGA;
   return true;
+}
+
+bool writeFully(WiFiClient& client, const uint8_t* data, size_t length) {
+  size_t offset = 0;
+  while (offset < length && client.connected()) {
+    const size_t written = client.write(data + offset, length - offset);
+    if (written == 0) {
+      delay(1);
+      continue;
+    }
+    offset += written;
+  }
+  return offset == length;
 }
 
 void sendJpegFrame() {
@@ -135,9 +149,10 @@ void sendJpegFrame() {
     return;
   }
 
+  const size_t length = frame->len;
   server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   server.sendHeader("Pragma", "no-cache");
-  server.send_P(200, "image/jpeg", reinterpret_cast<const char*>(frame->buf), frame->len);
+  server.send_P(200, "image/jpeg", reinterpret_cast<const char*>(frame->buf), length);
   esp_camera_fb_return(frame);
   framesServed++;
 }
@@ -167,6 +182,10 @@ void handleControl() {
     return;
   }
   if (action == "quality") {
+    if (!server.hasArg("value")) {
+      server.send(400, "application/json", "{\"error\":\"missing value\"}");
+      return;
+    }
     const int quality = server.arg("value").toInt();
     if (quality < 5 || quality > 63) {
       server.send(400, "application/json", "{\"error\":\"quality must be 5..63\"}");
@@ -206,37 +225,39 @@ void handleStream() {
       break;
     }
 
-    client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", frame->len);
-    const size_t written = client.write(frame->buf, frame->len);
-    client.print("\r\n");
+    const size_t length = frame->len;
+    client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", static_cast<unsigned>(length));
+    const bool bodyWritten = writeFully(client, frame->buf, length);
+    if (bodyWritten) client.print("\r\n");
     esp_camera_fb_return(frame);
     framesServed++;
-    if (written != frame->len) break;
-    if (!client.connected()) break;
+    if (!bodyWritten) break;
   }
 }
 
 void connectNetwork() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(kSsid, kPassword);
-  const uint32_t deadline = millis() + 12000;
-  while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-    delay(250);
-    Serial.print('.');
-  }
-  Serial.println();
+  if (strlen(SMARTTRAFFIC_WIFI_SSID) > 0) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(SMARTTRAFFIC_WIFI_SSID, SMARTTRAFFIC_WIFI_PASSWORD);
+    const uint32_t deadline = millis() + 12000;
+    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+      delay(250);
+      Serial.print('.');
+    }
+    Serial.println();
 
-  if (WiFi.status() == WL_CONNECTED) {
-    apMode = false;
-    Serial.print("STA IP: ");
-    Serial.println(WiFi.localIP());
-    return;
+    if (WiFi.status() == WL_CONNECTED) {
+      apMode = false;
+      Serial.print("STA IP: ");
+      Serial.println(WiFi.localIP());
+      return;
+    }
   }
 
   WiFi.disconnect(true, true);
   delay(100);
   WiFi.mode(WIFI_AP);
-  const bool started = WiFi.softAP(kApSsid, kApPassword);
+  const bool started = WiFi.softAP(SMARTTRAFFIC_AP_SSID, SMARTTRAFFIC_AP_PASSWORD);
   apMode = started;
   Serial.print("AP mode: ");
   Serial.println(started ? WiFi.softAPIP() : IPAddress(0, 0, 0, 0));
@@ -256,7 +277,7 @@ void setup() {
   connectNetwork();
 
   server.on("/", HTTP_GET, []() {
-    server.send(200, "text/plain; charset=utf-8", "Smart Traffic Camera\n/stream\n/capture\n/status\n/control?action=flash&on=1\n");
+    server.send(200, "text/plain; charset=utf-8", "Smart Traffic Camera\n/stream\n/capture\n/status\n/control?action=flash&on=1\n/control?action=quality&value=10\n");
   });
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/capture", HTTP_GET, handleCapture);
