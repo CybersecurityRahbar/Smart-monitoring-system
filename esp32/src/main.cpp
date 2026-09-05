@@ -16,6 +16,8 @@ namespace {
 
 constexpr uint16_t kHttpPort = 80;
 constexpr uint32_t kFrameIntervalMs = 66;  // ~15 FPS request ceiling.
+constexpr uint16_t kConfiguredWidth = 640;
+constexpr uint16_t kConfiguredHeight = 480;
 
 WebServer server(kHttpPort);
 volatile bool apMode = false;
@@ -65,7 +67,6 @@ framesize_t currentFrameSize = FRAMESIZE_VGA;
 #endif
 
 String jsonStatus() {
-  const sensor_t* sensor = esp_camera_sensor_get();
   String json = "{";
   json += "\"service\":\"smart-traffic-camera\",";
   json += "\"stream\":\"/stream\",";
@@ -76,8 +77,8 @@ String jsonStatus() {
   json += "\"free_psram\":" + String(ESP.getFreePsram()) + ",";
   json += "\"frames_served\":" + String(framesServed) + ",";
   json += "\"framesize\":" + String(static_cast<int>(currentFrameSize)) + ",";
-  json += "\"width\":" + String(sensor ? sensor->status.width : 0) + ",";
-  json += "\"height\":" + String(sensor ? sensor->status.height : 0) + ",";
+  json += "\"width\":" + String(kConfiguredWidth) + ",";
+  json += "\"height\":" + String(kConfiguredHeight) + ",";
   json += "\"ap_mode\":" + String(apMode ? "true" : "false");
   json += "}";
   return json;
