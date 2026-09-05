@@ -24,10 +24,14 @@ import java.util.concurrent.atomic.AtomicReference
  * The source owns its producer scope and keeps exactly one pending frame. A newer frame replaces
  * an unconsumed pending frame, so inference latency can never create an unbounded queue. Analysis
  * timestamps use local monotonic arrival time; those timestamps do not unlock physical speed.
+ *
+ * [legacyScope] is accepted for source compatibility only and is deliberately not used for the
+ * producer lifecycle; closing this source always owns cancellation of its producer.
  */
 class MjpegFrameSource(
     private val url: String,
     private val client: MjpegStreamClient = MjpegStreamClient(),
+    @Suppress("UNUSED_PARAMETER") legacyScope: CoroutineScope? = null,
 ) : FrameSource {
     private val latest = AtomicReference<FramePacket?>(null)
     private val wake = Channel<Unit>(capacity = Channel.CONFLATED)
