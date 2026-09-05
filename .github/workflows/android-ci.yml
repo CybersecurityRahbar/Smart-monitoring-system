@@ -54,18 +54,23 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
+      - name: Compile Android instrumentation APK
+        run: gradle :app:assembleDebugAndroidTest --stacktrace
+
       - name: Run unit tests
         run: gradle :app:testDebugUnitTest --stacktrace
 
       - name: Run Android Lint
         run: gradle :app:lintDebug --stacktrace
 
-      - name: Upload debug APK
+      - name: Upload debug APKs
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: smart-traffic-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          name: smart-traffic-debug-apks
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/outputs/apk/androidTest/debug/*.apk
           if-no-files-found: error
           retention-days: 14
 
