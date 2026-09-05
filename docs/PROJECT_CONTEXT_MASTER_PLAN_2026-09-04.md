@@ -45,6 +45,23 @@ Live MJPEG uses `LOCAL_MONOTONIC_ARRIVAL` timestamps, so physical live speed rem
 
 `LocalImageFrameSource` and local video sources have bounded ownership/cleanup. Preview rendering must never determine analysis throughput.
 
+## Local laboratory playback architecture — 2026-09-05
+The previous local-lab video symptom was traced to an architectural coupling: `LocalVideoFrameSource.nextFrame()` feeds the detector/tracker pipeline sequentially, and the UI preview was receiving decoded bitmaps from that same analysis-driven stream. Therefore, when CPU inference was slower than the video's nominal FPS, the displayed video advanced at analysis speed instead of the video's natural playback clock. This was confirmed by repository inspection: the pipeline calls `source.nextFrame()`, runs detector/tracker work, then emits the preview; there was no independent playback clock for the displayed video.
+
+This is not fixed by reducing detector quality or skipping analysis frames. The required architecture is to separate media presentation from AI processing. Web research corroborates this design: Android Media3/ExoPlayer provides `PlayerView` for media playback and supports explicit `surface_type` selection including `texture_view`, while real-time YOLO implementations commonly separate inference and display so slow inference does not control playback. Official Android Media3 documentation was checked for the current 1.11.0 line and PlayerView/surface behavior; the realtime-yolov5-detection repository was used as a concrete corroborating architecture example.
+
+Implementation added in the current pass:
+- `androidx.media3:media3-exoplayer:1.11.0` and `androidx.media3:media3-ui:1.11.0` dependencies.
+- `AnalysisVideoPlayback.kt` with an independent ExoPlayer presentation clock. The AI pipeline does not control video playback speed.
+- `view_analysis_player.xml` using Media3 `PlayerView` with `surface_type="texture_view"` so the Compose/Canvas tracking overlay can render reliably above the video surface.
+- `AnalysisPreviewFrame.videoUri` carries the exact selected local video source for playback.
+- `LocalAnalysisViewModel` attaches the selected URI to video previews without changing detector/tracker configuration or lowering inference quality.
+- The video overlay reads ExoPlayer `currentPosition` and interpolates bounding boxes between timestamped track observations; it uses short-horizon extrapolation when playback is slightly ahead, keeping the visual tracking motion smooth without altering the underlying tracking data.
+- Vehicle tracking boxes in the visual preview use fluorescent green `#39FF14` with a 4px stroke. Labels remain white with a black shadow for readability.
+- Image analysis remains on the existing bitmap preview path; only recorded-video previews use the independent player.
+
+Important limitation of the architecture: an independent playback clock guarantees that video playback itself is not slowed by inference. Exact frame-by-frame radar synchronization on every device still depends on the analysis throughput being able to keep sufficiently close to the playback clock. No arbitrary detector quality reduction or inference frame skipping was introduced to manufacture synchronization. A production-grade physical device benchmark is still required.
+
 ## ANPR
 Required real pipeline:
 `vehicle -> plate detector -> bounded crop -> perspective correction -> plate-quality gate -> OCR -> normalization -> plate-format validation -> temporal consensus -> evidence`.
@@ -93,18 +110,32 @@ Fixed by adding `private val result: AnalysisResult` to `BlockingEngine` and pas
 `1165b2dc64f41f1764f18a1dc50f1e29a452b009`
 Message: `test: fix UnifiedAnalysisSession blocking engine test fixture`.
 
-## CI Run #400 — current verification state
-Run #400 is `33975048887`, triggered by commit `1165b2dc64f41f1764f18a1dc50f1e29a452b009`.
+## CI Run #400 and #401 verification
+Run #400 was `33975048887` from commit `1165b2dc...`; Native parity, Research Math, and both ESP32 firmware targets succeeded, and its Android job was still in progress when it was superseded by the documentation commit.
 
-Verified completed successfully so far:
-- Native C++ Parity Vectors: success.
-- Validate Offline Research Math: success.
-- Build ESP32 Camera Firmware: success for both AI-Thinker ESP32-CAM and ESP32-S3-N16R8 targets.
+Run #401 was `33975138919` from `3fe3b98...` and completed successfully across Android Build & Test, Android instrumentation APK compilation, unit tests, lint, Native C++ parity, Research Math, and both ESP32 firmware targets.
 
-Android `Build & Test Android` is still running at the time of this record; therefore Android unit tests, lint, instrumentation APK compilation, APK publication, and final combined CI status for this exact SHA must not yet be called green.
+## Local playback decoupling CI verification target
+The local playback pass introduced the following sequential commits:
+- `399be09efacca68da09be3058db275bfc199fc90`: initial independent Media3 playback composable.
+- `130ee297128ac240de35224ccfb47f57b8451b96`: Media3 ExoPlayer/UI dependencies.
+- `c1128680b678728e14d56eb2d82557aa6843cca8`: local analysis preview wired to the independent video player.
+- `f416044fff771b0d57e93663de8739e21e2f3a97`: `videoUri` added to `AnalysisPreviewFrame`.
+- `7b13f29c886dab0a3241b1070e6328cc68e86928`: local video preview attaches the selected URI.
+- `3aeaabc80d5a029138a13fa92c5c95e5f52cebba`: texture-view player layout added.
+- `b0bd913661cc4f960008f1d57b569219d9602194`: final Media3 texture-view binding cleanup.
 
-## Current next practical phase after CI gate
-Once the exact current HEAD is green, proceed in order with physical APK installation, local image detection, local video detection/tracking and stable IDs, real rule alerts, evidence artifact verification, reproduce/diagnose the historical process-death issue on an actual device, exact-PTS calibrated media tests, then ESP32 hardware/stream integration. ANPR/OCR comes only after a real licensed backend is selected and tested.
+CI Run #411 (`33981920129`) is the current verification run for `b0bd913...`. At the time this document update began, Native/Research had already progressed successfully and Android/ESP32 were still running. No full green claim is recorded until the exact current SHA finishes successfully.
+
+## Current next practical phase
+After the local playback decoupling code is proven green by CI, the next practical test is physical APK installation and the local lab:
+1. select a normal recorded traffic video;
+2. run Detect + Track without enabling calibrated speed;
+3. verify that the video runs at its original playback rate rather than analysis speed;
+4. verify fluorescent-green stable Track IDs over moving vehicles;
+5. inspect measured Processing FPS, frame gaps, track recoveries, and crash diagnostics;
+6. repeat with multiple clips and a longer clip;
+7. only after local stability is proven, proceed to calibrated exact-PTS speed testing and then ESP32 hardware integration.
 
 ## Non-negotiable honesty rules
 No map integration unless explicitly requested; previous map integration caused UI/display problems and is intentionally excluded.
