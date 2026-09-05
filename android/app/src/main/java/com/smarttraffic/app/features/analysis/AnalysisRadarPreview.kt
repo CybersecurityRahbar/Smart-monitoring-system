@@ -43,6 +43,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
+import com.smarttraffic.app.domain.analysis.RadarBounds
 import com.smarttraffic.app.domain.analysis.Track
 import kotlin.math.max
 
@@ -224,10 +225,10 @@ private fun VideoFrameWithTracks(
                     ?: track.observations.lastOrNull()
                     ?: return@forEach
                 val d = observation.detection
-                val left = offsetX + d.left * scale
-                val top = offsetY + d.top * scale
-                val right = offsetX + d.right * scale
-                val bottom = offsetY + d.bottom * scale
+                val left = offsetX + d.left.coerceIn(0f, sourceWidth) * scale
+                val top = offsetY + d.top.coerceIn(0f, sourceHeight) * scale
+                val right = offsetX + d.right.coerceIn(0f, sourceWidth) * scale
+                val bottom = offsetY + d.bottom.coerceIn(0f, sourceHeight) * scale
                 drawRoundRect(
                     color = trackColor,
                     topLeft = Offset(left, top),
@@ -290,6 +291,16 @@ private fun RadarPanel(
                         drawLine(outline, Offset(0f, y), Offset(size.width, y), 1f, cap = StrokeCap.Round)
                     }
 
+                    val bounds = preview.radarBounds
+                    val safeBounds = bounds ?: RadarBounds(
+                        0.0,
+                        preview.frame.width.toDouble().coerceAtLeast(1.0),
+                        0.0,
+                        preview.frame.height.toDouble().coerceAtLeast(1.0),
+                    )
+                    val rangeX = safeBounds.maxX - safeBounds.minX
+                    val rangeY = safeBounds.maxY - safeBounds.minY
+
                     val points = preview.tracks.mapNotNull { track ->
                         val o = track.observations.lastOrNull { it.frameIndex == preview.frame.index }
                             ?: track.observations.lastOrNull()
@@ -299,9 +310,11 @@ private fun RadarPanel(
                             RadarPoint(track, ground.xMeters, ground.yMeters)
                         } else {
                             val d = o.detection
-                            val x = ((d.left + d.right) * 0.5 / preview.frame.width) * 100.0
-                            val y = (1.0 - d.bottom / preview.frame.height.toDouble()) * 100.0
-                            RadarPoint(track, x, y)
+                            RadarPoint(
+                                track,
+                                (d.left + d.right) * 0.5,
+                                d.bottom.toDouble(),
+                            )
                         }
                     }
 
@@ -312,65 +325,62 @@ private fun RadarPanel(
                         setShadowLayer(5f, 0f, 2f, android.graphics.Color.BLACK)
                     }
 
-                    if (points.isNotEmpty()) {
-                        val minX = points.minOf { it.x }
-                        val maxX = points.maxOf { it.x }
-                        val minY = points.minOf { it.y }
-                        val maxY = points.maxOf { it.y }
-                        val rangeX = max(maxX - minX, 1e-6)
-                        val rangeY = max(maxY - minY, 1e-6)
+                    fun toCanvasX(value: Double): Float = (
+                        ((value - safeBounds.minX) / rangeX).coerceIn(0.0, 1.0) * 0.82 + 0.09
+                    ).toFloat() * size.width
 
-                        points.forEach { point ->
-                            val history = point.track.observations
-                                .takeLast(12)
-                                .mapNotNull { o ->
-                                    val g = o.groundPoint
-                                    if (g != null) {
-                                        RadarPoint(point.track, g.xMeters, g.yMeters)
-                                    } else {
-                                        val d = o.detection
-                                        RadarPoint(
-                                            point.track,
-                                            ((d.left + d.right) * 0.5 / preview.frame.width) * 100.0,
-                                            (1.0 - d.bottom / preview.frame.height.toDouble()) * 100.0,
-                                        )
-                                    }
-                                }
-                            if (history.size > 1) {
-                                for (i in 1 until history.size) {
-                                    val a = history[i - 1]
-                                    val b = history[i]
-                                    val ax = (((a.x - minX) / rangeX) * 0.82 + 0.09) * size.width
-                                    val ay = ((1.0 - (a.y - minY) / rangeY) * 0.82 + 0.09) * size.height
-                                    val bx = (((b.x - minX) / rangeX) * 0.82 + 0.09) * size.width
-                                    val by = ((1.0 - (b.y - minY) / rangeY) * 0.82 + 0.09) * size.height
-                                    drawLine(
-                                        primary.copy(alpha = 0.18f + (i.toFloat() / history.lastIndex) * 0.52f),
-                                        Offset(ax.toFloat(), ay.toFloat()),
-                                        Offset(bx.toFloat(), by.toFloat()),
-                                        strokeWidth = 3f,
-                                        cap = StrokeCap.Round,
-                                    )
+                    fun toCanvasY(value: Double): Float = (
+                        ((value - safeBounds.minY) / rangeY).coerceIn(0.0, 1.0) * 0.82 + 0.09
+                    ).toFloat() * size.height
+
+                    points.forEach { point ->
+                        val history = point.track.observations
+                            .takeLast(12)
+                            .mapNotNull { o ->
+                                val g = o.groundPoint
+                                if (preview.calibrated && g != null) {
+                                    RadarPoint(point.track, g.xMeters, g.yMeters)
+                                } else {
+                                    val d = o.detection
+                                    RadarPoint(point.track, (d.left + d.right) * 0.5, d.bottom.toDouble())
                                 }
                             }
-
-                            val px = (((point.x - minX) / rangeX) * 0.82 + 0.09) * size.width
-                            val py = ((1.0 - (point.y - minY) / rangeY) * 0.82 + 0.09) * size.height
-                            drawCircle(primary, 8f, Offset(px.toFloat(), py.toFloat()))
-                            drawCircle(background, 8f, Offset(px.toFloat(), py.toFloat()), style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
-                            drawContext.canvas.nativeCanvas.drawText(
-                                "#${point.track.id}",
-                                (px + 10.0).toFloat(),
-                                (py - 10.0).toFloat().coerceAtLeast(24f),
-                                labelPaint,
-                            )
+                        if (history.size > 1) {
+                            for (i in 1 until history.size) {
+                                val a = history[i - 1]
+                                val b = history[i]
+                                drawLine(
+                                    primary.copy(alpha = 0.18f + (i.toFloat() / history.lastIndex) * 0.52f),
+                                    Offset(toCanvasX(a.x), toCanvasY(a.y)),
+                                    Offset(toCanvasX(b.x), toCanvasY(b.y)),
+                                    strokeWidth = 3f,
+                                    cap = StrokeCap.Round,
+                                )
+                            }
                         }
+
+                        val px = toCanvasX(point.x)
+                        val py = toCanvasY(point.y)
+                        drawCircle(primary, 8f, Offset(px, py))
+                        drawCircle(background, 8f, Offset(px, py), style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
+                        drawContext.canvas.nativeCanvas.drawText(
+                            "#${point.track.id}",
+                            (px + 10f),
+                            (py - 10f).coerceAtLeast(24f),
+                            labelPaint,
+                        )
                     }
                 }
             }
             if (!preview.calibrated) {
                 Text(
-                    "Radar follows tracked history. Metric position and speed remain blocked until validated road calibration is supplied.",
+                    "Image-space radar uses the same pixel coordinate system as the video: X increases right, Y increases downward. Metric position and speed remain blocked until validated road calibration is supplied.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    "Metric radar uses the fixed coordinate bounds of the calibrated image. It does not rescale when vehicles enter or leave the scene.",
                     style = MaterialTheme.typography.bodySmall,
                     color = onSurfaceVariant,
                 )
