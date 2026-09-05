@@ -1,25 +1,56 @@
 package com.smarttraffic.app.data.evidence
 
 import android.content.Context
+import com.smarttraffic.app.domain.analysis.EvidenceArtifacts
 import com.smarttraffic.app.domain.analysis.EvidenceRecord
 import com.smarttraffic.app.domain.analysis.EvidenceStore
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.security.MessageDigest
+import kotlin.math.min
 
 /**
- * Small durable local evidence vault. Records contain source/time/frame references rather
- * than opaque UI state, so a local-video frame can be deterministically re-opened later.
+ * Durable local evidence vault with metadata plus bounded JPEG artifacts.
+ *
+ * Each artifact is written to a temporary file and published before the metadata index is updated.
+ * A retention cap prevents a long-running project from filling the device indefinitely.
  */
-class FileEvidenceStore(context: Context) : EvidenceStore {
+class FileEvidenceStore(
+    context: Context,
+    private val maxRecords: Int = 256,
+    private val maxTotalArtifactBytes: Long = 256L * 1024L * 1024L,
+) : EvidenceStore {
     private val file = context.getFileStreamPath(FILE_NAME)
+    private val artifactDir = context.getDir(ARTIFACT_DIR, Context.MODE_PRIVATE)
 
-    override suspend fun save(record: EvidenceRecord): EvidenceRecord {
+    init {
+        require(maxRecords >= 1) { "maxRecords must be >= 1" }
+        require(maxTotalArtifactBytes >= 1L) { "maxTotalArtifactBytes must be positive" }
+    }
+
+    override suspend fun save(record: EvidenceRecord, artifacts: EvidenceArtifacts?): EvidenceRecord {
         validateRecord(record)
-        val records = readRecords().toMutableList()
-        records.removeAll { it.id == record.id }
-        records += record
-        writeRecords(records.sortedByDescending { it.createdAtMs })
-        return record
+        val current = readRecords().filterNot { it.id == record.id }.toMutableList()
+
+        val persisted = if (artifacts != null) {
+            val frameSha = sha256(artifacts.frameJpeg)
+            val vehicleSha = sha256(artifacts.vehicleCropJpeg)
+            val plateSha = artifacts.plateCropJpeg?.let(::sha256)
+            writeArtifact(record.id, "frame", artifacts.frameJpeg)
+            writeArtifact(record.id, "vehicle", artifacts.vehicleCropJpeg)
+            if (artifacts.plateCropJpeg != null) writeArtifact(record.id, "plate", artifacts.plateCropJpeg)
+            record.copy(
+                frameSha256 = frameSha,
+                vehicleCropSha256 = vehicleSha,
+                plateCropSha256 = plateSha,
+            )
+        } else record
+
+        current += persisted
+        val retained = enforceRetention(current.sortedByDescending { it.createdAtMs })
+        writeRecords(retained)
+        return persisted
     }
 
     override suspend fun list(): List<EvidenceRecord> = readRecords()
@@ -27,6 +58,9 @@ class FileEvidenceStore(context: Context) : EvidenceStore {
     override suspend fun clear() {
         if (file.exists() && !file.delete()) {
             throw IllegalStateException("Unable to delete evidence store: ${file.absolutePath}")
+        }
+        artifactDir.listFiles()?.forEach { child ->
+            if (!child.delete()) throw IllegalStateException("Unable to delete evidence artifact: ${child.absolutePath}")
         }
     }
 
@@ -42,10 +76,46 @@ class FileEvidenceStore(context: Context) : EvidenceStore {
                 }
             }.sortedByDescending { it.createdAtMs }
         } catch (error: Throwable) {
-            throw IllegalStateException(
-                "Evidence store is unreadable: ${file.absolutePath}",
-                error,
-            )
+            throw IllegalStateException("Evidence store is unreadable: ${file.absolutePath}", error)
+        }
+    }
+
+    private fun enforceRetention(records: List<EvidenceRecord>): List<EvidenceRecord> {
+        val retained = ArrayList<EvidenceRecord>(min(records.size, maxRecords))
+        var totalBytes = 0L
+        for (record in records.sortedByDescending { it.createdAtMs }) {
+            if (retained.size >= maxRecords) continue
+            val bytes = artifactBytes(record)
+            if (retained.isNotEmpty() && totalBytes + bytes > maxTotalArtifactBytes) continue
+            retained += record
+            totalBytes += bytes
+        }
+
+        val keep = retained.asSequence().map { it.id }.toSet()
+        artifactDir.listFiles()?.forEach { child ->
+            val ownerId = child.name.substringBefore('_')
+            if (ownerId !in keep) child.delete()
+        }
+        return retained
+    }
+
+    private fun artifactBytes(record: EvidenceRecord): Long =
+        artifactFile(record.id, "frame").length() +
+            artifactFile(record.id, "vehicle").length() +
+            artifactFile(record.id, "plate").length()
+
+    private fun writeArtifact(id: String, kind: String, bytes: ByteArray) {
+        val target = artifactFile(id, kind)
+        val temporary = File(target.parentFile, target.name + ".tmp")
+        try {
+            temporary.outputStream().use { output ->
+                output.write(bytes)
+                output.flush()
+            }
+            if (target.exists() && !target.delete()) throw IllegalStateException("Unable to replace evidence artifact ${target.name}")
+            if (!temporary.renameTo(target)) throw IllegalStateException("Unable to publish evidence artifact ${target.name}")
+        } finally {
+            if (temporary.exists()) temporary.delete()
         }
     }
 
@@ -53,12 +123,8 @@ class FileEvidenceStore(context: Context) : EvidenceStore {
         val temporary = file.resolveSibling("$FILE_NAME.tmp")
         try {
             temporary.writeText(JSONArray().apply { records.forEach { put(toJson(it)) } }.toString())
-            if (file.exists() && !file.delete()) {
-                throw IllegalStateException("Unable to replace existing evidence store")
-            }
-            if (!temporary.renameTo(file)) {
-                throw IllegalStateException("Unable to atomically publish evidence store")
-            }
+            if (file.exists() && !file.delete()) throw IllegalStateException("Unable to replace existing evidence store")
+            if (!temporary.renameTo(file)) throw IllegalStateException("Unable to publish evidence store")
         } finally {
             if (temporary.exists()) temporary.delete()
         }
@@ -72,19 +138,16 @@ class FileEvidenceStore(context: Context) : EvidenceStore {
         require(record.frameIndex >= 0L) { "Evidence frameIndex must be non-negative" }
         require(record.timestampMs >= 0L) { "Evidence timestampMs must be non-negative" }
         require(record.eventType.isNotBlank()) { "Evidence eventType must not be blank" }
-        require(record.measuredSpeedKmh.isFinite() && record.measuredSpeedKmh >= 0.0) {
-            "Evidence speed must be finite and non-negative"
-        }
-        require(record.thresholdKmh.isFinite() && record.thresholdKmh > 0.0) {
-            "Evidence threshold must be finite and positive"
-        }
-        require(record.confidence.isFinite() && record.confidence in 0f..1f) {
-            "Evidence confidence must be within [0,1]"
-        }
+        require(record.measuredSpeedKmh.isFinite() && record.measuredSpeedKmh >= 0.0) { "Evidence speed must be finite and non-negative" }
+        require(record.thresholdKmh.isFinite() && record.thresholdKmh > 0.0) { "Evidence threshold must be finite and positive" }
+        require(record.confidence.isFinite() && record.confidence in 0f..1f) { "Evidence confidence must be within [0,1]" }
         require(record.trackId > 0L) { "Evidence trackId must be positive" }
         require(record.detectorModel.isNotBlank()) { "Evidence detectorModel must not be blank" }
         require(record.tracker.isNotBlank()) { "Evidence tracker must not be blank" }
         require(record.createdAtMs > 0L) { "Evidence createdAtMs must be positive" }
+        listOf(record.frameSha256, record.vehicleCropSha256, record.plateCropSha256).forEach { hash ->
+            if (hash != null) require(hash.matches(Regex("^[0-9a-fA-F]{64}$"))) { "Invalid evidence SHA-256" }
+        }
     }
 
     private fun toJson(record: EvidenceRecord): JSONObject = JSONObject().apply {
@@ -105,6 +168,9 @@ class FileEvidenceStore(context: Context) : EvidenceStore {
         put("detectorModel", record.detectorModel)
         put("tracker", record.tracker)
         put("createdAtMs", record.createdAtMs)
+        put("frameSha256", record.frameSha256 ?: JSONObject.NULL)
+        put("vehicleCropSha256", record.vehicleCropSha256 ?: JSONObject.NULL)
+        put("plateCropSha256", record.plateCropSha256 ?: JSONObject.NULL)
     }
 
     private fun fromJson(json: JSONObject): EvidenceRecord = EvidenceRecord(
@@ -125,9 +191,21 @@ class FileEvidenceStore(context: Context) : EvidenceStore {
         detectorModel = json.getString("detectorModel"),
         tracker = json.getString("tracker"),
         createdAtMs = json.getLong("createdAtMs"),
+        frameSha256 = json.optString("frameSha256").takeUnless { it.isBlank() || it == "null" },
+        vehicleCropSha256 = json.optString("vehicleCropSha256").takeUnless { it.isBlank() || it == "null" },
+        plateCropSha256 = json.optString("plateCropSha256").takeUnless { it.isBlank() || it == "null" },
     )
+
+    private fun artifactFile(id: String, kind: String): File = File(artifactDir, "${sanitize(id)}_${sanitize(kind)}.jpg")
+
+    private fun sanitize(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_").take(96)
+
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+        .digest(bytes)
+        .joinToString("") { "%02x".format(it) }
 
     private companion object {
         const val FILE_NAME = "traffic_evidence.json"
+        const val ARTIFACT_DIR = "traffic_evidence"
     }
 }
