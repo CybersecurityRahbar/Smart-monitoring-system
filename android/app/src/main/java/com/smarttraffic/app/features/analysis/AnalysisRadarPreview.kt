@@ -49,8 +49,8 @@ import kotlin.math.max
 @Composable
 fun AnalysisRadarPreview(
     preview: AnalysisPreviewFrame?,
-    videoUri: Uri? = null,
     modifier: Modifier = Modifier,
+    videoUri: Uri? = null,
 ) {
     if (preview == null) return
 
