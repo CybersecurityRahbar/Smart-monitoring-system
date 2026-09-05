@@ -13,7 +13,7 @@ import kotlin.math.min
 import kotlin.math.roundToLong
 
 /**
- * FrameSource for local video/image URIs selected by the Analysis Lab.
+ * FrameSource for local video URIs selected by the Analysis Lab.
  *
  * API 28+ videos with frame-count metadata are decoded in small sequential batches. Android
  * recommends getFramesAtIndex() when several consecutive frames are required; this reduces
@@ -151,32 +151,5 @@ class LocalVideoFrameSource(
         finished = true
         pendingFrames.clear()
         retriever.release()
-    }
-}
-
-/** Minimal still-image FrameSource for one-frame Lab experiments. */
-class LocalImageFrameSource(
-    private val bitmap: Bitmap,
-    private val sourceUri: String,
-) : FrameSource {
-    private var emitted = false
-
-    override val source: MediaSource = MediaSource(
-        id = sourceUri,
-        uri = sourceUri,
-        frameRate = null,
-        width = bitmap.width,
-        height = bitmap.height,
-        timestampPrecision = FrameTimestampPrecision.EXACT_SOURCE_CLOCK,
-    )
-
-    override suspend fun nextFrame(): AnalysisFrame? {
-        if (emitted) return null
-        emitted = true
-        return AnalysisFrame(0L, 0L, bitmap, bitmap.width, bitmap.height)
-    }
-
-    override suspend fun close() {
-        emitted = true
     }
 }
