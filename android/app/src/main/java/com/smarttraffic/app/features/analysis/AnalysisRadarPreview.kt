@@ -95,6 +95,11 @@ fun AnalysisRadarPreview(
                             style = MaterialTheme.typography.bodySmall,
                             color = onSurfaceVariant,
                         )
+                        Text(
+                            "Cars detected: ${preview.uniqueVehiclesDetected} • Active now: ${preview.tracks.size}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = onSurfaceVariant,
+                        )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -180,7 +185,7 @@ private fun ImmersiveVideo(
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 Text("Full-screen analysis", color = onSurface, style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "${preview.tracks.size} tracks • ${preview.frame.timestampMs} ms • ${if (preview.calibrated) "metric" else "visual"} radar",
+                    "${preview.uniqueVehiclesDetected} cars detected • ${preview.tracks.size} active • ${if (preview.calibrated) "metric" else "visual"} radar",
                     color = onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -237,7 +242,7 @@ private fun VideoFrameWithTracks(
                     style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f),
                 )
                 drawContext.canvas.nativeCanvas.drawText(
-                    "#${track.id} ${track.className}",
+                    "car ID: ${track.id}",
                     left.coerceAtLeast(4f),
                     (top - 8f).coerceAtLeast(30f),
                     labelPaint,
@@ -270,11 +275,18 @@ private fun RadarPanel(
     Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = surfaceVariant)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Tracking radar", style = MaterialTheme.typography.titleMedium)
+                Column {
+                    Text("Tracking radar", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Cars detected: ${preview.uniqueVehiclesDetected} • Active: ${preview.tracks.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = onSurfaceVariant,
+                    )
+                }
                 Text(
-                    if (preview.calibrated) "ground-plane coordinates" else "image-space visualization",
+                    if (preview.speedGate != null) "AUTO SPEED GATE" else "INITIALIZING GATE",
                     style = MaterialTheme.typography.bodySmall,
-                    color = onSurfaceVariant,
+                    color = primary,
                 )
             }
             Box(
@@ -310,11 +322,7 @@ private fun RadarPanel(
                             RadarPoint(track, ground.xMeters, ground.yMeters)
                         } else {
                             val d = o.detection
-                            RadarPoint(
-                                track,
-                                (d.left + d.right) * 0.5,
-                                d.bottom.toDouble(),
-                            )
+                            RadarPoint(track, (d.left + d.right) * 0.5, d.bottom.toDouble())
                         }
                     }
 
@@ -364,7 +372,7 @@ private fun RadarPanel(
                         drawCircle(primary, 8f, Offset(px, py))
                         drawCircle(background, 8f, Offset(px, py), style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
                         drawContext.canvas.nativeCanvas.drawText(
-                            "#${point.track.id}",
+                            "car ID: ${point.track.id}",
                             (px + 10f),
                             (py - 10f).coerceAtLeast(24f),
                             labelPaint,
@@ -374,13 +382,13 @@ private fun RadarPanel(
             }
             if (!preview.calibrated) {
                 Text(
-                    "Image-space radar uses the same pixel coordinate system as the video: X increases right, Y increases downward. Metric position and speed remain blocked until validated road calibration is supplied.",
+                    "Image-space radar uses the same fixed pixel coordinate system as the video. The automatic speed lines are inferred from actual vehicle motion; metric speed remains blocked until validated road calibration is supplied.",
                     style = MaterialTheme.typography.bodySmall,
                     color = onSurfaceVariant,
                 )
             } else {
                 Text(
-                    "Metric radar uses the fixed coordinate bounds of the calibrated image. It does not rescale when vehicles enter or leave the scene.",
+                    "Metric radar uses fixed calibrated ground coordinates. The automatic speed gate is frozen after scene geometry is inferred and does not rescale when vehicles enter or leave.",
                     style = MaterialTheme.typography.bodySmall,
                     color = onSurfaceVariant,
                 )
