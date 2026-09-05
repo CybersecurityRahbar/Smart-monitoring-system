@@ -73,6 +73,24 @@ class FileEvidenceStore(
         }
     }
 
+    /** Reads a persisted artifact only after its SHA-256 reference has been validated. */
+    suspend fun readArtifact(record: EvidenceRecord, kind: ArtifactKind): ByteArray? = ioMutex.withLock {
+        val hash = when (kind) {
+            ArtifactKind.FRAME -> record.frameSha256
+            ArtifactKind.VEHICLE -> record.vehicleCropSha256
+            ArtifactKind.PLATE -> record.plateCropSha256
+        } ?: return@withLock null
+        val artifact = artifactFile(record.id, kind.name.lowercase(), hash)
+        if (!artifact.isFile) return@withLock null
+        val bytes = artifact.readBytes()
+        require(sha256(bytes).equals(hash, ignoreCase = true)) {
+            "Evidence artifact hash mismatch: ${artifact.name}"
+        }
+        bytes
+    }
+
+    enum class ArtifactKind { FRAME, VEHICLE, PLATE }
+
     private fun readRecords(): List<EvidenceRecord> {
         if (!file.exists()) return emptyList()
         return try {
@@ -101,9 +119,10 @@ class FileEvidenceStore(
             totalBytes += bytes
         }
 
-        val keep = retained.asSequence().map { it.id }.toSet()
+        val keep = retained.asSequence().map { sanitize(it.id) }.toSet()
         artifactDir.listFiles()?.forEach { child ->
-            if (ownerIdFromArtifactName(child.name) !in keep && !child.delete()) {
+            val ownerId = ownerIdFromArtifactName(child.name)
+            if (ownerId != null && ownerId !in keep && !child.delete()) {
                 throw IllegalStateException("Unable to remove stale evidence artifact: ${child.absolutePath}")
             }
         }
@@ -262,10 +281,8 @@ class FileEvidenceStore(
         return File(artifactDir, "${safeId}_${safeKind}_$sha256.jpg")
     }
 
-    private fun ownerIdFromArtifactName(name: String): String? {
-        val marker = name.indexOf('_')
-        return marker.takeIf { it > 0 }?.let { name.substring(0, it) }
-    }
+    private fun ownerIdFromArtifactName(name: String): String? =
+        ARTIFACT_NAME_REGEX.matchEntire(name)?.groupValues?.get(1)
 
     private fun sanitize(value: String): String = value.replace(Regex("[^A-Za-z0-9.-]"), "_").take(64)
 
@@ -277,5 +294,6 @@ class FileEvidenceStore(
         const val FILE_NAME = "traffic_evidence.json"
         const val ARTIFACT_DIR = "traffic_evidence"
         val SHA256_REGEX = Regex("^[0-9a-fA-F]{64}$")
+        val ARTIFACT_NAME_REGEX = Regex("^(.+)_(?:frame|vehicle|plate)_[0-9a-fA-F]{64}\\.jpg$")
     }
 }
