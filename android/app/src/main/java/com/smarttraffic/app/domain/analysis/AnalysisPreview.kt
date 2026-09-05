@@ -27,6 +27,8 @@ data class AnalysisPreviewFrame(
     val speedGate: SpeedGate? = null,
     /** Unique vehicle IDs observed during the current analysis session. */
     val uniqueVehiclesDetected: Long = 0L,
+    /** Recorded-video playback is released only after deterministic analysis has completed. */
+    val playbackReady: Boolean = false,
     /** Local recorded-video URI used by the independent playback surface; null for images/live. */
     val videoUri: String? = null,
 )
