@@ -109,10 +109,10 @@ fun AnalysisVideoPlayback(
 
             preview.tracks.forEach { track ->
                 val detection = interpolatedDetection(track, positionMs) ?: return@forEach
-                val left = offsetX + detection.left * scale
-                val top = offsetY + detection.top * scale
-                val right = offsetX + detection.right * scale
-                val bottom = offsetY + detection.bottom * scale
+                val left = offsetX + detection.left.coerceIn(0f, sourceWidth) * scale
+                val top = offsetY + detection.top.coerceIn(0f, sourceHeight) * scale
+                val right = offsetX + detection.right.coerceIn(0f, sourceWidth) * scale
+                val bottom = offsetY + detection.bottom.coerceIn(0f, sourceHeight) * scale
                 drawRoundRect(
                     color = trackColor,
                     topLeft = Offset(left, top),
@@ -123,8 +123,11 @@ fun AnalysisVideoPlayback(
                     cornerRadius = CornerRadius(12f, 12f),
                     style = Stroke(width = 4f),
                 )
+                val speedText = preview.speedEstimates[track.id]?.let { speed ->
+                    " • ≈ %.1f km/h ± %.1f".format(speed.kilometersPerHour, speed.errorKmh ?: 0.0)
+                }.orEmpty()
                 drawContext.canvas.nativeCanvas.drawText(
-                    "#${track.id} ${track.className}",
+                    "#${track.id} ${track.className}$speedText",
                     left.coerceAtLeast(4f),
                     (top - 8f).coerceAtLeast(30f),
                     labelPaint,
