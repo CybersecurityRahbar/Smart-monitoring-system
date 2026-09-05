@@ -17,7 +17,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class FileEvidenceStoreTest {
@@ -48,14 +47,16 @@ class FileEvidenceStoreTest {
         val directory = context.getDir("traffic_evidence", android.content.Context.MODE_PRIVATE)
         val artifacts = directory.listFiles().orEmpty().filter { it.isFile }
         assertEquals(2, artifacts.size)
-        assertArrayEquals(
-            frame,
-            artifacts.single { it.name.contains("_frame_") }.readBytes(),
-        )
-        assertArrayEquals(
-            vehicle,
-            artifacts.single { it.name.contains("_vehicle_") }.readBytes(),
-        )
+        assertArrayEquals(frame, artifacts.single { it.name.contains("_frame_") }.readBytes())
+        assertArrayEquals(vehicle, artifacts.single { it.name.contains("_vehicle_") }.readBytes())
+    }
+
+    @Test
+    fun metadataOnlyRecordRemainsValid() = runBlocking {
+        val persisted = store.save(record("metadata-only"))
+        assertEquals("metadata-only", persisted.id)
+        assertEquals(1, store.list().size)
+        assertTrue(context.getDir("traffic_evidence", android.content.Context.MODE_PRIVATE).listFiles().orEmpty().isEmpty())
     }
 
     @Test
