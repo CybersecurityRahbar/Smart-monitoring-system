@@ -43,9 +43,9 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Media3 owns the presentation clock. The AI analysis pipeline is not allowed to slow recorded
- * video playback. The first analyzed frame is allowed to arrive before playback starts so that
- * the user does not see a long empty interval before the first tracking box appears.
+ * Deterministic recorded-video replay. The analysis pipeline completes on the video's exact PTS
+ * timeline first; only then does ExoPlayer start natural-speed presentation with the complete
+ * track history available for timestamp interpolation.
  */
 @Composable
 fun AnalysisVideoPlayback(
@@ -78,10 +78,13 @@ fun AnalysisVideoPlayback(
         }
     }
 
-    LaunchedEffect(player, preview.frame.index) {
-        if (preview.frame.index >= 1L) {
+    LaunchedEffect(player, preview.playbackReady) {
+        if (preview.playbackReady) {
+            player.seekTo(0L)
             player.playWhenReady = true
             player.play()
+        } else {
+            player.pause()
         }
     }
 
@@ -105,15 +108,11 @@ fun AnalysisVideoPlayback(
             val offsetX = (size.width - contentWidth) * 0.5f
             val offsetY = (size.height - contentHeight) * 0.5f
             val trackColor = Color(0xFF39FF14)
-            val gateColor = Color.Red
-            val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                textSize = 28f
-                typeface = android.graphics.Typeface.create(
-                    android.graphics.Typeface.DEFAULT,
-                    android.graphics.Typeface.BOLD,
-                )
-                color = android.graphics.Color.WHITE
-                setShadowLayer(6f, 0f, 2f, android.graphics.Color.BLACK)
+            val gateTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                textSize = 24f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                color = android.graphics.Color.RED
+                setShadowLayer(5f, 0f, 2f, android.graphics.Color.BLACK)
             }
             val gatePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = android.graphics.Color.RED
@@ -121,11 +120,11 @@ fun AnalysisVideoPlayback(
                 style = android.graphics.Paint.Style.STROKE
                 setShadowLayer(6f, 0f, 1f, android.graphics.Color.BLACK)
             }
-            val gateTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                textSize = 24f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                color = android.graphics.Color.RED
-                setShadowLayer(5f, 0f, 2f, android.graphics.Color.BLACK)
+            val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                textSize = 28f
+                typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                color = android.graphics.Color.WHITE
+                setShadowLayer(6f, 0f, 2f, android.graphics.Color.BLACK)
             }
 
             val gate: SpeedGate? = preview.speedGate
@@ -151,10 +150,7 @@ fun AnalysisVideoPlayback(
                 drawRoundRect(
                     color = trackColor,
                     topLeft = Offset(left, top),
-                    size = Size(
-                        (right - left).coerceAtLeast(0f),
-                        (bottom - top).coerceAtLeast(0f),
-                    ),
+                    size = Size((right - left).coerceAtLeast(0f), (bottom - top).coerceAtLeast(0f)),
                     cornerRadius = CornerRadius(12f, 12f),
                     style = Stroke(width = 4f),
                 )
@@ -189,30 +185,25 @@ private fun interpolatedDetection(track: Track, positionMs: Long): Detection? {
     val observations = track.observations.sortedBy { it.timestampMs }
     if (observations.isEmpty()) return null
 
+    val first = observations.first()
+    val last = observations.last()
+    if (positionMs < first.timestampMs) return null
+    if (positionMs > last.timestampMs) {
+        val previous = observations.asReversed().drop(1).firstOrNull { it.timestampMs < last.timestampMs } ?: return null
+        if (last.timestampMs <= previous.timestampMs) return null
+        val extrapolationMs = (positionMs - last.timestampMs).coerceAtMost(350L)
+        if (positionMs - last.timestampMs > 350L) return null
+        val dt = (last.timestampMs - previous.timestampMs).toFloat()
+        return extrapolateDetection(previous.detection, last.detection, extrapolationMs.toFloat() / dt)
+    }
+
     val before = observations.lastOrNull { it.timestampMs <= positionMs }
     val after = observations.firstOrNull { it.timestampMs >= positionMs }
-
     if (before != null && after != null && before.timestampMs != after.timestampMs) {
-        val ratio = ((positionMs - before.timestampMs).toDouble() /
-            (after.timestampMs - before.timestampMs).toDouble()).coerceIn(0.0, 1.0)
+        val ratio = ((positionMs - before.timestampMs).toDouble() / (after.timestampMs - before.timestampMs).toDouble()).coerceIn(0.0, 1.0)
         return interpolateDetection(before.detection, after.detection, ratio)
     }
-
-    if (before != null) {
-        val previous = observations
-            .asReversed()
-            .drop(1)
-            .firstOrNull { it.timestampMs < before.timestampMs }
-        if (previous != null && before.timestampMs > previous.timestampMs) {
-            val extrapolationMs = (positionMs - before.timestampMs).coerceIn(0L, 350L)
-            val dt = (before.timestampMs - previous.timestampMs).toFloat()
-            val alpha = extrapolationMs.toFloat() / dt
-            return extrapolateDetection(previous.detection, before.detection, alpha)
-        }
-        return before.detection
-    }
-
-    return after?.detection
+    return before?.detection ?: after?.detection
 }
 
 private fun interpolateDetection(a: Detection, b: Detection, ratio: Double): Detection {
