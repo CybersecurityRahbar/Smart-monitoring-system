@@ -119,3 +119,27 @@ jobs:
 
       - name: Run research unit tests
         run: python -m unittest discover -s ai/tests -p 'test_*.py' -v
+
+  esp32-firmware:
+    name: Build ESP32 Camera Firmware
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: esp32
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        run: python -m pip install --disable-pip-version-check platformio
+
+      - name: Build AI-Thinker ESP32-CAM target
+        run: pio run -e esp32cam_ai_thinker
+
+      - name: Build ESP32-S3-N16R8 target
+        run: pio run -e esp32s3_n16r8
