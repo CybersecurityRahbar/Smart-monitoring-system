@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
@@ -63,7 +64,7 @@ class MjpegFrameSource(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                wake.trySend(ResultSignal.Failure(error).unit)
+                wake.close(error)
             } finally {
                 wake.close()
             }
@@ -104,13 +105,6 @@ class MjpegFrameSource(
     }
 
     private data class FramePacket(val sequence: Long, val bitmap: Bitmap)
-
-    /** Converts an unrecoverable producer failure into a channel signal without queueing objects. */
-    private enum class ResultSignal {
-        Failure;
-
-        val unit: Unit get() = error("Internal channel failure signal cannot be materialized")
-    }
 }
 
 /** The frame is source-owned until handed to the analysis pipeline. Avoid double ownership. */
