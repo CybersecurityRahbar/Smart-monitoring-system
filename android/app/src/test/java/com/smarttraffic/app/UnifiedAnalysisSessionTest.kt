@@ -57,7 +57,7 @@ class UnifiedAnalysisSessionTest {
             val gate = CompletableDeferred<Unit>()
             val source1 = CountingSource()
             val runtime1 = CountingCloseable()
-            assertTrue(session.start(source1, BlockingEngine(gate), config, runtime = runtime1))
+            assertTrue(session.start(source1, BlockingEngine(gate, result), config, runtime = runtime1))
             delay(50)
 
             assertFalse(session.start(CountingSource(), ImmediateEngine(result), config, runtime = CountingCloseable()))
@@ -87,7 +87,10 @@ class UnifiedAnalysisSessionTest {
         override suspend fun analyze(source: FrameSource, config: AnalysisConfig): AnalysisResult = result.copy(source = source.source)
     }
 
-    private class BlockingEngine(private val gate: CompletableDeferred<Unit>) : AnalysisEngine {
+    private class BlockingEngine(
+        private val gate: CompletableDeferred<Unit>,
+        private val result: AnalysisResult,
+    ) : AnalysisEngine {
         override suspend fun analyze(source: MediaSource, config: AnalysisConfig): AnalysisResult = result
         override suspend fun analyze(source: FrameSource, config: AnalysisConfig): AnalysisResult {
             try {
