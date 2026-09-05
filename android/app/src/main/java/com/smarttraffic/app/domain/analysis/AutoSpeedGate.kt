@@ -26,8 +26,11 @@ data class SpeedGate(
 /**
  * Scene-adaptive timing-gate builder.
  *
- * It infers the dominant vehicle-flow direction from real tracks, places two cross-flow lines
- * at robust scene quantiles, then freezes them. No per-frame min/max normalization is used.
+ * The traffic-flow axis is inferred from adjacent observations within each individual track,
+ * then pooled with a robust median. This prevents unrelated vehicles from creating artificial
+ * velocity vectors. Gate coordinates are frozen from robust scene quantiles and never rescaled
+ * when vehicles enter or leave the scene.
+ *
  * Metric distance is exposed only when a validated image-to-ground calibration exists.
  */
 object AutoSpeedGateBuilder {
@@ -41,10 +44,18 @@ object AutoSpeedGateBuilder {
         val samples = collectSamples(tracks, calibration)
         if (samples.size < 6) return null
 
-        val velocities = samples.zipWithNext().mapNotNull { (a, b) ->
-            val dt = (b.t - a.t) / 1000.0
-            if (!dt.isFinite() || dt <= 0.0 || dt > 1.0) null else {
-                ((b.x - a.x) / dt) to ((b.y - a.y) / dt)
+        val velocities = tracks.flatMap { track ->
+            val observations = track.observations.takeLast(40)
+            observations.zipWithNext().mapNotNull { (a, b) ->
+                val dt = (b.timestampMs - a.timestampMs) / 1000.0
+                if (!dt.isFinite() || dt <= 0.0 || dt > 1.0) return@mapNotNull null
+                val aPoint = pointFor(a, calibration) ?: return@mapNotNull null
+                val bPoint = pointFor(b, calibration) ?: return@mapNotNull null
+                val vx = (bPoint.first - aPoint.first) / dt
+                val vy = (bPoint.second - aPoint.second) / dt
+                val magnitude = hypot(vx, vy)
+                if (!magnitude.isFinite() || magnitude < 1e-6) return@mapNotNull null
+                vx to vy
             }
         }.filter { it.first.isFinite() && it.second.isFinite() }
         if (velocities.size < 4) return null
@@ -58,7 +69,6 @@ object AutoSpeedGateBuilder {
 
         val centerX = median(samples.map { it.x })
         val centerY = median(samples.map { it.y })
-        val centerProjection = centerX * ux + centerY * uy
         val scalar = samples.map { it.x * ux + it.y * uy }.sorted()
         val line1Coordinate = percentile(scalar, 0.35)
         val line2Coordinate = percentile(scalar, 0.65)
@@ -66,6 +76,7 @@ object AutoSpeedGateBuilder {
         if (!separation.isFinite() || separation <= 1e-6) return null
 
         return if (calibration == null) {
+            val centerProjection = centerX * ux + centerY * uy
             val p1 = pointAtProjection(centerProjection, centerX, centerY, ux, uy, line1Coordinate)
             val p2 = pointAtProjection(centerProjection, centerX, centerY, ux, uy, line2Coordinate)
             SpeedGate(
@@ -113,14 +124,18 @@ object AutoSpeedGateBuilder {
 
     private data class Sample(val x: Double, val y: Double, val t: Long)
 
+    private fun pointFor(observation: TrackObservation, calibration: CalibrationProfile?): Pair<Double, Double>? {
+        if (calibration != null) {
+            val ground = observation.groundPoint ?: return null
+            return ground.xMeters to ground.yMeters
+        }
+        val d = observation.detection
+        return ((d.left + d.right) * 0.5).toDouble() to d.bottom.toDouble()
+    }
+
     private fun collectSamples(tracks: List<Track>, calibration: CalibrationProfile?): List<Sample> =
         tracks.flatMap { it.observations.takeLast(40) }.mapNotNull { observation ->
-            if (calibration == null) {
-                val d = observation.detection
-                Sample((d.left + d.right) * 0.5, d.bottom.toDouble(), observation.timestampMs)
-            } else {
-                observation.groundPoint?.let { Sample(it.xMeters, it.yMeters, observation.timestampMs) }
-            }
+            pointFor(observation, calibration)?.let { Sample(it.first, it.second, observation.timestampMs) }
         }.filter { it.x.isFinite() && it.y.isFinite() && it.t >= 0L }
 
     private fun pointAtProjection(
@@ -256,7 +271,6 @@ object SpeedGateEstimator {
         val speedMps = distance / dtSeconds
         if (!speedMps.isFinite() || speedMps <= 0.0) return null
 
-        // Timing-interpolation bound only; calibration/detection uncertainty is not hidden inside it.
         val timeUncertaintySeconds = 0.5 * (first.bracketMs + second.bracketMs) / 1000.0
         val errorMps = speedMps * (timeUncertaintySeconds / dtSeconds)
         return SpeedEstimate(
