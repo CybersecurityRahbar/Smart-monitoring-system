@@ -11,14 +11,19 @@ import kotlin.math.min
  * Calibration-free speed estimate for ordinary vehicle tracks.
  *
  * This is intentionally an estimate, not a metrology result: metric scale is
- * inferred from a robust vehicle-width prior, then combined with image motion.
- * No camera focal length, homography, road survey, or fixed px/m constant is
- * assumed. The result carries a separate mode so callers cannot confuse it
- * with validated ground-plane speed.
+ * inferred from a robust vehicle-width prior and refreshed locally at every
+ * motion interval to reduce perspective bias. No camera focal length,
+ * homography, road survey, or fixed px/m constant is assumed. The result carries
+ * a separate mode so callers cannot confuse it with validated ground-plane speed.
  */
 object CalibrationFreeSpeedEstimator {
     private data class Point(val x: Double, val y: Double, val tMs: Long, val widthPx: Double)
-    private data class MotionSample(val dxPx: Double, val dyPx: Double, val speedPxPerSec: Double)
+    private data class MotionSample(
+        val dxPx: Double,
+        val dyPx: Double,
+        val speedPxPerSec: Double,
+        val metricSpeedMps: Double,
+    )
 
     fun estimate(
         track: Track,
@@ -51,6 +56,9 @@ object CalibrationFreeSpeedEstimator {
         if (durationMs < minimumDurationMs) return null
         if (points.zipWithNext().any { it.second.tMs - it.first.tMs > maximumObservationGapMs }) return null
 
+        val assumedVehicleWidthM = vehicleWidthPriorMeters(track.className)
+        if (!assumedVehicleWidthM.isFinite() || assumedVehicleWidthM <= 0.0) return null
+
         val motionSamples = ArrayList<MotionSample>()
         for (i in 1 until points.size) {
             val a = points[i - 1]
@@ -61,9 +69,18 @@ object CalibrationFreeSpeedEstimator {
             val dy = b.y - a.y
             val displacement = hypot(dx, dy)
             if (!displacement.isFinite() || displacement < 0.25) continue
-            val speed = displacement / dtSeconds
-            if (!speed.isFinite() || speed <= 0.0) continue
-            motionSamples += MotionSample(dx, dy, speed)
+            val speedPxPerSec = displacement / dtSeconds
+            if (!speedPxPerSec.isFinite() || speedPxPerSec <= 0.0) continue
+
+            // Estimate the scale locally from the apparent vehicle width in this interval.
+            // This is still approximate, but it reduces the dominant perspective bias of
+            // applying one global bbox width to a vehicle that is moving toward the camera.
+            val localWidthPx = (a.widthPx + b.widthPx) * 0.5
+            if (!localWidthPx.isFinite() || localWidthPx < 4.0) continue
+            val localMeterPerPixel = assumedVehicleWidthM / localWidthPx
+            val metricSpeedMps = speedPxPerSec * localMeterPerPixel
+            if (!metricSpeedMps.isFinite() || metricSpeedMps <= 0.0) continue
+            motionSamples += MotionSample(dx, dy, speedPxPerSec, metricSpeedMps)
         }
         if (motionSamples.size < max(3, minimumSamples - 1)) return null
 
@@ -96,29 +113,32 @@ object CalibrationFreeSpeedEstimator {
         val aligned = motionSamples.map { sample ->
             abs(sample.dxPx * axisX + sample.dyPx * axisY) / max(1e-9, hypot(sample.dxPx, sample.dyPx))
         }
-        val directionConsistency = aligned.sorted().let { percentile(it, 0.5) }
-        val projectedSpeedsPxPerSec = motionSamples.map {
-            abs(it.dxPx * axisX + it.dyPx * axisY)
+        val directionConsistency = robustMedian(aligned) ?: return null
+        val projectedPixelSpeeds = motionSamples.map {
+            abs(it.dxPx * axisX + it.dyPx * axisY) / max(1e-9, hypot(it.dxPx, it.dyPx)) * it.speedPxPerSec
         }.filter { it.isFinite() && it > 0.0 }
-        if (projectedSpeedsPxPerSec.size < 3) return null
+        if (projectedPixelSpeeds.size < 3) return null
 
-        val pixelSpeed = robustMedian(projectedSpeedsPxPerSec) ?: return null
-        if (!pixelSpeed.isFinite() || pixelSpeed <= 0.0) return null
+        // Apply the motion-axis projection to every interval's already perspective-aware metric speed.
+        val metricSpeeds = motionSamples.mapIndexed { index, sample ->
+            val projectedRatio = projectedPixelSpeeds[index] / max(sample.speedPxPerSec, 1e-9)
+            sample.metricSpeedMps * projectedRatio.coerceIn(0.0, 1.0)
+        }.filter { it.isFinite() && it > 0.0 }
+        if (metricSpeeds.size < 3) return null
+
+        val speedMps = robustMedian(metricSpeeds) ?: return null
+        if (!speedMps.isFinite() || speedMps <= 0.0) return null
+        val speedKmh = speedMps * 3.6
+        if (!speedKmh.isFinite() || speedKmh <= 0.0 || speedKmh > maxPlausibleSpeedKmh) return null
 
         val widths = points.map { it.widthPx }.filter { it.isFinite() && it >= 4.0 }.sorted()
         if (widths.size < minimumSamples) return null
         val medianWidth = percentile(widths, 0.5)
         if (!medianWidth.isFinite() || medianWidth <= 0.0) return null
 
-        val assumedVehicleWidthM = vehicleWidthPriorMeters(track.className)
-        val meterPerPixel = assumedVehicleWidthM / medianWidth
-        val speedMps = pixelSpeed * meterPerPixel
-        val speedKmh = speedMps * 3.6
-        if (!speedKmh.isFinite() || speedKmh <= 0.0 || speedKmh > maxPlausibleSpeedKmh) return null
-
         val widthMad = robustMad(widths, medianWidth)
         val widthInstability = (widthMad / medianWidth).coerceIn(0.0, 1.0)
-        val speedResidual = pairwiseResidual(projectedSpeedsPxPerSec, pixelSpeed)
+        val speedResidual = pairwiseResidual(metricSpeeds, speedMps)
         val durationConfidence = ((durationMs - minimumDurationMs).toDouble() / max(1.0, minimumDurationMs * 3.0))
             .coerceIn(0.0, 1.0)
         val sampleConfidence = (points.size.toDouble() / 24.0).coerceIn(0.0, 1.0)
