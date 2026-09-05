@@ -2,6 +2,7 @@ package com.smarttraffic.app.features.analysis
 
 import android.graphics.Paint
 import android.net.Uri
+import android.view.LayoutInflater
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -30,8 +31,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.smarttraffic.app.R
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
 import com.smarttraffic.app.domain.analysis.Detection
 import com.smarttraffic.app.domain.analysis.Track
@@ -40,8 +41,8 @@ import kotlin.math.min
 
 /**
  * Real video playback is intentionally independent from the analysis frame producer.
- * ExoPlayer owns the presentation clock; the AI pipeline may run faster or slower without
- * changing the video's playback rate.
+ * Media3 owns the presentation clock; the AI pipeline may run faster or slower without changing
+ * the video's playback rate.
  */
 @Composable
 fun AnalysisVideoPlayback(
@@ -76,12 +77,9 @@ fun AnalysisVideoPlayback(
 
     Box(modifier.fillMaxSize()) {
         AndroidView(
-            factory = {
-                PlayerView(it).apply {
-                    player = this@apply.playerOrNull(player)
-                    useController = false
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    keepScreenOn = true
+            factory = { viewContext ->
+                (LayoutInflater.from(viewContext).inflate(R.layout.view_analysis_player, null) as PlayerView).apply {
+                    this.player = player
                     setShutterBackgroundColor(android.graphics.Color.BLACK)
                 }
             },
@@ -147,11 +145,8 @@ fun AnalysisVideoPlayback(
     }
 }
 
-private fun PlayerView.playerOrNull(player: ExoPlayer): ExoPlayer = player
-
 private fun interpolatedDetection(track: Track, positionMs: Long): Detection? {
-    val observations = track.observations
-        .sortedBy { it.timestampMs }
+    val observations = track.observations.sortedBy { it.timestampMs }
     if (observations.isEmpty()) return null
 
     val before = observations.lastOrNull { it.timestampMs <= positionMs }
