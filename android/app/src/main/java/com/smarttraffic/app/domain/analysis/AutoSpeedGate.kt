@@ -1,16 +1,20 @@
 package com.smarttraffic.app.domain.analysis
 
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 
+/** A pair of virtual timing lines and their metric separation when calibration exists. */
 data class SpeedGateLine(
     val startPixelX: Double,
     val startPixelY: Double,
     val endPixelX: Double,
     val endPixelY: Double,
-    /** Longitudinal coordinate along the inferred flow axis. */
+    /** Coordinate along the inferred longitudinal traffic axis. */
     val coordinate: Double,
 )
 
@@ -26,10 +30,14 @@ data class SpeedGate(
 /**
  * Scene-adaptive timing-gate builder.
  *
- * Vehicle motion is converted into per-track velocity vectors. A 2D principal-component axis
- * is extracted from those vectors, while a mean-vector fallback is used for perfectly coherent
- * traffic where covariance is zero. This preserves a useful axis for both one-way and
- * bidirectional traffic. Two cross-flow lines are then frozen at robust scene quantiles.
+ * 1. Collects real vehicle contact-point observations.
+ * 2. Infers the dominant road/traffic axis with PCA over the observed trajectory point cloud.
+ * 3. Places two cross-flow timing lines at robust longitudinal quantiles.
+ * 4. Freezes those lines for the rest of the replay; no per-frame min/max normalization occurs.
+ *
+ * In calibrated mode all metric geometry is derived in the validated ground plane, then inverse
+ * projected into the actual image. In uncalibrated mode the lines are visual-only and metric speed
+ * is intentionally unavailable.
  */
 object AutoSpeedGateBuilder {
     fun build(
@@ -41,140 +49,156 @@ object AutoSpeedGateBuilder {
         if (imageWidth <= 1 || imageHeight <= 1) return null
         val samples = collectSamples(tracks, calibration)
         if (samples.size < 6) return null
-        val velocities = collectVelocities(tracks, calibration)
-        if (velocities.size < 4) return null
 
-        val axis = principalAxis(velocities) ?: return null
-        val ux = axis.first
-        val uy = axis.second
-        val scalar = samples.map { it.x * ux + it.y * uy }.sorted()
-        val line1Coordinate = percentile(scalar, 0.35)
-        val line2Coordinate = percentile(scalar, 0.65)
+        val axis = principalAxis(samples) ?: return null
+        val centerX = samples.map { it.x }.average()
+        val centerY = samples.map { it.y }.average()
+        val centerProjection = centerX * axis.x + centerY * axis.y
+        val longitudinal = samples.map { it.x * axis.x + it.y * axis.y }.sorted()
+        val line1Coordinate = percentile(longitudinal, 0.35)
+        val line2Coordinate = percentile(longitudinal, 0.65)
         val separation = abs(line2Coordinate - line1Coordinate)
         if (!separation.isFinite() || separation <= 1e-6) return null
 
         return if (calibration == null) {
-            val centerX = median(samples.map { it.x })
-            val centerY = median(samples.map { it.y })
-            val centerProjection = centerX * ux + centerY * uy
-            val p1 = pointAtProjection(centerProjection, centerX, centerY, ux, uy, line1Coordinate)
-            val p2 = pointAtProjection(centerProjection, centerX, centerY, ux, uy, line2Coordinate)
+            val p1 = pointAtProjection(centerX, centerY, centerProjection, axis.x, axis.y, line1Coordinate)
+            val p2 = pointAtProjection(centerX, centerY, centerProjection, axis.x, axis.y, line2Coordinate)
             SpeedGate(
-                line1 = imageLine(p1.first, p1.second, ux, uy, imageWidth.toDouble(), imageHeight.toDouble(), line1Coordinate),
-                line2 = imageLine(p2.first, p2.second, ux, uy, imageWidth.toDouble(), imageHeight.toDouble(), line2Coordinate),
+                line1 = imageLine(p1.first, p1.second, axis.x, axis.y, imageWidth.toDouble(), imageHeight.toDouble(), line1Coordinate),
+                line2 = imageLine(p2.first, p2.second, axis.x, axis.y, imageWidth.toDouble(), imageHeight.toDouble(), line2Coordinate),
                 separationMeters = null,
-                axisX = ux,
-                axisY = uy,
+                axisX = axis.x,
+                axisY = axis.y,
                 calibrated = false,
             )
         } else {
             val projector = HomographyProjector(calibration.homography)
-            val worldCorners = listOf(
+            val corners = listOf(
                 0.0 to 0.0,
                 imageWidth.toDouble() to 0.0,
                 imageWidth.toDouble() to imageHeight.toDouble(),
                 0.0 to imageHeight.toDouble(),
-            ).mapNotNull { (x, y) -> runCatching { projector.project(x, y) }.getOrNull() }
-            if (worldCorners.size < 4) return null
-            val nx = -uy
-            val ny = ux
-            val transverse = worldCorners.map { p -> p.xMeters * nx + p.yMeters * ny }.sorted()
-            if (transverse.size < 4) return null
-            val tLow = percentile(transverse, 0.05)
-            val tHigh = percentile(transverse, 0.95)
-            val margin = max(0.25, (tHigh - tLow) * 0.05)
-            val transverseLow = tLow - margin
-            val transverseHigh = tHigh + margin
-            if (!transverseLow.isFinite() || !transverseHigh.isFinite() || transverseHigh <= transverseLow) return null
+            )
+            val worldCorners = corners.mapNotNull { (x, y) -> runCatching { projector.project(x, y) }.getOrNull() }
+            if (worldCorners.size != 4) return null
+
+            val normalX = -axis.y
+            val normalY = axis.x
+            val transverse = worldCorners.map { p -> p.xMeters * normalX + p.yMeters * normalY }.sorted()
+            val transverseLow = percentile(transverse, 0.05)
+            val transverseHigh = percentile(transverse, 0.95)
+            val transverseMargin = max(0.25, (transverseHigh - transverseLow) * 0.05)
+            val low = transverseLow - transverseMargin
+            val high = transverseHigh + transverseMargin
+            if (!low.isFinite() || !high.isFinite() || high <= low) return null
 
             fun metricLine(coordinate: Double): SpeedGateLine? {
-                val pA = worldFromAxes(coordinate, transverseLow, ux, uy)
-                val pB = worldFromAxes(coordinate, transverseHigh, ux, uy)
-                val imageA = runCatching { inverseProject(calibration.homography, pA.first, pA.second) }.getOrNull() ?: return null
-                val imageB = runCatching { inverseProject(calibration.homography, pB.first, pB.second) }.getOrNull() ?: return null
+                val a = worldFromAxes(coordinate, low, axis.x, axis.y)
+                val b = worldFromAxes(coordinate, high, axis.x, axis.y)
+                val imageA = runCatching { inverseProject(calibration.homography, a.first, a.second) }.getOrNull() ?: return null
+                val imageB = runCatching { inverseProject(calibration.homography, b.first, b.second) }.getOrNull() ?: return null
                 val clipped = clipSegment(imageA.first, imageA.second, imageB.first, imageB.second, imageWidth.toDouble(), imageHeight.toDouble()) ?: return null
                 return SpeedGateLine(clipped.first.first, clipped.first.second, clipped.second.first, clipped.second.second, coordinate)
             }
 
             val line1 = metricLine(line1Coordinate) ?: return null
             val line2 = metricLine(line2Coordinate) ?: return null
-            SpeedGate(line1, line2, separation, ux, uy, true)
+            SpeedGate(
+                line1 = line1,
+                line2 = line2,
+                separationMeters = separation,
+                axisX = axis.x,
+                axisY = axis.y,
+                calibrated = true,
+            )
         }
     }
 
     private data class Sample(val x: Double, val y: Double, val t: Long)
-
-    private fun pointFor(observation: TrackObservation, calibration: CalibrationProfile?): Pair<Double, Double>? {
-        if (calibration != null) {
-            val ground = observation.groundPoint ?: return null
-            return ground.xMeters to ground.yMeters
-        }
-        val d = observation.detection
-        return ((d.left + d.right) * 0.5).toDouble() to d.bottom.toDouble()
-    }
+    private data class Axis(val x: Double, val y: Double)
 
     private fun collectSamples(tracks: List<Track>, calibration: CalibrationProfile?): List<Sample> =
-        tracks.flatMap { it.observations.takeLast(40) }.mapNotNull { observation ->
-            pointFor(observation, calibration)?.let { Sample(it.first, it.second, observation.timestampMs) }
+        tracks.flatMap { track ->
+            track.observations.takeLast(40).mapNotNull { observation ->
+                if (calibration == null) {
+                    val d = observation.detection
+                    Sample((d.left + d.right) * 0.5, d.bottom.toDouble(), observation.timestampMs)
+                } else {
+                    observation.groundPoint?.let { Sample(it.xMeters, it.yMeters, observation.timestampMs) }
+                }
+            }
         }.filter { it.x.isFinite() && it.y.isFinite() && it.t >= 0L }
 
-    private fun collectVelocities(tracks: List<Track>, calibration: CalibrationProfile?): List<Pair<Double, Double>> =
-        tracks.flatMap { track ->
-            track.observations.takeLast(40).zipWithNext().mapNotNull { (a, b) ->
-                val dt = (b.timestampMs - a.timestampMs) / 1000.0
-                if (!dt.isFinite() || dt <= 0.0 || dt > 1.0) return@mapNotNull null
-                val p1 = pointFor(a, calibration) ?: return@mapNotNull null
-                val p2 = pointFor(b, calibration) ?: return@mapNotNull null
-                val vx = (p2.first - p1.first) / dt
-                val vy = (p2.second - p1.second) / dt
-                if (!vx.isFinite() || !vy.isFinite()) return@mapNotNull null
-                if (hypot(vx, vy) < 1e-3) return@mapNotNull null
-                vx to vy
-            }
+    /** Dominant axis of the observed road/trajectory point cloud, independent of track order. */
+    private fun principalAxis(samples: List<Sample>): Axis? {
+        if (samples.size < 2) return null
+        val meanX = samples.map { it.x }.average()
+        val meanY = samples.map { it.y }.average()
+        var sxx = 0.0
+        var syy = 0.0
+        var sxy = 0.0
+        samples.forEach { sample ->
+            val dx = sample.x - meanX
+            val dy = sample.y - meanY
+            sxx += dx * dx
+            syy += dy * dy
+            sxy += dx * dy
         }
-
-    private fun principalAxis(vectors: List<Pair<Double, Double>>): Pair<Double, Double>? {
-        if (vectors.size < 2) return null
-        val meanX = vectors.map { it.first }.average()
-        val meanY = vectors.map { it.second }.average()
-        var cxx = 0.0
-        var cxy = 0.0
-        var cyy = 0.0
-        vectors.forEach { (x, y) ->
-            val dx = x - meanX
-            val dy = y - meanY
-            cxx += dx * dx
-            cxy += dx * dy
-            cyy += dy * dy
-        }
-        val trace = cxx + cyy
-        val det = cxx * cyy - cxy * cxy
-        val discriminant = max(0.0, trace * trace - 4.0 * det)
-        val lambda = (trace + kotlin.math.sqrt(discriminant)) * 0.5
-        var ax = cxy
-        var ay = lambda - cxx
-        if (hypot(ax, ay) < 1e-9) {
-            ax = lambda - cyy
-            ay = cxy
-        }
-        var norm = hypot(ax, ay)
-        if (!norm.isFinite() || norm < 1e-9) {
-            ax = meanX
-            ay = meanY
-            norm = hypot(ax, ay)
-        }
+        if (!sxx.isFinite() || !syy.isFinite() || !sxy.isFinite()) return null
+        val theta = 0.5 * atan2(2.0 * sxy, sxx - syy)
+        var ux = cos(theta)
+        var uy = sin(theta)
+        val norm = hypot(ux, uy)
         if (!norm.isFinite() || norm < 1e-9) return null
-        return ax / norm to ay / norm
+        ux /= norm
+        uy /= norm
+
+        // PCA has no inherent sign. Orient it using the median signed displacement from each
+        // individual track so opposite traffic directions never get concatenated accidentally.
+        val signedDirections = mutableListOf<Double>()
+        // Grouping is intentionally local to each track; caller supplies samples in track order
+        // only indirectly, so use the sample time sequence as a stable scene-level orientation cue.
+        for (i in 1 until samples.size) {
+            val previous = samples[i - 1]
+            val current = samples[i]
+            val dt = (current.t - previous.t) / 1000.0
+            if (dt <= 0.0 || dt > 1.0) continue
+            val vx = (current.x - previous.x) / dt
+            val vy = (current.y - previous.y) / dt
+            val speed = hypot(vx, vy)
+            if (!speed.isFinite() || speed < 1e-6) continue
+            signedDirections += vx * ux + vy * uy
+        }
+        if (signedDirections.isNotEmpty() && median(signedDirections) < 0.0) {
+            ux = -ux
+            uy = -uy
+        }
+        return Axis(ux, uy)
     }
 
-    private fun pointAtProjection(centerProjection: Double, centerX: Double, centerY: Double, ux: Double, uy: Double, targetProjection: Double): Pair<Double, Double> {
+    private fun pointAtProjection(
+        centerX: Double,
+        centerY: Double,
+        centerProjection: Double,
+        axisX: Double,
+        axisY: Double,
+        targetProjection: Double,
+    ): Pair<Double, Double> {
         val delta = targetProjection - centerProjection
-        return centerX + ux * delta to centerY + uy * delta
+        return centerX + axisX * delta to centerY + axisY * delta
     }
 
-    private fun imageLine(cx: Double, cy: Double, ux: Double, uy: Double, width: Double, height: Double, coordinate: Double): SpeedGateLine {
-        val nx = -uy
-        val ny = ux
+    private fun imageLine(
+        cx: Double,
+        cy: Double,
+        axisX: Double,
+        axisY: Double,
+        width: Double,
+        height: Double,
+        coordinate: Double,
+    ): SpeedGateLine {
+        val nx = -axisY
+        val ny = axisX
         val candidates = ArrayList<Pair<Double, Double>>(4)
         fun add(t: Double) {
             val x = cx + nx * t
@@ -189,15 +213,14 @@ object AutoSpeedGateBuilder {
             add(-cy / ny)
             add((height - cy) / ny)
         }
-        val a = candidates.getOrNull(0) ?: (0.0 to 0.0)
-        val b = candidates.getOrNull(1) ?: (width to height)
-        return SpeedGateLine(a.first, a.second, b.first, b.second, coordinate)
+        if (candidates.size >= 2) return SpeedGateLine(candidates[0].first, candidates[0].second, candidates[1].first, candidates[1].second, coordinate)
+        return SpeedGateLine(0.0, 0.0, width, height, coordinate)
     }
 
-    private fun worldFromAxes(longitudinal: Double, transverse: Double, ux: Double, uy: Double): Pair<Double, Double> {
-        val nx = -uy
-        val ny = ux
-        return longitudinal * ux + transverse * nx to longitudinal * uy + transverse * ny
+    private fun worldFromAxes(longitudinal: Double, transverse: Double, axisX: Double, axisY: Double): Pair<Double, Double> {
+        val nx = -axisY
+        val ny = axisX
+        return longitudinal * axisX + transverse * nx to longitudinal * axisY + transverse * ny
     }
 
     private fun inverseProject(h: List<Double>, x: Double, y: Double): Pair<Double, Double> {
@@ -220,7 +243,14 @@ object AutoSpeedGateBuilder {
         return ((inv[0] * x + inv[1] * y + inv[2]) / w) to ((inv[3] * x + inv[4] * y + inv[5]) / w)
     }
 
-    private fun clipSegment(x0: Double, y0: Double, x1: Double, y1: Double, width: Double, height: Double): Pair<Pair<Double, Double>, Pair<Double, Double>>? {
+    private fun clipSegment(
+        x0: Double,
+        y0: Double,
+        x1: Double,
+        y1: Double,
+        width: Double,
+        height: Double,
+    ): Pair<Pair<Double, Double>, Pair<Double, Double>>? {
         var t0 = 0.0
         var t1 = 1.0
         val dx = x1 - x0
@@ -288,12 +318,16 @@ object SpeedGateEstimator {
             durationMs = (second.timestampMs - first.timestampMs).toLong(),
             velocityXMps = gate.axisX * speedMps,
             velocityYMps = gate.axisY * speedMps,
-            directionDegrees = Math.toDegrees(kotlin.math.atan2(gate.axisY, gate.axisX)),
+            directionDegrees = Math.toDegrees(atan2(gate.axisY, gate.axisX)),
             errorKmh = (errorMps * 3.6).coerceAtLeast(0.0),
         )
     }
 
-    private fun crossings(observations: List<TrackObservation>, coordinate: (TrackObservation) -> Double?, line: Double): List<Crossing> {
+    private fun crossings(
+        observations: List<TrackObservation>,
+        coordinate: (TrackObservation) -> Double?,
+        line: Double,
+    ): List<Crossing> {
         val result = ArrayList<Crossing>()
         for (i in 1 until observations.size) {
             val a = observations[i - 1]
