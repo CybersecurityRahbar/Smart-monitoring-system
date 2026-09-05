@@ -169,3 +169,14 @@ The required user-facing baseline for the next practical test is: Android local 
 Never claim 'zero bugs' or 'production ready' from static inspection alone. The strongest defensible status is 'implemented and verified by [specific test layers]'. Device-specific native/runtime stability requires actual device evidence.
 
 This project owner explicitly requires the cumulative context document under `docs` to be updated as part of every material work cycle and before a response closes, recording decisions, changes, failures, tests, unresolved risks, and the exact repository state needed to resume work without reconstructing prior conversation context.
+
+## Engineering-pass log — 2026-09-05 — CI fixes after Run #396
+Run #396 (`33974167681`) failed Android `compileDebugKotlin` because `LiveAnalysisViewModel` still passed the removed `scope = viewModelScope` argument to the newly self-owned `MjpegFrameSource`. The source constructor is now self-owned, so the stale named argument was removed.
+
+Run #396 also failed the new ESP32 job before compiling source code because PlatformIO could not resolve the dependency declaration `espressif/esp32-camera @ ^2.0.5`. The camera library is provided by the ESP32 Arduino framework used by this project, so the invalid registry dependency was removed from `esp32/platformio.ini`.
+
+On the first actual firmware compile after that correction, CI Run #397 (`33974604758`) reached `main.cpp` compilation and reported that `camera_status_t` has no `width` or `height` members. Those fields were incorrectly read by `jsonStatus()`. The status response now reports the explicitly configured VGA dimensions (640x480), matching the firmware's enforced `FRAMESIZE_VGA` configuration.
+
+The fixes were committed on the current `main` as `dbef0c69d18edb2e64b53c8fdf730792625a6799` (Android constructor + PlatformIO dependency) and `a4a4666cbc70fc6a0295317a4c71e180d71806f5` (ESP32 status dimensions). CI Run #398 (`33974699808`) was triggered from the latter exact SHA and is the current verification target. At the time of this context update its jobs were still pending/not yet available, so no success is claimed.
+
+This cycle also confirms the intended firmware build contract: AI-Thinker must compile first, followed by ESP32-S3-N16R8; a failure in one target currently prevents the second environment from running because the workflow uses sequential `pio run` steps. Both targets remain required for the release gate.
