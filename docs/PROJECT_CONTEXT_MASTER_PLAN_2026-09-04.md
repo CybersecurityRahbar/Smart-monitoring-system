@@ -40,6 +40,18 @@ Measurement-grade speed requires validated calibration, authoritative timestamps
 
 Live MJPEG uses `LOCAL_MONOTONIC_ARRIVAL` timestamps, so physical live speed remains blocked until authoritative source timing and calibration are available.
 
+## Reference implementations reviewed — 2026-09-05
+### `swhan0329/vehicle_speed_estimation`
+The repository is a lightweight fixed-camera OpenCV baseline. It uses Lucas–Kanade optical-flow point tracking with forward/backward consistency, configurable lane polygons, lane-specific `px_to_meter` calibration, and lane speed derived from point displacement multiplied by scale and source FPS. The important lesson is that simple smooth tracking comes from avoiding a full detector on every point, while the important measurement limitation is that the pixel-to-metre scale is scene/camera-specific and must be calibrated rather than guessed.
+
+### `vietanhlee/Smart-Traffic-Monitoring-System`
+The repository is a closer architecture reference for this project: YOLO + ByteTrack, multiprocessing for multi-camera processing, low-latency WebRTC, CPU/GPU execution, and multiple inference/export backends including TensorRT, OpenVINO and INT8 variants. Its design explains why a CPU-only mobile detector can visibly lag behind a natural-speed presentation clock even when the overall algorithm is logically correct. The project should borrow the separation of media transport, inference, tracking and acceleration, not blindly copy backend-specific infrastructure into Android.
+
+### Algorithmic research direction
+Recent YOLO26 tooling supports tracking with ByteTrack/BoT-SORT/other trackers and exports such as LiteRT, ONNX, TensorRT and OpenVINO. BoT-SORT adds appearance and camera-motion compensation on top of motion association. These are candidate improvements for a later real-time/mobile acceleration pass. No claim is made that the current Android tracker is reference-equivalent to ByteTrack or BoT-SORT.
+
+Automatic camera/road self-calibration is an active research problem. Camera/road geometry can be inferred from visible road features or vehicle keypoints, but calibration-free monocular speed papers still report nonzero error and remain benchmarked estimates, not exact speed. Therefore the project must not invent metres from arbitrary phone video without a valid physical scale assumption.
+
 ## Frame sources
 `FrameSource` exposes `droppedFrameCount` as a property.
 
@@ -47,38 +59,63 @@ Live MJPEG uses `LOCAL_MONOTONIC_ARRIVAL` timestamps, so physical live speed rem
 
 `LocalImageFrameSource` and local video sources have bounded ownership/cleanup. Preview rendering must never determine analysis throughput.
 
-## Local laboratory playback architecture — 2026-09-05
-The previous local-lab video symptom was traced to an architectural coupling: `LocalVideoFrameSource.nextFrame()` feeds the detector/tracker pipeline sequentially, and the UI preview was receiving decoded bitmaps from that same analysis-driven stream. Therefore, when CPU inference was slower than the video's nominal FPS, the displayed video advanced at analysis speed instead of the video's natural playback clock. This was confirmed by repository inspection: the pipeline calls `source.nextFrame()`, runs detector/tracker work, then emits the preview; there was no independent playback clock for the displayed video.
+## Local laboratory playback — empirical finding from APK #420
+The user tested APK #420 with several downloaded phone videos rather than one fixed video. The recorded video playback rate was correct and natural. However, tracking boxes appeared only after a visible delay because the analysis pipeline processed frames serially on CPU while ExoPlayer played independently. This is a real latency/architecture defect, not a reason to weaken detector quality.
 
-This is not fixed by reducing detector quality or skipping analysis frames. The required architecture is to separate media presentation from AI processing. Web research corroborates this design: Android Media3/ExoPlayer exposes the current playback position and continuous polling can drive synchronized UI state; the project therefore uses an independent presentation clock for recorded videos. citeturn852415search4
+The lab design is therefore changed to **analyze first, then replay deterministically** for recorded-video validation. The analyzer processes the source in timestamp order; playback stays paused while analysis runs; after the complete track history is available, ExoPlayer starts at time zero and the overlay interpolates track observations against the video's playback position. This guarantees that the lab replay cannot outrun the known analysis result. This mode is intentionally different from future live ESP32 operation, where a bounded real-time pipeline and acceleration are required.
 
-Implementation added in the prior pass:
-- `androidx.media3:media3-exoplayer:1.11.0` and `androidx.media3:media3-ui:1.11.0` dependencies.
-- `AnalysisVideoPlayback.kt` with an independent ExoPlayer presentation clock. The AI pipeline does not control video playback speed.
-- `view_analysis_player.xml` using Media3 `PlayerView` with `surface_type="texture_view"` so the Compose/Canvas tracking overlay can render reliably above the video surface.
-- `AnalysisPreviewFrame.videoUri` carries the exact selected local video source for playback.
-- `LocalAnalysisViewModel` attaches the selected URI to video previews without changing detector/tracker configuration or lowering inference quality.
-- The video overlay reads ExoPlayer `currentPosition` and interpolates bounding boxes between timestamped track observations; it uses short-horizon extrapolation when playback is slightly ahead, keeping the visual tracking motion smooth without altering the underlying tracking data.
-- Vehicle tracking boxes in the visual preview use fluorescent green `#39FF14` with a 4px stroke. Labels remain white with a black shadow for readability.
-- Image analysis remains on the existing bitmap preview path; only recorded-video previews use the independent player.
+`AnalysisPreviewFrame.playbackReady` now explicitly controls whether recorded-video replay may start.
 
-## Tracking radar correction — 2026-09-05
-Repository review found a real visualization flaw in `AnalysisRadarPreview.kt`. The previous implementation calculated `minX/maxX/minY/maxY` from the **currently visible track points on every recomposition/frame**, then mapped the historical trajectory into that changing range. This made the radar viewport move/zoom as vehicles entered or left the scene, could reverse the apparent visual interpretation of motion, and allowed older history samples to map beyond the current bounds. This was a visualization-modeling error, not merely a cosmetic issue.
+## Tracking-radar correction and automatic speed gate — 2026-09-05
+The previous radar visualization recalculated min/max plotting bounds from the currently visible tracks on each frame, causing viewport drift when vehicles entered/left the scene. That code has been replaced by fixed `RadarBounds` supplied by the analysis pipeline. Metric mode uses the calibrated ground projection of the source-image corners; image-space mode uses the stable pixel coordinate system. Track labels are now `car ID: N` rather than `#N`.
 
-The correction is now implemented:
-- `RadarBounds` is an explicit preview datum instead of an implicit per-frame auto-range.
-- `AnalysisPipelineRunner` creates the radar bounds once from the source image dimensions for image-space mode.
-- When validated metric calibration is active, the pipeline projects the four source-image corners through the same calibrated ground projector and uses their fixed metric bounding box for the radar viewport.
-- Image-space radar now uses the same coordinate orientation as the video: X increases right and Y increases downward. It no longer invents a dynamic min/max frame each time.
-- Trajectory points are mapped through the fixed coordinate system, preventing viewport drift and history lines escaping because of a shrinking/expanding frame.
-- Video bounding boxes are defensively clamped to source-image bounds before rendering.
+A new `AutoSpeedGate.kt` implements a deterministic scene-adaptive timing gate:
+- gather actual vehicle contact-point observations from each individual track;
+- infer the dominant traffic-flow direction from adjacent samples **within each track**, then combine those vectors robustly;
+- place two cross-flow lines at robust 35th/65th longitudinal scene quantiles;
+- in calibrated mode, construct the lines in the metric ground plane, inverse-project them to image coordinates, and clip them to the actual video frame;
+- in uncalibrated mode, draw the same type of virtual lines in image-space only and deliberately do **not** claim metric speed.
 
-The radar is now a deterministic projection of the actual tracked observations. It is not yet a separate sensor-like radar and does not create synthetic trajectories.
+The critical correction in the gate algorithm is that unrelated vehicles are never treated as consecutive samples when estimating velocity. This prevents arbitrary direction vectors caused by concatenating different tracks.
 
-## Live/recorded speed display semantics — 2026-09-05
-`AnalysisVideoPlayback.kt` now displays a tracked vehicle's calibrated speed estimate as `≈ X km/h ± Y` whenever the live speed gate has produced a valid `SpeedEstimate`. No speed text is shown when the speed measurement gate has not passed. This is deliberately labeled as an estimate rather than an exact reference measurement.
+`SpeedGateEstimator` detects each vehicle's crossing of line 1 and line 2, linearly interpolates the crossing timestamp between source observations, and computes speed from known metric separation divided by the measured crossing-time interval. It also derives a timing-interpolation error bound. Calibration/detection/model uncertainty is not falsely hidden inside that number.
 
-Exact frame-for-frame synchronization still requires physical-device testing. The independent player guarantees that the video presentation clock is not slowed by inference; it does not prove that analysis observations are always available early enough to cover every presented frame.
+The pipeline now carries `speedGate` and `uniqueVehiclesDetected` through `AnalysisPreviewFrame`. The cumulative count is based on unique confirmed Track IDs and is independent of the current active-track count, so a vehicle leaving the frame no longer decreases the total detected count.
+
+## Current UI semantics after lab feedback
+Recorded-video lab replay now:
+- uses the original video at natural speed after analysis completes;
+- shows fluorescent-green vehicle boxes;
+- labels vehicles as `car ID: 1`, `car ID: 2`, etc.;
+- separates `Cars detected` (cumulative unique tracks) from `Active` (vehicles currently visible);
+- draws fixed red `SPEED LINE 1` and `SPEED LINE 2` when a gate can be inferred;
+- displays a speed beside a vehicle ID only after a calibrated line-crossing measurement is available;
+- never presents the visual-only gate as a metric measurement when no validated calibration is available.
+
+## Current code commits in this cycle
+- `012686f72cbdae81e1c1f9921312bcb0091877dc`: initial automatic speed-gate implementation.
+- `8693d947aa699f9b4c828e769988baac707df285`: corrected/strengthened speed-gate geometry and crossing uncertainty handling.
+- `5dc090ce34f9b57d176d190cafa75db5db4fea53`: preview model now carries speed gate and cumulative unique vehicle count.
+- `da0d3042ab6b879fe084719bcd823b20876edfcb`: analysis metrics now expose cumulative unique vehicle count.
+- `c341baf95fa66d752abb2d7d134897df7d6f9697`: pipeline integrates frozen automatic speed gates and cumulative vehicle counting.
+- `ac43e108663170de10655c47361069a0b7506e9b`: fixed automatic traffic-axis inference to use within-track motion only.
+- `b224ea23ff4cacd42409c05ff144f26a1670b6e9`: video overlay adds fixed red speed lines, `car ID: N`, and calibrated speed text.
+- `0ee068ee588f3015c6e0cd71045914d258a9f11f`: deterministic recorded-video replay waits for `playbackReady` and prevents boxes from appearing outside the actual observation interval.
+- `4ffce2bc53618120eb7c8ea8cc86e0895c1addf4`: radar UI shows cumulative vehicle count and the new ID format.
+- `6eca3d7e8bf715221f56c2e4196d8d34df803852`: Local Analysis publishes a completed full-track replay preview for recorded-video lab validation.
+- `89542218b3ca1ca1e1938fadf33f75d3af256a4b`: lab UI text/result metrics updated to document analyze-then-replay behavior and unique counts.
+
+## CI truth after APK #420 and current cycle
+Run #420 (`33984686267`) at SHA `e786f30a0fa57029370d62bc3095240884aa3244` completed successfully for Android Build & Test, Native C++ Parity, ESP32 firmware, and Offline Research Math. APK #420 was therefore a valid build, but the user's physical test exposed functional latency that CI cannot detect.
+
+The code commits listed in the current cycle supersede #420, so #420 does not certify the new automatic speed gate, cumulative counter, synchronized replay, or current UI changes. A fresh CI run is mandatory on the final current SHA before another APK is distributed.
+
+## Current verification target
+Current repository HEAD is the most recent code commit after the automatic speed-gate and deterministic replay changes. The next gate must verify Android Build & Test, instrumentation APK compilation, unit tests, lint, Native C++ parity, Research Math, and both ESP32 firmware targets at the exact current SHA.
+
+After CI, recorded-video physical validation should use **multiple different phone videos and multiple camera/road arrangements**, not a single chosen video. The test matrix should include different traffic directions, vehicle densities, distances, camera heights/angles, daylight conditions, perspective strength, and partial occlusion.
+
+A separate future performance pass is still required for truly real-time live operation. It should benchmark hardware-accelerated LiteRT delegates on target devices, detector latency/P95, tracker latency, queue depth, end-to-end timestamp lag, and dropped frames before enabling acceleration as default.
 
 ## ANPR
 Required real pipeline:
@@ -156,22 +193,7 @@ Fixed in commit `b72a512cc9db17600affecd25b48966ebc5ad9e3e` by removing that uns
 
 Run #415 (`33983483845`) from documentation commit `7aed48c4c22d426b75cf810574c97e7d0e6dbe4e` completed successfully across its listed verification jobs: Android Build & Test, instrumentation APK compilation, unit tests, Android lint, Native C++ parity, Research Math, and both ESP32 firmware targets. This result is valid for SHA `7aed48...` only and does not certify later code changes.
 
-The subsequent current code changes are:
-- `acee871d06a8f24cef7364dbe77dced05b6fd451`: explicit `RadarBounds` preview datum.
-- `009ddd1eeea1db3f6625a7c07e9a3b3aa5b05f09`: stable radar bounds derived once from source dimensions or calibrated image corners.
-- `24db9461264c9bc543c429d403b505e39564a829`: deterministic fixed-coordinate radar rendering; image-space orientation now follows the video coordinate system.
-- `045e630bc87b440df8ca126a21c8ec25079b4751`: calibrated speed estimate overlay displayed as `≈ km/h ± error` and defensive video-box clamping.
-
-These changes supersede the previously verified SHA, so **a new CI run is required before distributing another APK**.
-
-## Current verification target
-Current repository HEAD is `045e630bc87b440df8ca126a21c8ec25079b4751`.
-
-The latest fully verified CI result before the radar/speed changes is Run #415 (`33983483845`) at SHA `7aed48c4c22d426b75cf810574c97e7d0e6dbe4e`. The next gate must verify the current HEAD across Android Build & Test, instrumentation APK compilation, unit tests, lint, Native C++ parity, Research Math, and both ESP32 firmware targets.
-
-Do not issue a new APK-testing instruction based only on the older #415 result. Physical testing after the new gate should independently verify: original video playback rate; tracking boxes, ID persistence, and vehicle count; radar direction/trajectory stability; calibrated speed values and error; analysis/frame-gap behavior; lifecycle stability; and absence of image-analysis regressions.
-
-No statement of "exact speed" is permitted without a physical ground-truth benchmark. A successful calibration and robust estimator produce a **validated estimate**, not mathematical certainty.
+Run #420 (`33984686267`) from documentation commit `e786f30a0fa57029370d62bc3095240884aa3244` completed successfully across Android Build & Test, Native C++ parity, ESP32 firmware and Offline Research Math. The user then physically tested APK #420 and exposed a functional analysis-latency defect, which CI correctly did not detect.
 
 ## Non-negotiable honesty rules
 No map integration unless explicitly requested; previous map integration caused UI/display problems and is intentionally excluded.
