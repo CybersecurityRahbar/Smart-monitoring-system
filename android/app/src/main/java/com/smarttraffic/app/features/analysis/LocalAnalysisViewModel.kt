@@ -10,6 +10,7 @@ import com.smarttraffic.app.SmartTrafficApplication
 import com.smarttraffic.app.core.AnalysisDiagnostics
 import com.smarttraffic.app.core.TrafficRulePreferences
 import com.smarttraffic.app.data.analysis.AnalysisRuntimeFactory
+import com.smarttraffic.app.data.analysis.ExactPtsVideoFrameSource
 import com.smarttraffic.app.data.analysis.LocalImageFrameSource
 import com.smarttraffic.app.data.analysis.LocalVideoFrameSource
 import com.smarttraffic.app.data.evidence.FileEvidenceStore
@@ -49,8 +50,7 @@ data class AnalysisRunState(
 
 /** Local Lab adapter. The execution lifecycle is owned by the application-scoped AnalysisHost. */
 class LocalAnalysisViewModel(application: android.app.Application) : AndroidViewModel(application) {
-    private val session: UnifiedAnalysisSession =
-        application.cast<SmartTrafficApplication>().analysisHost.session
+    private val session: UnifiedAnalysisSession = application.cast<SmartTrafficApplication>().analysisHost.session
     private val _state = MutableStateFlow(AnalysisRunState())
     val state: StateFlow<AnalysisRunState> = _state.asStateFlow()
 
@@ -67,15 +67,10 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
     }
 
     fun run(uri: Uri, mediaType: AnalysisMediaType, config: AnalysisConfig) {
-        if (session.state.value.phase == AnalysisSessionPhase.STARTING ||
-            session.state.value.phase == AnalysisSessionPhase.RUNNING
-        ) return
+        if (session.state.value.phase == AnalysisSessionPhase.STARTING || session.state.value.phase == AnalysisSessionPhase.RUNNING) return
 
         _preview.value = null
-        _state.value = AnalysisRunState(
-            phase = AnalysisRunPhase.RUNNING,
-            message = "Preparing detector and media decoder…",
-        )
+        _state.value = AnalysisRunState(phase = AnalysisRunPhase.RUNNING, message = "Preparing detector and media decoder…")
         viewModelScope.launch(Dispatchers.Default) {
             val app = getApplication<SmartTrafficApplication>()
             val runId = AnalysisDiagnostics.newRun(app)
@@ -102,7 +97,11 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                 AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.MEDIA_OPEN, modelId = spec.id, accelerator = runtime!!.accelerator.name, mediaDescription = "type=$mediaType uri=$uri")
                 _state.value = AnalysisRunState(AnalysisRunPhase.RUNNING, "Opening selected media…", runtime!!.accelerator.name)
                 source = when (mediaType) {
-                    AnalysisMediaType.VIDEO -> LocalVideoFrameSource(app, uri)
+                    AnalysisMediaType.VIDEO -> if (effectiveConfig.useGroundPlane) {
+                        ExactPtsVideoFrameSource(app, uri)
+                    } else {
+                        LocalVideoFrameSource(app, uri)
+                    }
                     AnalysisMediaType.IMAGE -> {
                         val bitmap = app.contentResolver.openInputStream(uri).use { stream ->
                             requireNotNull(stream) { "Unable to open selected image" }
@@ -208,8 +207,7 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
         result.trafficEvents.filter { it.evidenceRequested }.forEach { event ->
             val track = result.tracks.firstOrNull { it.id == event.trackId } ?: return@forEach
             val observation = track.observations.minByOrNull { kotlin.math.abs(it.timestampMs - event.timestampMs) } ?: return@forEach
-            val plate = result.plateReadings.filter { it.trackId == event.trackId }
-                .minByOrNull { kotlin.math.abs(it.timestampMs - event.timestampMs) }
+            val plate = result.plateReadings.filter { it.trackId == event.trackId }.minByOrNull { kotlin.math.abs(it.timestampMs - event.timestampMs) }
             val artifacts = captureEvidenceArtifacts(app, mediaType, result.source.uri, event.timestampMs, observation.detection)
             store.save(
                 EvidenceRecord(
