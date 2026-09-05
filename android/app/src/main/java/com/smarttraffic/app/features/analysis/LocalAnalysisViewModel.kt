@@ -1,6 +1,8 @@
 package com.smarttraffic.app.features.analysis
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -18,6 +20,7 @@ import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewObserver
 import com.smarttraffic.app.domain.analysis.AnalysisResult
 import com.smarttraffic.app.domain.analysis.AnalysisSessionPhase
+import com.smarttraffic.app.domain.analysis.EvidenceArtifacts
 import com.smarttraffic.app.domain.analysis.EvidenceRecord
 import com.smarttraffic.app.domain.analysis.FrameSource
 import com.smarttraffic.app.domain.analysis.KotlinGroundProjector
@@ -30,7 +33,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
+import java.io.ByteArrayOutputStream
+import kotlin.math.max
+import kotlin.math.min
 
 enum class AnalysisRunPhase { IDLE, RUNNING, SUCCESS, ERROR }
 enum class AnalysisMediaType { VIDEO, IMAGE }
@@ -83,51 +88,19 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                     enableRules = config.enableRules || persistedRules.enabled,
                     trafficRules = persistedRules,
                     enableEvidence = config.enableEvidence || persistedRules.preserveEvidence,
-                    // Baseline device validation isolates detector/tracker from optional appearance work.
                     useAppearanceAssociation = false,
                 )
 
-                AnalysisDiagnostics.mark(
-                    context = app,
-                    runId = runId,
-                    stage = AnalysisDiagnostics.Stage.MODEL_VALIDATE,
-                    modelId = effectiveConfig.detectorModel,
-                )
+                AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.MODEL_VALIDATE, modelId = effectiveConfig.detectorModel)
                 val spec = DetectorModelRegistry.requireSpec(effectiveConfig.detectorModel)
-                require(DetectorModelRegistry.isInstalled(app, spec)) {
-                    "Detector model is not installed: ${spec.assetPath}"
-                }
+                require(DetectorModelRegistry.isInstalled(app, spec)) { "Detector model is not installed: ${spec.assetPath}" }
 
-                AnalysisDiagnostics.mark(
-                    context = app,
-                    runId = runId,
-                    stage = AnalysisDiagnostics.Stage.MODEL_INITIALIZE,
-                    modelId = spec.id,
-                    accelerator = "CPU",
-                )
-                _state.value = AnalysisRunState(
-                    phase = AnalysisRunPhase.RUNNING,
-                    message = "Initializing LiteRT CPU detector…",
-                )
-                runtime = AnalysisRuntimeFactory.createDetector(
-                    context = app,
-                    modelId = spec.id,
-                    useAppearanceAssociation = effectiveConfig.useAppearanceAssociation,
-                )
+                AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.MODEL_INITIALIZE, modelId = spec.id, accelerator = "CPU")
+                _state.value = AnalysisRunState(AnalysisRunPhase.RUNNING, "Initializing LiteRT CPU detector…")
+                runtime = AnalysisRuntimeFactory.createDetector(app, spec.id, effectiveConfig.useAppearanceAssociation)
 
-                AnalysisDiagnostics.mark(
-                    context = app,
-                    runId = runId,
-                    stage = AnalysisDiagnostics.Stage.MEDIA_OPEN,
-                    modelId = spec.id,
-                    accelerator = runtime!!.accelerator.name,
-                    mediaDescription = "type=$mediaType uri=$uri",
-                )
-                _state.value = AnalysisRunState(
-                    phase = AnalysisRunPhase.RUNNING,
-                    message = "Opening selected media…",
-                    accelerator = runtime!!.accelerator.name,
-                )
+                AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.MEDIA_OPEN, modelId = spec.id, accelerator = runtime!!.accelerator.name, mediaDescription = "type=$mediaType uri=$uri")
+                _state.value = AnalysisRunState(AnalysisRunPhase.RUNNING, "Opening selected media…", runtime!!.accelerator.name)
                 source = when (mediaType) {
                     AnalysisMediaType.VIDEO -> LocalVideoFrameSource(app, uri)
                     AnalysisMediaType.IMAGE -> {
@@ -140,9 +113,9 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                 }
 
                 AnalysisDiagnostics.mark(
-                    context = app,
-                    runId = runId,
-                    stage = AnalysisDiagnostics.Stage.PIPELINE_START,
+                    app,
+                    runId,
+                    AnalysisDiagnostics.Stage.PIPELINE_START,
                     modelId = spec.id,
                     accelerator = runtime!!.accelerator.name,
                     mediaDescription = "${source!!.source.uri} type=$mediaType",
@@ -150,8 +123,7 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                 )
 
                 var lastPreviewNs = Long.MIN_VALUE
-                val previewIntervalNs = (1_000_000_000.0 / effectiveConfig.maximumPreviewFps.coerceAtLeast(0.1))
-                    .toLong()
+                val previewIntervalNs = (1_000_000_000.0 / effectiveConfig.maximumPreviewFps.coerceAtLeast(0.1)).toLong()
                 val observer = AnalysisPreviewObserver { previewFrame ->
                     val nowNs = System.nanoTime()
                     if (lastPreviewNs == Long.MIN_VALUE || nowNs - lastPreviewNs >= previewIntervalNs) {
@@ -168,26 +140,16 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                     speedEstimator = KotlinSpeedEstimatorBackend,
                 )
 
-                val started = session.start(
-                    source = source!!,
-                    engine = engine,
-                    config = effectiveConfig,
-                    accelerator = runtime!!.accelerator.name,
-                    runtime = runtime,
-                )
+                val started = session.start(source!!, engine, effectiveConfig, runtime!!.accelerator.name, runtime)
                 if (!started) {
-                    _state.value = AnalysisRunState(
-                        phase = AnalysisRunPhase.ERROR,
-                        message = "Another analysis session is already active.",
-                        accelerator = runtime!!.accelerator.name,
-                    )
+                    _state.value = AnalysisRunState(AnalysisRunPhase.ERROR, "Another analysis session is already active.", runtime!!.accelerator.name)
                     return@launch
                 }
                 sessionOwnsResources = true
                 AnalysisDiagnostics.mark(
-                    context = app,
-                    runId = runId,
-                    stage = AnalysisDiagnostics.Stage.RUNNING,
+                    app,
+                    runId,
+                    AnalysisDiagnostics.Stage.RUNNING,
                     modelId = spec.id,
                     accelerator = runtime!!.accelerator.name,
                     mediaDescription = source!!.source.uri,
@@ -214,27 +176,23 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                 }
 
                 finalState.result?.let { result ->
-                    if (effectiveConfig.enableEvidence) persistEvidence(app, result)
+                    if (effectiveConfig.enableEvidence) persistEvidence(app, result, mediaType)
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.STOPPED, completed = true)
                 throw cancelled
             } catch (t: Throwable) {
                 AnalysisDiagnostics.mark(
-                    context = app,
-                    runId = runId,
-                    stage = AnalysisDiagnostics.Stage.FAILED,
+                    app,
+                    runId,
+                    AnalysisDiagnostics.Stage.FAILED,
                     modelId = config.detectorModel,
                     accelerator = runtime?.accelerator?.name,
                     mediaDescription = source?.source?.uri ?: uri.toString(),
                     frameInfo = "${t::class.java.name}: ${t.message}",
                     completed = false,
                 )
-                _state.value = AnalysisRunState(
-                    phase = AnalysisRunPhase.ERROR,
-                    message = t.message ?: t::class.java.simpleName,
-                    accelerator = runtime?.accelerator?.name,
-                )
+                _state.value = AnalysisRunState(AnalysisRunPhase.ERROR, t.message ?: t::class.java.simpleName, runtime?.accelerator?.name)
             } finally {
                 if (!sessionOwnsResources) {
                     runCatching { source?.close() }
@@ -244,24 +202,22 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
         }
     }
 
-    private suspend fun persistEvidence(app: SmartTrafficApplication, result: AnalysisResult) = withContext(Dispatchers.IO) {
+    private suspend fun persistEvidence(app: SmartTrafficApplication, result: AnalysisResult, mediaType: AnalysisMediaType) = withContext(Dispatchers.IO) {
         if (result.trafficEvents.isEmpty()) return@withContext
         val store = FileEvidenceStore(app)
         result.trafficEvents.filter { it.evidenceRequested }.forEach { event ->
-            val track = result.tracks.firstOrNull { it.id == event.trackId }
-            val nearestObservation = track?.observations?.minByOrNull {
-                kotlin.math.abs(it.timestampMs - event.timestampMs)
-            }
-            val plate = result.plateReadings
-                .filter { it.trackId == event.trackId }
+            val track = result.tracks.firstOrNull { it.id == event.trackId } ?: return@forEach
+            val observation = track.observations.minByOrNull { kotlin.math.abs(it.timestampMs - event.timestampMs) } ?: return@forEach
+            val plate = result.plateReadings.filter { it.trackId == event.trackId }
                 .minByOrNull { kotlin.math.abs(it.timestampMs - event.timestampMs) }
+            val artifacts = captureEvidenceArtifacts(app, mediaType, result.source.uri, event.timestampMs, observation.detection)
             store.save(
                 EvidenceRecord(
                     id = event.id,
                     eventId = event.id,
                     sourceId = result.source.id,
                     sourceUri = result.source.uri,
-                    frameIndex = nearestObservation?.frameIndex ?: -1L,
+                    frameIndex = observation.frameIndex,
                     timestampMs = event.timestampMs,
                     eventType = event.type,
                     measuredSpeedKmh = event.measuredSpeedKmh,
@@ -275,7 +231,74 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                     tracker = event.tracker,
                     createdAtMs = System.currentTimeMillis(),
                 ),
+                artifacts,
             )
+        }
+    }
+
+    private fun captureEvidenceArtifacts(
+        app: SmartTrafficApplication,
+        mediaType: AnalysisMediaType,
+        sourceUri: String,
+        timestampMs: Long,
+        detection: com.smarttraffic.app.domain.analysis.Detection,
+    ): EvidenceArtifacts {
+        val bitmap = when (mediaType) {
+            AnalysisMediaType.IMAGE -> app.contentResolver.openInputStream(Uri.parse(sourceUri)).use { stream ->
+                requireNotNull(stream) { "Unable to reopen evidence image" }
+                requireNotNull(BitmapFactory.decodeStream(stream)) { "Unable to decode evidence image" }
+            }
+            AnalysisMediaType.VIDEO -> MediaMetadataRetriever().let { retriever ->
+                try {
+                    retriever.setDataSource(app, Uri.parse(sourceUri))
+                    requireNotNull(retriever.getFrameAtTime(timestampMs.coerceAtLeast(0L) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST)) {
+                        "Unable to decode evidence video frame at ${timestampMs}ms"
+                    }
+                } finally {
+                    retriever.release()
+                }
+            }
+        }
+        try {
+            val frameJpeg = encodeBoundedJpeg(bitmap, 1920, 4 * 1024 * 1024)
+            val crop = cropDetection(bitmap, detection)
+            try {
+                return EvidenceArtifacts(frameJpeg, encodeBoundedJpeg(crop, 640, 768 * 1024))
+            } finally {
+                if (crop !== bitmap && !crop.isRecycled) crop.recycle()
+            }
+        } finally {
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+    }
+
+    private fun cropDetection(bitmap: Bitmap, detection: com.smarttraffic.app.domain.analysis.Detection): Bitmap {
+        val width = max(1f, detection.right - detection.left)
+        val height = max(1f, detection.bottom - detection.top)
+        val marginX = width * 0.10f
+        val marginY = height * 0.15f
+        val left = (detection.left - marginX).toInt().coerceIn(0, bitmap.width - 1)
+        val top = (detection.top - marginY).toInt().coerceIn(0, bitmap.height - 1)
+        val right = (detection.right + marginX).toInt().coerceIn(left + 1, bitmap.width)
+        val bottom = (detection.bottom + marginY).toInt().coerceIn(top + 1, bitmap.height)
+        return Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
+    }
+
+    private fun encodeBoundedJpeg(bitmap: Bitmap, maxDimension: Int, maxBytes: Int): ByteArray {
+        val scale = min(1.0, maxDimension.toDouble() / max(bitmap.width, bitmap.height).toDouble())
+        val width = max(1, (bitmap.width * scale).toInt())
+        val height = max(1, (bitmap.height * scale).toInt())
+        val working = if (width == bitmap.width && height == bitmap.height) bitmap else Bitmap.createScaledBitmap(bitmap, width, height, true)
+        try {
+            for (quality in intArrayOf(92, 84, 76, 68, 60)) {
+                val output = ByteArrayOutputStream()
+                check(working.compress(Bitmap.CompressFormat.JPEG, quality, output)) { "Unable to encode evidence JPEG" }
+                val bytes = output.toByteArray()
+                if (bytes.size <= maxBytes) return bytes
+            }
+            error("Evidence JPEG exceeds bounded size of $maxBytes bytes")
+        } finally {
+            if (working !== bitmap && !working.isRecycled) working.recycle()
         }
     }
 }
