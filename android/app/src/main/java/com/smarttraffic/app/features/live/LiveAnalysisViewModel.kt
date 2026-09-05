@@ -87,7 +87,6 @@ class LiveAnalysisViewModel(application: android.app.Application) : AndroidViewM
                 )
                 source = MjpegFrameSource(
                     url = DeviceSettings.streamUrl(),
-                    scope = viewModelScope,
                 )
                 val observer = AnalysisPreviewObserver { frame ->
                     session.publishPreview(frame)
