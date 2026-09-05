@@ -37,14 +37,15 @@ import androidx.media3.ui.PlayerView
 import com.smarttraffic.app.R
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
 import com.smarttraffic.app.domain.analysis.Detection
+import com.smarttraffic.app.domain.analysis.SpeedGate
 import com.smarttraffic.app.domain.analysis.Track
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Real video playback is intentionally independent from the analysis frame producer.
- * Media3 owns the presentation clock; the AI pipeline may run faster or slower without changing
- * the video's playback rate.
+ * Media3 owns the presentation clock. The AI analysis pipeline is not allowed to slow recorded
+ * video playback. The first analyzed frame is allowed to arrive before playback starts so that
+ * the user does not see a long empty interval before the first tracking box appears.
  */
 @Composable
 fun AnalysisVideoPlayback(
@@ -60,7 +61,7 @@ fun AnalysisVideoPlayback(
             setMediaItem(MediaItem.fromUri(videoUri))
             repeatMode = ExoPlayer.REPEAT_MODE_OFF
             prepare()
-            playWhenReady = true
+            playWhenReady = false
         }
     }
 
@@ -74,6 +75,13 @@ fun AnalysisVideoPlayback(
         while (true) {
             positionMs = player.currentPosition.coerceAtLeast(0L)
             kotlinx.coroutines.delay(16L)
+        }
+    }
+
+    LaunchedEffect(player, preview.frame.index) {
+        if (preview.frame.index >= 1L) {
+            player.playWhenReady = true
+            player.play()
         }
     }
 
@@ -97,6 +105,7 @@ fun AnalysisVideoPlayback(
             val offsetX = (size.width - contentWidth) * 0.5f
             val offsetY = (size.height - contentHeight) * 0.5f
             val trackColor = Color(0xFF39FF14)
+            val gateColor = Color.Red
             val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 textSize = 28f
                 typeface = android.graphics.Typeface.create(
@@ -105,6 +114,32 @@ fun AnalysisVideoPlayback(
                 )
                 color = android.graphics.Color.WHITE
                 setShadowLayer(6f, 0f, 2f, android.graphics.Color.BLACK)
+            }
+            val gatePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.RED
+                strokeWidth = 5f
+                style = android.graphics.Paint.Style.STROKE
+                setShadowLayer(6f, 0f, 1f, android.graphics.Color.BLACK)
+            }
+            val gateTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                textSize = 24f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                color = android.graphics.Color.RED
+                setShadowLayer(5f, 0f, 2f, android.graphics.Color.BLACK)
+            }
+
+            val gate: SpeedGate? = preview.speedGate
+            if (gate != null) {
+                fun drawGateLine(lineX1: Double, lineY1: Double, lineX2: Double, lineY2: Double, text: String) {
+                    val x1 = offsetX + lineX1.toFloat().coerceIn(0f, sourceWidth) * scale
+                    val y1 = offsetY + lineY1.toFloat().coerceIn(0f, sourceHeight) * scale
+                    val x2 = offsetX + lineX2.toFloat().coerceIn(0f, sourceWidth) * scale
+                    val y2 = offsetY + lineY2.toFloat().coerceIn(0f, sourceHeight) * scale
+                    drawContext.canvas.nativeCanvas.drawLine(x1, y1, x2, y2, gatePaint)
+                    drawContext.canvas.nativeCanvas.drawText(text, x1.coerceAtLeast(8f), y1.coerceAtLeast(30f), gateTextPaint)
+                }
+                drawGateLine(gate.line1.startPixelX, gate.line1.startPixelY, gate.line1.endPixelX, gate.line1.endPixelY, "SPEED LINE 1")
+                drawGateLine(gate.line2.startPixelX, gate.line2.startPixelY, gate.line2.endPixelX, gate.line2.endPixelY, "SPEED LINE 2")
             }
 
             preview.tracks.forEach { track ->
@@ -124,10 +159,11 @@ fun AnalysisVideoPlayback(
                     style = Stroke(width = 4f),
                 )
                 val speedText = preview.speedEstimates[track.id]?.let { speed ->
-                    " • ≈ %.1f km/h ± %.1f".format(speed.kilometersPerHour, speed.errorKmh ?: 0.0)
+                    val error = speed.errorKmh?.let { " ± %.1f".format(it) } ?: ""
+                    " | speed: %.1f km/h%s".format(speed.kilometersPerHour, error)
                 }.orEmpty()
                 drawContext.canvas.nativeCanvas.drawText(
-                    "#${track.id} ${track.className}$speedText",
+                    "car ID: ${track.id}$speedText",
                     left.coerceAtLeast(4f),
                     (top - 8f).coerceAtLeast(30f),
                     labelPaint,
