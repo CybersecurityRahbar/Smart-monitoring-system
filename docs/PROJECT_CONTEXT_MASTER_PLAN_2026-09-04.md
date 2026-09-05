@@ -87,8 +87,11 @@ On the next launch, inspect supported process-exit history so the UI can disting
 
 ## Testing strategy
 Detector: asset SHA + input/output contract + one-frame smoke test.
+
 Tracker: deterministic association scenarios, detector misses, crossing vehicles, adjacent vehicles, occlusion and recovery, ID stability, plus quantitative metrics.
+
 Geometry: homography/golden vectors and invalid-calibration cases.
+
 Speed: synthetic trajectories, irregular PTS, duplicates, gaps, outliers, acceleration, wrong calibration, and rejection semantics. Kotlin/native implementations must share canonical test fixtures.
 
 Media: H.264/H.265, portrait/landscape rotation, common resolutions, long files, malformed/edge files, exact-PTS consistency, memory pressure and sustained throughput.
@@ -117,7 +120,7 @@ Search and eliminate or justify all TODO/FIXME placeholders, broad silent catche
 ## Current known non-complete areas
 The first physical-device crash in Local Analysis remains a historical incident whose original native/runtime root cause was not proven from device logs in the repository. Local Lab is deliberately simplified to CPU + Kotlin geometry/speed + ordinary video source and appearance association disabled for isolation.
 
-The current repository now has real bounded evidence artifacts at `android/app/src/main/java/com/smarttraffic/app/data/evidence/FileEvidenceStore.kt`. The evidence layer is no longer metadata-only: frame/vehicle/plate artifacts (where supplied) are SHA-256 content-addressed, serialized through a coroutine mutex, flushed before publication, atomically moved when supported, integrity-verified on read, and orphan-pruned under retention limits. Existing limitations remain around capturing the exact live MJPEG event frame and wiring a real ANPR/plate crop into the evidence path.
+The current repository has real bounded evidence artifacts at `android/app/src/main/java/com/smarttraffic/app/data/evidence/FileEvidenceStore.kt`. The evidence layer is no longer metadata-only: frame/vehicle/plate artifacts (where supplied) are SHA-256 content-addressed, serialized through a coroutine mutex, flushed before publication, atomically moved when supported, integrity-verified on read, and orphan-pruned under retention limits. Existing limitations remain around capturing the exact live MJPEG event frame and wiring a real ANPR/plate crop into the evidence path.
 
 Exact source PTS for local video is still unvalidated. A real ANPR/OCR backend is still unimplemented. Physical ESP32 camera validation is still pending. Quantitative tracking quality metrics such as ID switches/fragmentation/recovery latency still need benchmark fixtures and end-to-end reporting. Stress/memory and crash/ANR validation still require actual devices.
 
@@ -129,15 +132,21 @@ This behavior is a core product requirement, not a cosmetic UI feature.
 ## Engineering-pass log — 2026-09-05
 Run #331 previously failed Kotlin compilation because of duplicate LocalImageFrameSource declarations, stale/invalid sourceUri references, a missing Compose `nativeCanvas` import, and malformed LiveAnalysisViewModel session initialization. These were corrected.
 
-The follow-up Run #356 then failed in `LiveAnalysisViewModel.kt` because `FrameSource.droppedFrameCount` had been converted from a function to a property while four callers still invoked it with `()`. All four usages were corrected in commit `cedc14d789e05962b87d7e993ed88702883ae69d`.
+Run #356 then failed in `LiveAnalysisViewModel.kt` because `FrameSource.droppedFrameCount` had been converted from a function to a property while four callers still invoked it with `()`. All four usages were corrected in commit `cedc14d789e05962b87d7e993ed88702883ae69d`.
 
 CI Run #357 (`33971826268`) completed successfully at that commit across all three jobs: Android build/test, Android instrumentation APK compilation, unit tests, Android lint, native C++ parity vectors, and offline research math validation all passed. This proves the current build/test layers at that exact SHA; it does not prove physical-device runtime stability.
 
-After that verification, evidence persistence was hardened in commit `55426379e908213a9bb22d763ed30f2a7ac354c2`, followed by expanded instrumentation coverage in commit `39ad0c62e46a828461f01026f93652b176974570`. The evidence store now uses immutable content-addressed artifact filenames derived from SHA-256 rather than parsing record IDs, serializes store operations, verifies referenced artifacts during reads, uses flushed file publication with atomic-move support and safe fallback, and removes unreferenced artifacts during retention. New tests cover metadata/artifact persistence, retention, missing-artifact fail-closed behavior, and concurrent saves.
+After that verification, evidence persistence was hardened in commit `55426379e908213a9bb22d763ed30f2a7ac354c2`, followed by expanded instrumentation coverage in commit `39ad0c62e46a828461f01026f93652b176974570`. The evidence store moved to immutable SHA-addressed artifact filenames, serialized store operations, flushed publication with atomic-move support and safe fallback, integrity verification on read, and orphan pruning under retention. The initial post-change test assumptions were then updated so they validate the new content-addressed artifact names rather than the former ID-based names.
 
-The subsequent tracker-state integrity fix is commit `4dd4f597a401f68d909c6f493a0e9a7986482fe7d`. `AnalysisPipelineRunner` now preserves the tracker's terminal state in its bounded track buffer and returns that state in `AnalysisResult` instead of forcing every completed track to `CONFIRMED`. This prevents a track that ended `LOST` from being incorrectly treated as speed-eligible solely because its observations are numerically sufficient. The change is awaiting CI verification at the time of this document update.
+The tracker-state integrity fix is commit `4dd4f597a401f68d909c6f493a0e9a7986482fe7d`. `AnalysisPipelineRunner` now preserves the tracker's terminal state in its bounded track buffer and returns that state in `AnalysisResult` instead of forcing every completed track to `CONFIRMED`.
 
-The current `main` HEAD immediately before this documentation commit was `4dd4f597a401f68d909c6f493a0e9a7986482fe7d`. This documentation update creates a new HEAD and therefore requires its own CI check; never treat the earlier successful Run #357 as validation of the new documentation HEAD.
+CI Run #362 (`33972356642`) was triggered from the tracker-state documentation checkpoint and then failed in Android `compileDebugKotlin`. The exact compiler error was in `FileEvidenceStore.kt`: `override suspend fun clear()` inferred a non-Unit return type because the implementation body was an expression-bodied `withLock` whose result propagated. This was a preventable compile-time contract error that should have been caught by a local/static signature review before pushing. The correction is commit `a3d83a715eadcc11dbc556b482eda7119314b105`, which explicitly declares `clear(): Unit` and also hardens persistence behavior.
+
+After that failure, the Android instrumentation test `FileEvidenceStoreTest.kt` was updated in commit `9e014dad1553408beb070d04024d3064366ba5c9` to match SHA-addressed artifact filenames and to cover concurrent saves plus tamper detection in addition to persistence and retention. These two commits supersede the unverified state from Run #362 and require a new complete CI verification.
+
+The current engineering rule is strengthened: before every repository write, review the entire modified file and all interface/signature/caller contracts, check related tests against changed storage formats, and only then commit/push. After every push, CI is validation evidence, not a substitute for pre-push reasoning.
+
+The current `main` HEAD at the time of this context update is `9e014dad1553408beb070d04024d3064366ba5c9`. Its CI result is pending and must be checked at this exact SHA before claiming any verification. Previous CI success at #357 does not validate these later commits.
 
 This project owner explicitly requires the cumulative context document under `docs` to be updated as part of every material work cycle and before a response closes, recording decisions, changes, failures, tests, unresolved risks, and the exact repository state needed to resume work without reconstructing prior conversation context.
 
