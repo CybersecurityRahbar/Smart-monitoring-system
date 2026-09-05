@@ -264,3 +264,17 @@ private fun AnalysisResultCard(result: AnalysisResult, accelerator: String?) {
         }
     }
 }
+
+@Composable
+private fun MetricRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+private fun formatMs(value: Double?): String = value?.takeIf { it.isFinite() }?.let { "%.1f ms".format(it) } ?: "—"
