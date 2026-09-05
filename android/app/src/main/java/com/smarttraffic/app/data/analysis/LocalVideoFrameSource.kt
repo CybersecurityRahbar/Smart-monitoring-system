@@ -148,8 +148,17 @@ class LocalVideoFrameSource(
     }
 
     override suspend fun close() {
+        if (finished) return
         finished = true
-        pendingFrames.clear()
+        // These frames were prefetched but never handed to the analysis pipeline, so this source
+        // still owns them and can safely recycle them before releasing the decoder.
+        while (pendingFrames.isNotEmpty()) {
+            pendingFrames.removeFirst().recycleIfOwned()
+        }
         retriever.release()
+    }
+
+    private fun Bitmap.recycleIfOwned() {
+        if (!isRecycled) recycle()
     }
 }
