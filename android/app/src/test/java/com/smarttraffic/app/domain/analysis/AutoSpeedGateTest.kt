@@ -33,8 +33,8 @@ class AutoSpeedGateTest {
         val gate = requireNotNull(AutoSpeedGateBuilder.build(listOf(track), 100, 100, identityCalibration()))
         val speed = requireNotNull(SpeedGateEstimator.estimate(track, gate))
         assertEquals(3.6, speed.kilometersPerHour, 0.25)
-        assertTrue(speed.velocityXMps != null)
-        assertTrue(speed.velocityXMps!! < 0.0)
+        val velocityX = requireNotNull(speed.velocityXMps)
+        assertTrue(velocityX < 0.0)
     }
 
     private fun identityCalibration() = CalibrationProfile(
