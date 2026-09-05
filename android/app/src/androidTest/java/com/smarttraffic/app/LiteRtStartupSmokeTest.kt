@@ -5,7 +5,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.smarttraffic.app.data.analysis.AnalysisRuntimeFactory
 import com.smarttraffic.app.data.vision.DetectorModelRegistry
-import com.smarttraffic.app.domain.analysis.Detection
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertTrue
@@ -40,7 +39,7 @@ class LiteRtStartupSmokeTest {
         val bitmap = Bitmap.createBitmap(640, 640, Bitmap.Config.ARGB_8888)
         try {
             val detections = runtime!!.detector.detect(bitmap, timestampMs = 0L, frameIndex = 0L)
-            assertTrue("Detector invocation must complete without throwing", detections is List<Detection>)
+            assertTrue("Detector invocation must complete and return a result", detections != null)
             detections.forEach { detection ->
                 assertTrue(detection.confidence in 0f..1f)
                 assertTrue(detection.right > detection.left)
