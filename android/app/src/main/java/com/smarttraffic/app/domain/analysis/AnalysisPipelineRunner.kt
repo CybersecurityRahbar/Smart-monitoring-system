@@ -141,10 +141,12 @@ class AnalysisPipelineRunner(
                 if (bitmap != null) {
                     val liveTracks = tracks.mapNotNull { track ->
                         val buffer = trackBuffers[track.id] ?: return@mapNotNull null
+                        val observations = buffer.observations.toList()
+                        val recovery = recoveryStats(observations)
                         Track(
                             id = buffer.id,
                             className = buffer.className,
-                            observations = buffer.observations.toList(),
+                            observations = observations,
                             trackConfidence = buffer.confidenceSamples.average().toFloat().coerceIn(0f, 1f),
                             wasOccluded = buffer.wasOccluded,
                             state = track.state,
@@ -152,6 +154,8 @@ class AnalysisPipelineRunner(
                             misses = track.misses,
                             ageFrames = track.ageFrames,
                             lastTimestampMs = track.lastTimestampMs,
+                            recoveryCount = recovery.count,
+                            maximumRecoveryGapMs = recovery.maximumGapMs,
                         )
                     }
                     val liveSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
@@ -169,10 +173,12 @@ class AnalysisPipelineRunner(
 
         val completedTracks = trackBuffers.values.map { buffer ->
             val averageConfidence = if (buffer.confidenceSamples.isEmpty()) 0.0 else buffer.confidenceSamples.average()
+            val observations = buffer.observations.toList().sortedWith(compareBy<TrackObservation> { it.timestampMs }.thenBy { it.frameIndex })
+            val recovery = recoveryStats(observations)
             Track(
                 id = buffer.id,
                 className = buffer.className,
-                observations = buffer.observations.toList().sortedWith(compareBy<TrackObservation> { it.timestampMs }.thenBy { it.frameIndex }),
+                observations = observations,
                 trackConfidence = averageConfidence.toFloat().coerceIn(0f, 1f),
                 wasOccluded = buffer.wasOccluded,
                 state = buffer.state,
@@ -180,6 +186,8 @@ class AnalysisPipelineRunner(
                 misses = buffer.misses,
                 ageFrames = buffer.ageFrames,
                 lastTimestampMs = buffer.lastTimestampMs,
+                recoveryCount = recovery.count,
+                maximumRecoveryGapMs = recovery.maximumGapMs,
             )
         }
 
@@ -197,8 +205,13 @@ class AnalysisPipelineRunner(
                 continue
             }
             val estimate = speedEstimator.estimate(track.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
-            if (estimate != null) speedEstimates[track.id] = estimate
-            else speedRejections[track.id] = SpeedRejectionReason.ROBUST_ESTIMATOR_REJECTION
+            if (estimate != null && estimate.kilometersPerHour.isFinite() && estimate.kilometersPerHour >= 0.0 && estimate.kilometersPerHour <= config.maxPlausibleSpeedKmh) {
+                speedEstimates[track.id] = estimate
+            } else {
+                speedRejections[track.id] = if (estimate?.kilometersPerHour?.isFinite() == false || (estimate?.kilometersPerHour ?: 0.0) > config.maxPlausibleSpeedKmh) {
+                    SpeedRejectionReason.PLAUSIBILITY_REJECTION
+                } else SpeedRejectionReason.ROBUST_ESTIMATOR_REJECTION
+            }
         }
 
         val trafficEvents = if (config.enableRules) {
@@ -222,6 +235,8 @@ class AnalysisPipelineRunner(
         val inferenceMedian = percentile(sortedInference, 0.50)
         val inferenceP95 = percentile(sortedInference, 0.95)
         val totalDroppedFrames = droppedFrames + source.droppedFrameCount
+        val recoveredTracks = completedTracks.count { it.recoveryCount > 0 }.toLong()
+        val maximumRecoveryGapMs = completedTracks.maxOfOrNull { it.maximumRecoveryGapMs } ?: 0L
 
         return AnalysisResult(
             source = source.source,
@@ -247,6 +262,10 @@ class AnalysisPipelineRunner(
                 detections = totalReportableDetections,
                 inferenceFailures = 0,
                 trackingAssociationMisses = trackingAssociationMisses,
+                trackBirths = completedTracks.size.toLong(),
+                confirmedTracks = completedTracks.count { it.hits >= 2 }.toLong(),
+                recoveredTracks = recoveredTracks,
+                maximumRecoveryGapMs = maximumRecoveryGapMs,
                 activeTracks = lastActiveTracks,
                 peakActiveTracks = peakActiveTracks,
                 completedTracks = completedTracks.size.toLong(),
@@ -313,6 +332,23 @@ class AnalysisPipelineRunner(
             .firstOrNull { it.name.lowercase() in setOf("ground_contact", "contact", "footprint", "rear_contact", "front_contact") }
         return if (learned != null) learned.x to learned.y else ((detection.left + detection.right) / 2.0) to detection.bottom.toDouble()
     }
+
+    private fun recoveryStats(observations: List<TrackObservation>): RecoveryStats {
+        if (observations.size < 2) return RecoveryStats()
+        var count = 0
+        var maximumGapMs = 0L
+        observations.sortedWith(compareBy<TrackObservation> { it.frameIndex }.thenBy { it.timestampMs }).zipWithNext().forEach { (previous, current) ->
+            val frameGap = current.frameIndex - previous.frameIndex
+            val timeGap = current.timestampMs - previous.timestampMs
+            if (frameGap > 1L) {
+                count++
+                maximumGapMs = maxOf(maximumGapMs, timeGap.coerceAtLeast(0L))
+            }
+        }
+        return RecoveryStats(count, maximumGapMs)
+    }
+
+    private data class RecoveryStats(val count: Int = 0, val maximumGapMs: Long = 0L)
 
     private data class MutableTrackBuffer(
         val id: Long,
