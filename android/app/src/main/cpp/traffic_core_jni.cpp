@@ -3,8 +3,8 @@
 #include "traffic_core.h"
 
 extern "C" JNIEXPORT jdoubleArray JNICALL
-Java_com_smarttraffic_app_data_nativecore_NativeTrafficCore_projectHomography(
-    JNIEnv* env, jclass, jdoubleArray h9, jdouble x, jdouble y) {
+Java_com_smarttraffic_app_data_nativecore_NativeTrafficCore_nativeProjectHomography(
+    JNIEnv* env, jobject, jdoubleArray h9, jdouble x, jdouble y) {
     if (h9 == nullptr || env->GetArrayLength(h9) != 9) return nullptr;
     jdouble* values = env->GetDoubleArrayElements(h9, nullptr);
     if (values == nullptr) return nullptr;
@@ -18,8 +18,8 @@ Java_com_smarttraffic_app_data_nativecore_NativeTrafficCore_projectHomography(
 }
 
 extern "C" JNIEXPORT jdoubleArray JNICALL
-Java_com_smarttraffic_app_data_nativecore_NativeTrafficCore_estimateRobustSpeed(
-    JNIEnv* env, jclass, jdoubleArray xMeters, jdoubleArray yMeters,
+Java_com_smarttraffic_app_data_nativecore_NativeTrafficCore_nativeEstimateRobustSpeed(
+    JNIEnv* env, jobject, jdoubleArray xMeters, jdoubleArray yMeters,
     jlongArray timestampsMs, jint minimumSamples) {
     if (xMeters == nullptr || yMeters == nullptr || timestampsMs == nullptr) return nullptr;
     const jsize count = env->GetArrayLength(xMeters);
