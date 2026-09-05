@@ -19,9 +19,9 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Real live-camera FrameSource backed by the ESP32 MJPEG endpoint.
  *
- * The producer keeps exactly one pending frame. A newer frame replaces an unconsumed pending
- * frame, so inference latency can never create an unbounded queue. Analysis timestamps use local
- * monotonic arrival time; those timestamps do not unlock measurement-grade physical speed.
+ * The producer keeps exactly one pending frame. A newer frame replaces an unconsumed pending frame,
+ * so inference latency can never create an unbounded queue. Analysis timestamps use local monotonic
+ * arrival time; those timestamps do not unlock measurement-grade physical speed.
  */
 class MjpegFrameSource(
     private val url: String,
@@ -40,7 +40,7 @@ class MjpegFrameSource(
     override val source: MediaSource = MediaSource(
         id = url,
         uri = url,
-        timestampPrecision = FrameTimestampPrecision.UNKNOWN,
+        timestampPrecision = FrameTimestampPrecision.LOCAL_MONOTONIC_ARRIVAL,
     )
 
     override val droppedFrameCount: Long
@@ -56,7 +56,6 @@ class MjpegFrameSource(
                     }
                     val packet = FramePacket(producedSequence.incrementAndGet(), bitmap)
                     val replaced = latest.getAndSet(packet)
-                    if (replaced != null) droppedFrames += 1L
                     replaced?.bitmap?.recycleIfOwned()
                     wake.trySend(Unit)
                 }
