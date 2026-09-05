@@ -50,10 +50,10 @@ import kotlin.math.max
 fun AnalysisRadarPreview(
     preview: AnalysisPreviewFrame?,
     modifier: Modifier = Modifier,
-    videoUri: Uri? = null,
 ) {
     if (preview == null) return
 
+    val videoUri = preview.videoUri?.let(Uri::parse)
     var fullscreen by remember { mutableStateOf(false) }
     val primary = MaterialTheme.colorScheme.primary
     val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
