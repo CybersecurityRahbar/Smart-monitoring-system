@@ -32,11 +32,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.smarttraffic.app.SmartTrafficApplication
 import com.smarttraffic.app.core.tr
+import com.smarttraffic.app.domain.analysis.AnalysisSessionPhase
+import com.smarttraffic.app.domain.analysis.AnalysisSessionState
+import kotlinx.coroutines.flow.MutableStateFlow
 
 @Composable
 fun DashboardScreen(
@@ -46,6 +55,22 @@ fun DashboardScreen(
     onOpenLive: (() -> Unit)? = null,
     onOpenAnalysis: (() -> Unit)? = null,
 ) {
+    val context = LocalContext.current
+    val application = context.applicationContext as? SmartTrafficApplication
+    val session = application?.analysisHost?.session
+    val fallbackState = remember { MutableStateFlow(AnalysisSessionState()) }
+    val observedStateFlow = remember(session) { session?.state ?: fallbackState }
+    val sessionState by observedStateFlow.collectAsStateWithLifecycle()
+    val result = sessionState.result
+    val vehicleCount = result?.tracks?.size ?: 0
+    val averageSpeed = result?.speedEstimates?.values
+        ?.map { it.kilometersPerHour }
+        ?.filter { it.isFinite() }
+        ?.takeIf { it.isNotEmpty() }
+        ?.average()
+    val alertCount = result?.trafficEvents?.size ?: 0
+    val status = dashboardStatus(sessionState.phase)
+
     Column(
         modifier = Modifier
             .padding(paddingValues)
@@ -74,9 +99,22 @@ fun DashboardScreen(
             }
             AssistChip(
                 onClick = {},
-                label = { Text(tr("systemOnline"), maxLines = 1) },
-                leadingIcon = { Icon(Icons.Filled.CheckCircle, null, Modifier.size(18.dp)) },
+                label = { Text(status.label, maxLines = 1) },
+                leadingIcon = { Icon(if (status.isHealthy) Icons.Filled.CheckCircle else Icons.Filled.WarningAmber, null, Modifier.size(18.dp)) },
             )
+        }
+
+        application?.previousAnalysisWarning?.let { warning ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                shape = RoundedCornerShape(20.dp),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Previous analysis diagnostic", style = MaterialTheme.typography.titleMedium)
+                    Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                }
+            }
         }
 
         ElevatedCard(
@@ -95,7 +133,7 @@ fun DashboardScreen(
                         Text(tr("localNetwork"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                Text(tr("cameraReady"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(status.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -110,9 +148,9 @@ fun DashboardScreen(
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             items(
                 listOf(
-                    Metric(tr("vehicles"), "0", tr("today")),
-                    Metric(tr("averageSpeed"), "—", "km/h"),
-                    Metric(tr("activeAlerts"), "0", tr("active")),
+                    Metric(tr("vehicles"), vehicleCount.toString(), tr("tracks")),
+                    Metric(tr("averageSpeed"), averageSpeed?.let { "%.1f".format(it) } ?: "—", "km/h"),
+                    Metric(tr("activeAlerts"), alertCount.toString(), tr("events")),
                 ),
                 key = { it.title },
             ) { metric ->
@@ -138,11 +176,27 @@ fun DashboardScreen(
 
         Text(tr("operationalStatus"), style = MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            StatusCard(tr("visionRadar"), tr("standby"), Icons.Filled.Speed, Modifier.weight(1f))
-            StatusCard(tr("alerts"), tr("noActiveEvents"), Icons.Filled.WarningAmber, Modifier.weight(1f))
+            StatusCard(tr("visionRadar"), status.detail, Icons.Filled.Speed, Modifier.weight(1f))
+            StatusCard(
+                tr("alerts"),
+                if (alertCount == 0) tr("noActiveEvents") else "$alertCount event(s) in latest result",
+                Icons.Filled.WarningAmber,
+                Modifier.weight(1f),
+            )
         }
         Spacer(Modifier.height(4.dp))
     }
+}
+
+private data class DashboardStatus(val label: String, val detail: String, val isHealthy: Boolean)
+
+private fun dashboardStatus(phase: AnalysisSessionPhase): DashboardStatus = when (phase) {
+    AnalysisSessionPhase.IDLE -> DashboardStatus("READY", "Analysis engine is idle and ready for a new session.", true)
+    AnalysisSessionPhase.STARTING -> DashboardStatus("STARTING", "Preparing detector, source and analysis pipeline…", true)
+    AnalysisSessionPhase.RUNNING -> DashboardStatus("RUNNING", "Live detector, tracker and radar pipeline are active.", true)
+    AnalysisSessionPhase.COMPLETED -> DashboardStatus("COMPLETED", "The latest analysis result is available.", true)
+    AnalysisSessionPhase.FAILED -> DashboardStatus("ERROR", "The latest analysis session failed. Inspect the analysis diagnostics.", false)
+    AnalysisSessionPhase.STOPPED -> DashboardStatus("STOPPED", "The latest analysis session was stopped.", true)
 }
 
 private data class Metric(val title: String, val value: String, val unit: String)
@@ -164,7 +218,7 @@ private fun StatusCard(title: String, subtitle: String, icon: androidx.compose.u
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             Icon(icon, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)
             Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 2)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3)
         }
     }
 }
