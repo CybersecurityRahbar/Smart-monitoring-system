@@ -35,7 +35,7 @@ class MjpegFrameSource(
     @Volatile private var closed = false
     private var frameIndex = 0L
     private var lastConsumedSequence = -1L
-    private var droppedFrames = 0L
+    @Volatile private var droppedFrames = 0L
 
     override val source: MediaSource = MediaSource(
         id = url,
@@ -43,15 +43,20 @@ class MjpegFrameSource(
         timestampPrecision = FrameTimestampPrecision.UNKNOWN,
     )
 
+    override val droppedFrameCount: Long
+        get() = droppedFrames
+
     init {
         producer = scope.launch(Dispatchers.IO) {
             try {
                 client.collect(url) { bitmap ->
-                    if (closed) return@collect
+                    if (closed) {
+                        bitmap.recycleIfOwned()
+                        return@collect
+                    }
                     val packet = FramePacket(producedSequence.incrementAndGet(), bitmap)
                     val replaced = latest.getAndSet(packet)
-                    // The replaced Bitmap has no consumer and is therefore safe to release from
-                    // the source boundary. This keeps the live producer bounded at one pending frame.
+                    if (replaced != null) droppedFrames += 1L
                     replaced?.bitmap?.recycleIfOwned()
                     wake.trySend(Unit)
                 }
@@ -69,6 +74,8 @@ class MjpegFrameSource(
         if (closed) return null
         while (true) {
             val notified = wake.receiveCatching()
+            val failure = notified.exceptionOrNull()
+            if (failure != null) throw failure
             if (notified.isClosed && latest.get() == null) return null
             val packet = latest.getAndSet(null) ?: continue
             if (lastConsumedSequence >= 0L && packet.sequence > lastConsumedSequence + 1L) {
@@ -94,8 +101,6 @@ class MjpegFrameSource(
         wake.close()
         latest.getAndSet(null)?.bitmap?.recycleIfOwned()
     }
-
-    fun droppedFrameCount(): Long = droppedFrames
 
     private data class FramePacket(val sequence: Long, val bitmap: Bitmap)
 }
