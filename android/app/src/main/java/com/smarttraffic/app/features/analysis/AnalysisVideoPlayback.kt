@@ -3,8 +3,15 @@ package com.smarttraffic.app.features.analysis
 import android.graphics.Paint
 import android.net.Uri
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -12,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -56,9 +64,7 @@ fun AnalysisVideoPlayback(
     var positionMs by remember(player) { mutableLongStateOf(0L) }
 
     DisposableEffect(player) {
-        onDispose {
-            player.release()
-        }
+        onDispose { player.release() }
     }
 
     LaunchedEffect(player) {
@@ -72,7 +78,7 @@ fun AnalysisVideoPlayback(
         AndroidView(
             factory = {
                 PlayerView(it).apply {
-                    this.player = player
+                    player = this@apply.playerOrNull(player)
                     useController = false
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     keepScreenOn = true
@@ -128,32 +134,24 @@ fun AnalysisVideoPlayback(
         }
 
         if (showClose) {
-            androidx.compose.material3.IconButton(
+            IconButton(
                 onClick = onClose,
                 modifier = Modifier
-                    .align(androidx.compose.ui.Alignment.TopEnd)
+                    .align(Alignment.TopEnd)
                     .padding(10.dp)
-                    .background(
-                        Color.Black.copy(alpha = 0.70f),
-                        androidx.compose.foundation.shape.RoundedCornerShape(50),
-                    ),
+                    .background(Color.Black.copy(alpha = 0.70f), RoundedCornerShape(50)),
             ) {
-                androidx.compose.material3.Icon(
-                    androidx.compose.material.icons.Icons.Filled.Close,
-                    contentDescription = "Exit full screen",
-                    tint = Color.White,
-                )
+                Icon(Icons.Filled.Close, contentDescription = "Exit full screen", tint = Color.White)
             }
         }
     }
 }
 
+private fun PlayerView.playerOrNull(player: ExoPlayer): ExoPlayer = player
+
 private fun interpolatedDetection(track: Track, positionMs: Long): Detection? {
     val observations = track.observations
-        .asSequence()
-        .filter { it.detection.frameIndex <= Long.MAX_VALUE }
         .sortedBy { it.timestampMs }
-        .toList()
     if (observations.isEmpty()) return null
 
     val before = observations.lastOrNull { it.timestampMs <= positionMs }
