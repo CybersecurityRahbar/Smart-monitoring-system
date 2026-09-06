@@ -18,11 +18,10 @@ import kotlin.math.sqrt
  * as robust as possible with local scale, temporal trimming, dominant-motion
  * projection, cumulative path fitting, and independent estimator agreement.
  *
- * The architecture is intentionally compatible with the 2026 research direction
- * of dynamic, vehicle-specific metric reasoning, but it is NOT a byte-for-byte
- * implementation of the 36-keypoint/keypoint-homography paper. A learned
- * VehicleKeypointEstimator backend is still required for that research-grade
- * path and is therefore kept as an explicit extension point in the pipeline.
+ * The architecture is compatible with the 2026 research direction of dynamic,
+ * vehicle-specific metric reasoning, but it is NOT a byte-for-byte implementation
+ * of the 36-keypoint/keypoint-homography paper. A learned VehicleKeypointEstimator
+ * backend is still required for that exact research-grade path.
  */
 object CalibrationFreeSpeedEstimator {
     private const val EDGE_TRIM_FRACTION = 0.10
@@ -42,16 +41,14 @@ object CalibrationFreeSpeedEstimator {
         val dxPx: Double,
         val dyPx: Double,
         val dtSeconds: Double,
+        val endTimeMs: Long,
         val speedPxPerSec: Double,
         val metricSpeedMps: Double,
         val metricDistanceM: Double,
         val confidence: Double,
     )
 
-    private data class MetricSample(
-        val tSeconds: Double,
-        val distanceM: Double,
-    )
+    private data class MetricSample(val tSeconds: Double, val distanceM: Double)
 
     fun estimate(
         track: Track,
@@ -78,18 +75,14 @@ object CalibrationFreeSpeedEstimator {
                     observation.timestampMs >= 0L
                 ) {
                     Point(x, y, observation.timestampMs, width, confidence)
-                } else {
-                    null
-                }
+                } else null
             }
             .distinctBy { it.tMs }
             .toList()
-
         if (rawPoints.size < minimumSamples) return null
 
-        // The latest 2026 calibration-free research reports that edge-of-track
-        // samples are disproportionately noisy. Remove only a small symmetric
-        // fraction and retain enough points for the caller's requested sample count.
+        // Edge samples are disproportionately noisy in the latest calibration-free
+        // literature; trim only when the requested sample budget still permits it.
         val points = trimTrackEdges(rawPoints, minimumSamples)
         if (points.size < minimumSamples) return null
 
@@ -115,8 +108,8 @@ object CalibrationFreeSpeedEstimator {
             val speedPxPerSec = displacement / dtSeconds
             if (!speedPxPerSec.isFinite() || speedPxPerSec <= 0.0) continue
 
-            // Scale is refreshed locally from the apparent vehicle width in this
-            // interval rather than using one width for the whole trajectory.
+            // Refresh metric scale locally for every valid interval so movement
+            // toward/away from the camera is not forced through one global scale.
             val localWidthPx = (a.widthPx + b.widthPx) * 0.5
             if (!localWidthPx.isFinite() || localWidthPx < MIN_VALID_WIDTH_PX) continue
             val metricDistanceM = displacement * (assumedVehicleWidthM / localWidthPx)
@@ -127,6 +120,7 @@ object CalibrationFreeSpeedEstimator {
                 dxPx = dx,
                 dyPx = dy,
                 dtSeconds = dtSeconds,
+                endTimeMs = b.tMs,
                 speedPxPerSec = speedPxPerSec,
                 metricSpeedMps = metricSpeedMps,
                 metricDistanceM = metricDistanceM,
@@ -136,31 +130,28 @@ object CalibrationFreeSpeedEstimator {
         if (motionSamples.size < max(3, minimumSamples - 1)) return null
 
         val (axisX, axisY) = dominantMotionAxis(motionSamples)
-        val projectionRatios = motionSamples.map { sample ->
-            abs(sample.dxPx * axisX + sample.dyPx * axisY) /
-                max(1e-9, hypot(sample.dxPx, sample.dyPx))
+        val projected = motionSamples.mapNotNull { sample ->
+            val magnitude = hypot(sample.dxPx, sample.dyPx)
+            if (!magnitude.isFinite() || magnitude <= 1e-9) return@mapNotNull null
+            val ratio = (abs(sample.dxPx * axisX + sample.dyPx * axisY) / magnitude).coerceIn(0.0, 1.0)
+            val speed = sample.metricSpeedMps * ratio
+            if (speed.isFinite() && speed > 0.0) sample to speed else null
         }
-        val directionConsistency = robustMedian(projectionRatios) ?: return null
+        if (projected.size < 3) return null
+        val directionConsistency = robustMedian(projected.map { (sample, _) ->
+            abs(sample.dxPx * axisX + sample.dyPx * axisY) / max(1e-9, hypot(sample.dxPx, sample.dyPx))
+        }) ?: return null
         if (!directionConsistency.isFinite() || directionConsistency < 0.55) return null
 
-        val projectedMetricSpeeds = motionSamples.mapIndexedNotNull { index, sample ->
-            val projectedRatio = projectionRatios[index].coerceIn(0.0, 1.0)
-            val projectedSpeed = sample.metricSpeedMps * projectedRatio
-            if (projectedSpeed.isFinite() && projectedSpeed > 0.0) projectedSpeed else null
-        }
-        if (projectedMetricSpeeds.size < 3) return null
-
         val instantaneousSpeedMps = robustWeightedMedian(
-            projectedMetricSpeeds,
-            motionSamples.take(projectedMetricSpeeds.size).map { it.confidence },
+            values = projected.map { it.second },
+            weights = projected.map { it.first.confidence },
         ) ?: return null
         if (!instantaneousSpeedMps.isFinite() || instantaneousSpeedMps <= 0.0) return null
 
         val metricTrajectory = cumulativeMetricTrajectory(
-            points = points,
-            motions = motionSamples,
-            axisX = axisX,
-            axisY = axisY,
+            startTimeMs = points.first().tMs,
+            projectedIntervals = projected,
         )
         if (metricTrajectory.size < 4) return null
 
@@ -169,10 +160,11 @@ object CalibrationFreeSpeedEstimator {
         if (!trajectorySpeedMps.isFinite() || trajectorySpeedMps <= 0.0) return null
 
         val agreementResidual =
-            abs(trajectorySpeedMps - instantaneousSpeedMps) / max(1e-6, max(trajectorySpeedMps, instantaneousSpeedMps))
+            abs(trajectorySpeedMps - instantaneousSpeedMps) /
+                max(1e-6, max(trajectorySpeedMps, instantaneousSpeedMps))
         val speedMps = robustWeightedMedian(
-            listOf(instantaneousSpeedMps, trajectorySpeedMps),
-            listOf(
+            values = listOf(instantaneousSpeedMps, trajectorySpeedMps),
+            weights = listOf(
                 (0.55 + 0.45 * directionConsistency).coerceIn(0.0, 1.0),
                 (0.60 + 0.40 * directionConsistency).coerceIn(0.0, 1.0),
             ),
@@ -188,14 +180,11 @@ object CalibrationFreeSpeedEstimator {
 
         val widthMad = robustMad(widths, medianWidth)
         val widthInstability = (widthMad / medianWidth).coerceIn(0.0, 1.0)
-        val instantaneousResidual = pairwiseResidual(projectedMetricSpeeds, instantaneousSpeedMps)
+        val instantaneousResidual = pairwiseResidual(projected.map { it.second }, instantaneousSpeedMps)
         val trajectoryResidual = trajectoryFitResidual(regressionSamples, trajectorySpeedMps)
         val temporalResidual = ((instantaneousResidual + trajectoryResidual) * 0.5).coerceIn(0.0, 1.0)
-
-        val durationConfidence = (
-            (durationMs - minimumDurationMs).toDouble() /
-                max(1.0, minimumSpeedDurationForConfidence(minimumDurationMs))
-            ).coerceIn(0.0, 1.0)
+        val durationConfidence = ((durationMs - minimumDurationMs).toDouble() /
+            max(1.0, minimumSpeedDurationForConfidence(minimumDurationMs))).coerceIn(0.0, 1.0)
         val sampleConfidence = (points.size.toDouble() / 30.0).coerceIn(0.0, 1.0)
         val trackConfidence = track.trackConfidence.toDouble().coerceIn(0.0, 1.0)
         val qualityConfidence = points.map { it.confidence }.average().coerceIn(0.0, 1.0)
@@ -245,7 +234,8 @@ object CalibrationFreeSpeedEstimator {
         val maxTrimBySampleBudget = max(0, (points.size - minimumSamples) / 2)
         val requestedTrim = (points.size * EDGE_TRIM_FRACTION).toInt()
         val trim = min(requestedTrim, maxTrimBySampleBudget)
-        return if (trim <= 0 || points.size - trim * 2 < minimumSamples) points else points.subList(trim, points.size - trim)
+        return if (trim <= 0 || points.size - trim * 2 < minimumSamples) points
+        else points.subList(trim, points.size - trim)
     }
 
     private fun dominantMotionAxis(samples: List<MotionSample>): Pair<Double, Double> {
@@ -264,13 +254,10 @@ object CalibrationFreeSpeedEstimator {
             axisX = first.dxPx / max(magnitude, 1e-9)
             axisY = first.dyPx / max(magnitude, 1e-9)
         }
-
         val axisNorm = hypot(axisX, axisY)
         axisX /= max(axisNorm, 1e-9)
         axisY /= max(axisNorm, 1e-9)
-
-        val signedMotion = samples.sumOf { it.dxPx * axisX + it.dyPx * axisY }
-        if (signedMotion < 0.0) {
+        if (samples.sumOf { it.dxPx * axisX + it.dyPx * axisY } < 0.0) {
             axisX = -axisX
             axisY = -axisY
         }
@@ -278,23 +265,18 @@ object CalibrationFreeSpeedEstimator {
     }
 
     private fun cumulativeMetricTrajectory(
-        points: List<Point>,
-        motions: List<MotionSample>,
-        axisX: Double,
-        axisY: Double,
+        startTimeMs: Long,
+        projectedIntervals: List<Pair<MotionSample, Double>>,
     ): List<MetricSample> {
-        if (points.size < 2 || motions.isEmpty()) return emptyList()
-        val result = ArrayList<MetricSample>(motions.size + 1)
+        if (projectedIntervals.isEmpty()) return emptyList()
+        val result = ArrayList<MetricSample>(projectedIntervals.size + 1)
         var cumulativeDistance = 0.0
         result += MetricSample(0.0, 0.0)
-        for (i in motions.indices) {
-            val motion = motions[i]
-            val projectedRatio = abs(motion.dxPx * axisX + motion.dyPx * axisY) /
-                max(1e-9, hypot(motion.dxPx, motion.dyPx))
-            val projectedDistance = motion.metricDistanceM * projectedRatio.coerceIn(0.0, 1.0)
-            if (!projectedDistance.isFinite() || projectedDistance <= 0.0) continue
+        projectedIntervals.forEach { (sample, projectedSpeed) ->
+            val projectedDistance = projectedSpeed * sample.dtSeconds
+            if (!projectedDistance.isFinite() || projectedDistance <= 0.0) return@forEach
             cumulativeDistance += projectedDistance
-            val tSeconds = (points[min(i + 1, points.lastIndex)].tMs - points.first().tMs) / 1000.0
+            val tSeconds = (sample.endTimeMs - startTimeMs) / 1000.0
             if (tSeconds.isFinite() && tSeconds >= 0.0 && cumulativeDistance.isFinite()) {
                 result += MetricSample(tSeconds, cumulativeDistance)
             }
@@ -354,7 +336,8 @@ object CalibrationFreeSpeedEstimator {
 
     private fun robustWeightedMedian(values: List<Double>, weights: List<Double>): Double? {
         if (values.isEmpty() || values.size != weights.size) return null
-        val ranked = values.zip(weights).filter { it.first.isFinite() && it.first > 0.0 && it.second.isFinite() && it.second > 0.0 }
+        val ranked = values.zip(weights)
+            .filter { it.first.isFinite() && it.first > 0.0 && it.second.isFinite() && it.second > 0.0 }
             .sortedBy { it.first }
         if (ranked.isEmpty()) return null
         val totalWeight = ranked.sumOf { it.second }
@@ -380,14 +363,12 @@ object CalibrationFreeSpeedEstimator {
 
     private fun robustMad(values: List<Double>, median: Double): Double {
         if (values.isEmpty()) return Double.NaN
-        val deviations = values.map { abs(it - median) }.sorted()
-        return percentile(deviations, 0.5)
+        return percentile(values.map { abs(it - median) }.sorted(), 0.5)
     }
 
     private fun pairwiseResidual(values: List<Double>, median: Double): Double {
         if (values.isEmpty() || !median.isFinite() || median <= 0.0) return 1.0
-        val mad = robustMad(values, median)
-        return (mad / median).coerceIn(0.0, 1.0)
+        return (robustMad(values, median) / median).coerceIn(0.0, 1.0)
     }
 
     private fun percentile(sorted: List<Double>, p: Double): Double {
