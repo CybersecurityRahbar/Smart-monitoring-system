@@ -43,10 +43,12 @@ object TrafficRuleEngine {
         tracker: String,
         calibration: CalibrationProfile?,
     ): List<TrafficEvent> {
-        if (!config.enabled) return emptyList()
-        require(calibration != null) { "Traffic rules require a validated physical calibration" }
+        if (!config.enabled || calibration == null) return emptyList()
 
+        // Traffic-rule violations are physical/enforcement semantics. A calibration-free
+        // estimate may be useful for display, but it must never become a violation event.
         return speedEstimates.mapNotNull { (trackId, speed) ->
+            if (speed.mode != SpeedEstimateMode.CALIBRATED_GROUND_PLANE) return@mapNotNull null
             if (!speed.kilometersPerHour.isFinite() || speed.confidence < config.minimumSpeedConfidence) return@mapNotNull null
             if (speed.kilometersPerHour <= config.speedLimitKmh + config.violationMarginKmh) return@mapNotNull null
             val track = tracks.firstOrNull { it.id == trackId } ?: return@mapNotNull null
