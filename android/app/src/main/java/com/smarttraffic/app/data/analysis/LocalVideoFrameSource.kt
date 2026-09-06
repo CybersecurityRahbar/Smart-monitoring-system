@@ -28,6 +28,7 @@ class LocalVideoFrameSource(
     private var frameIndex = 0L
     private var nextTimestampUs = 0L
     private var finished = false
+    private var closed = false
     private var indexDecodeEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
     private val pendingFrames = ArrayDeque<Bitmap>()
 
@@ -37,6 +38,7 @@ class LocalVideoFrameSource(
     private val frameRate: Double?
     private val frameCount: Int?
     private val sequentialFrameRate: Double?
+
     private val batchSize = 4
 
     override val source: MediaSource
@@ -70,7 +72,7 @@ class LocalVideoFrameSource(
     }
 
     override suspend fun nextFrame(): AnalysisFrame? {
-        if (finished) return null
+        if (finished || closed) return null
 
         if (indexDecodeEnabled && frameCount != null) {
             fillBatchIfNeeded()
@@ -95,14 +97,13 @@ class LocalVideoFrameSource(
     }
 
     private fun fillBatchIfNeeded() {
-        if (pendingFrames.isNotEmpty() || finished || !indexDecodeEnabled || frameCount == null) return
+        if (pendingFrames.isNotEmpty() || finished || closed || !indexDecodeEnabled || frameCount == null) return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
-            // getFramesAtIndex() is API 28+ while the app supports minSdk 26.
             indexDecodeEnabled = false
             return
         }
         if (frameIndex >= frameCount.toLong()) {
-            finished = true
+            finish()
             return
         }
 
@@ -122,7 +123,7 @@ class LocalVideoFrameSource(
 
     private fun nextFrameFromTimestamp(currentIndex: Long): AnalysisFrame? {
         if (durationMs > 0L && nextTimestampUs / 1000L >= durationMs) {
-            finished = true
+            finish()
             return null
         }
         val timestampMs = nextTimestampUs / 1000L
@@ -130,7 +131,7 @@ class LocalVideoFrameSource(
             nextTimestampUs,
             MediaMetadataRetriever.OPTION_CLOSEST,
         ) ?: run {
-            finished = true
+            finish()
             return null
         }
         val intervalMs = sequentialFrameRate?.let {
@@ -147,15 +148,25 @@ class LocalVideoFrameSource(
         )
     }
 
-    override suspend fun close() {
+    private fun finish() {
         if (finished) return
         finished = true
-        // These frames were prefetched but never handed to the analysis pipeline, so this source
-        // still owns them and can safely recycle them before releasing the decoder.
+        releaseRetriever()
+    }
+
+    override suspend fun close() {
+        if (closed) return
+        closed = true
+        finished = true
         while (pendingFrames.isNotEmpty()) {
             pendingFrames.removeFirst().recycleIfOwned()
         }
-        retriever.release()
+        releaseRetriever()
+    }
+
+    private fun releaseRetriever() {
+        if (closed && !finished) return
+        runCatching { retriever.release() }
     }
 
     private fun Bitmap.recycleIfOwned() {
