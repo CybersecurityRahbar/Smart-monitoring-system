@@ -23,14 +23,7 @@ import kotlinx.coroutines.ensureActive
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
-/**
- * Sequential MediaCodec-backed video source that preserves decoded presentation timestamps.
- *
- * Each returned frame uses MediaCodec.BufferInfo.presentationTimeUs. No timestamp is synthesized
- * from frame index or a nominal FPS. The output surface timestamp is explicitly set to that same
- * media timestamp in nanoseconds before the image is rendered, allowing the ImageReader timestamp
- * check to validate the binding instead of assuming unrelated timebases are comparable.
- */
+/** Sequential MediaCodec-backed video source that preserves decoded presentation timestamps. */
 class ExactPtsVideoFrameSource(
     private val context: Context,
     private val uri: Uri,
@@ -46,6 +39,7 @@ class ExactPtsVideoFrameSource(
     private val height: Int
     private val frameRate: Double?
     private val rotationDegrees: Int
+    private val timelineStartTimestampMs: Long?
     private var inputEosQueued = false
     private var outputEosReached = false
     private var frameIndex = 0L
@@ -55,9 +49,7 @@ class ExactPtsVideoFrameSource(
     override val source: MediaSource
 
     init {
-        require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            "MediaCodec video decoding requires API 21+"
-        }
+        require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) { "MediaCodec video decoding requires API 21+" }
 
         extractor.setDataSource(context, uri, null)
         val trackIndex = selectVideoTrack(extractor)
@@ -70,6 +62,7 @@ class ExactPtsVideoFrameSource(
         height = format.getIntegerOrDefault(MediaFormat.KEY_HEIGHT, 0).coerceAtLeast(1)
         frameRate = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 0).toDouble().takeIf { it > 0.0 }
         rotationDegrees = normalizeRotation(format.getIntegerOrDefault(MediaFormat.KEY_ROTATION, 0))
+        timelineStartTimestampMs = extractor.sampleTime.takeIf { it >= 0L }?.div(1000L)
 
         require(width > 0 && height > 0) { "Invalid decoded video dimensions: ${width}x$height" }
         require(mime.startsWith("video/")) { "Selected track is not a video track: $mime" }
@@ -100,27 +93,23 @@ class ExactPtsVideoFrameSource(
             width = if (rotationDegrees % 180 == 0) width else height,
             height = if (rotationDegrees % 180 == 0) height else width,
             timestampPrecision = FrameTimestampPrecision.EXACT_SOURCE_CLOCK,
+            timelineStartTimestampMs = timelineStartTimestampMs,
         )
     }
 
     override suspend fun nextFrame(): AnalysisFrame? {
         if (closed || outputEosReached) return null
-
         val bufferInfo = MediaCodec.BufferInfo()
         while (!outputEosReached) {
             if (!inputEosQueued) feedInput()
-
             val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 20_000L)
             when {
                 outputIndex >= 0 -> {
                     val presentationTimeUs = bufferInfo.presentationTimeUs
                     val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                    require(presentationTimeUs >= 0L) {
-                        "Decoder returned invalid presentation timestamp=$presentationTimeUs us"
-                    }
+                    require(presentationTimeUs >= 0L) { "Decoder returned invalid presentation timestamp=$presentationTimeUs us" }
                     val presentationTimestampNs = presentationTimeUs * 1000L
                     decoder.releaseOutputBuffer(outputIndex, presentationTimestampNs)
-
                     val image = acquireRenderedImage(presentationTimeUs, isEos)
                     if (image != null) {
                         try {
@@ -140,10 +129,8 @@ class ExactPtsVideoFrameSource(
                             image.close()
                         }
                     }
-
                     if (isEos) outputEosReached = true
                 }
-
                 outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> Unit
                 outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> if (inputEosQueued) {
                     currentCoroutineContext().ensureActive()
@@ -194,8 +181,7 @@ class ExactPtsVideoFrameSource(
         val imageTimestampNs = image.timestamp
         if (imageTimestampNs <= 0L || presentationTimestampNs <= 0L) return
         val absoluteDeltaNs = kotlin.math.abs(imageTimestampNs - presentationTimestampNs)
-        val toleranceNs = 5_000_000L
-        require(absoluteDeltaNs <= toleranceNs) {
+        require(absoluteDeltaNs <= 5_000_000L) {
             "ImageReader timestamp mismatch: image=${imageTimestampNs}ns decoderSurface=$presentationTimestampNs ns"
         }
     }
@@ -208,7 +194,6 @@ class ExactPtsVideoFrameSource(
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
         require(pixelStride >= 4) { "Unexpected RGBA pixel stride=$pixelStride" }
-
         val pixels = IntArray(image.width * image.height)
         for (y in 0 until image.height) {
             val rowOffset = y * rowStride
@@ -222,7 +207,6 @@ class ExactPtsVideoFrameSource(
                 pixels[y * image.width + x] = (a shl 24) or (r shl 16) or (g shl 8) or b
             }
         }
-
         val bitmap = Bitmap.createBitmap(pixels, image.width, image.height, Bitmap.Config.ARGB_8888)
         if (rotationDegrees == 0) return bitmap
         val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
@@ -253,6 +237,5 @@ class ExactPtsVideoFrameSource(
     }
 
     private fun normalizeRotation(value: Int): Int = (((value % 360) + 360) % 360).let { if (it % 90 == 0) it else 0 }
-
     private fun MediaFormat.getIntegerOrDefault(key: String, fallback: Int): Int = if (containsKey(key)) getInteger(key) else fallback
 }
