@@ -35,15 +35,21 @@ data class TrafficEvent(
 )
 
 object TrafficRuleEngine {
+    /**
+     * Compatibility-safe entry point: both the current `calibration` name and the former
+     * `profile` name are accepted so stale/generated call sites cannot break compilation.
+     */
     fun evaluate(
         tracks: List<Track>,
         speedEstimates: Map<Long, SpeedEstimate>,
         config: TrafficRuleConfig,
         detectorModel: String,
         tracker: String,
-        calibration: CalibrationProfile?,
+        calibration: CalibrationProfile? = null,
+        profile: CalibrationProfile? = null,
     ): List<TrafficEvent> {
-        if (!config.enabled || calibration == null) return emptyList()
+        val effectiveCalibration = calibration ?: profile
+        if (!config.enabled || effectiveCalibration == null) return emptyList()
 
         // Traffic-rule violations are physical/enforcement semantics. A calibration-free
         // estimate may be useful for display, but it must never become a violation event.
@@ -61,8 +67,8 @@ object TrafficRuleEngine {
                 measuredSpeedKmh = speed.kilometersPerHour,
                 thresholdKmh = config.speedLimitKmh,
                 confidence = speed.confidence,
-                calibrationId = calibration.id,
-                calibrationVersion = calibration.version,
+                calibrationId = effectiveCalibration.id,
+                calibrationVersion = effectiveCalibration.version,
                 detectorModel = detectorModel,
                 tracker = tracker,
                 captureRequested = config.captureOnViolation,
