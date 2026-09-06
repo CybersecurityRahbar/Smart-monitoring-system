@@ -49,10 +49,9 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * Recorded-video presentation uses the source video as the master visual clock. The player is
- * allowed to run at natural speed during analysis so the operator never sees a frozen source.
- * Track boxes are interpolated/extrapolated against that playback position. After analysis, the
- * same player continues with the completed track history rather than restarting from zero.
+ * Recorded-video presentation uses the source video as the master visual clock. The player runs at
+ * natural speed. Tracking analytics remain timestamp-authentic; this renderer applies a separate
+ * short-horizon smoother/interpolator so green boxes look continuous and cinematic.
  */
 @Composable
 fun AnalysisVideoPlayback(
@@ -85,8 +84,6 @@ fun AnalysisVideoPlayback(
         }
     }
 
-    // Keep natural playback enabled for both in-progress and completed previews. Completion must
-    // not seek the already-running player back to zero because that would visibly reset the video.
     LaunchedEffect(player, preview.videoUri) {
         if (preview.videoUri != null) {
             player.playWhenReady = true
@@ -133,18 +130,17 @@ fun AnalysisVideoPlayback(
                 setShadowLayer(6f, 0f, 2f, android.graphics.Color.BLACK)
             }
 
-            fun drawGateLine(lineX1: Double, lineY1: Double, lineX2: Double, lineY2: Double, text: String) {
-                val x1 = offsetX + lineX1.toFloat().coerceIn(0f, sourceWidth) * scale
-                val y1 = offsetY + lineY1.toFloat().coerceIn(0f, sourceHeight) * scale
-                val x2 = offsetX + lineX2.toFloat().coerceIn(0f, sourceWidth) * scale
-                val y2 = offsetY + lineY2.toFloat().coerceIn(0f, sourceHeight) * scale
-                drawContext.canvas.nativeCanvas.drawLine(x1, y1, x2, y2, gatePaint)
-                drawContext.canvas.nativeCanvas.drawText(text, x1.coerceAtLeast(8f), y1.coerceAtLeast(30f), gateTextPaint)
+            fun drawGateLine(x1: Double, y1: Double, x2: Double, y2: Double, text: String) {
+                val sx1 = offsetX + x1.toFloat().coerceIn(0f, sourceWidth) * scale
+                val sy1 = offsetY + y1.toFloat().coerceIn(0f, sourceHeight) * scale
+                val sx2 = offsetX + x2.toFloat().coerceIn(0f, sourceWidth) * scale
+                val sy2 = offsetY + y2.toFloat().coerceIn(0f, sourceHeight) * scale
+                drawContext.canvas.nativeCanvas.drawLine(sx1, sy1, sx2, sy2, gatePaint)
+                drawContext.canvas.nativeCanvas.drawText(text, sx1.coerceAtLeast(8f), sy1.coerceAtLeast(30f), gateTextPaint)
             }
 
             if (preview.calibrated) {
-                val gate: SpeedGate? = preview.speedGate
-                if (gate != null) {
+                preview.speedGate?.let { gate ->
                     drawGateLine(gate.line1.startPixelX, gate.line1.startPixelY, gate.line1.endPixelX, gate.line1.endPixelY, "SPEED LINE 1")
                     drawGateLine(gate.line2.startPixelX, gate.line2.startPixelY, gate.line2.endPixelX, gate.line2.endPixelY, "SPEED LINE 2")
                 }
@@ -155,8 +151,15 @@ fun AnalysisVideoPlayback(
                 }
             }
 
+            val timelineOriginMs = preview.tracks
+                .asSequence()
+                .flatMap { it.observations.asSequence() }
+                .map { it.timestampMs }
+                .minOrNull() ?: preview.frame.timestampMs
+            val targetTimestampMs = safeAddTimestamp(timelineOriginMs, positionMs)
+
             preview.tracks.forEach { track ->
-                val detection = interpolatedDetection(track, positionMs) ?: return@forEach
+                val detection = cinematicDetection(track, targetTimestampMs) ?: return@forEach
                 val left = offsetX + detection.left.coerceIn(0f, sourceWidth) * scale
                 val top = offsetY + detection.top.coerceIn(0f, sourceHeight) * scale
                 val right = offsetX + detection.right.coerceIn(0f, sourceWidth) * scale
@@ -199,30 +202,15 @@ fun AnalysisVideoPlayback(
     }
 }
 
-private data class VisualGateLine(
-    val x1: Double,
-    val y1: Double,
-    val x2: Double,
-    val y2: Double,
-    val coordinate: Double,
-)
+private data class VisualGateLine(val x1: Double, val y1: Double, val x2: Double, val y2: Double)
+private data class VisualGate(val line1: VisualGateLine, val line2: VisualGateLine)
 
-private data class VisualGate(
-    val line1: VisualGateLine,
-    val line2: VisualGateLine,
-)
-
-/**
- * Builds two visible cross-flow lines from the observed traffic corridor. Unlike the old image
- * gate, the segment is restricted to the transverse span occupied by tracked vehicles, so lines
- * do not blindly cover the whole frame or drift into empty sky/sidewalk regions.
- */
+/** Builds two short cross-flow gate lines from the observed traffic corridor. */
 private fun visualGate(tracks: List<Track>, width: Double, height: Double): VisualGate? {
     data class Point(val x: Double, val y: Double)
-
     val points = tracks.flatMap { track ->
-        track.observations.takeLast(40).map { observation ->
-            val d = observation.detection
+        track.observations.takeLast(40).map { o ->
+            val d = o.detection
             Point((d.left + d.right) * 0.5, d.bottom.toDouble())
         }
     }.filter { it.x.isFinite() && it.y.isFinite() && it.x in 0.0..width && it.y in 0.0..height }
@@ -230,10 +218,10 @@ private fun visualGate(tracks: List<Track>, width: Double, height: Double): Visu
 
     val motion = buildList {
         tracks.forEach { track ->
-            val observations = track.observations.takeLast(40)
-            for (i in 1 until observations.size) {
-                val a = observations[i - 1]
-                val b = observations[i]
+            val o = track.observations.takeLast(40)
+            for (i in 1 until o.size) {
+                val a = o[i - 1]
+                val b = o[i]
                 val dt = (b.timestampMs - a.timestampMs) / 1000.0
                 if (!dt.isFinite() || dt <= 0.0 || dt > 0.6) continue
                 val ax = ((a.detection.left + a.detection.right) * 0.5).toDouble()
@@ -242,8 +230,8 @@ private fun visualGate(tracks: List<Track>, width: Double, height: Double): Visu
                 val by = b.detection.bottom.toDouble()
                 val dx = (bx - ax) / dt
                 val dy = (by - ay) / dt
-                val magnitude = hypot(dx, dy)
-                if (magnitude.isFinite() && magnitude >= 1.0) add(dx / magnitude to dy / magnitude)
+                val m = hypot(dx, dy)
+                if (m.isFinite() && m >= 1.0) add(dx / m to dy / m)
             }
         }
     }
@@ -252,28 +240,20 @@ private fun visualGate(tracks: List<Track>, width: Double, height: Double): Visu
     var cxx = 0.0
     var cyy = 0.0
     var cxy = 0.0
-    motion.forEach { (x, y) ->
-        cxx += x * x
-        cyy += y * y
-        cxy += x * y
-    }
+    motion.forEach { (x, y) -> cxx += x * x; cyy += y * y; cxy += x * y }
     val theta = 0.5 * atan2(2.0 * cxy, cxx - cyy)
     var axisX = cos(theta)
     var axisY = sin(theta)
-    val norm = hypot(axisX, axisY)
-    if (!norm.isFinite() || norm <= 1e-9) return null
-    axisX /= norm
-    axisY /= norm
-    if (motion.sumOf { (x, y) -> x * axisX + y * axisY } < 0.0) {
-        axisX = -axisX
-        axisY = -axisY
-    }
+    val n = hypot(axisX, axisY)
+    if (!n.isFinite() || n <= 1e-9) return null
+    axisX /= n
+    axisY /= n
+    if (motion.sumOf { (x, y) -> x * axisX + y * axisY } < 0.0) { axisX = -axisX; axisY = -axisY }
 
     val centerX = points.map { it.x }.average()
     val centerY = points.map { it.y }.average()
     val normalX = -axisY
     val normalY = axisX
-
     val longitudinal = points.map { it.x * axisX + it.y * axisY }.sorted()
     if (longitudinal.size < 6) return null
     val span = (longitudinal.last() - longitudinal.first()).coerceAtLeast(1.0)
@@ -292,14 +272,15 @@ private fun visualGate(tracks: List<Track>, width: Double, height: Double): Visu
     val transverseHigh = high + margin
 
     fun lineAt(coordinate: Double): VisualGateLine? {
-        val baseX = centerX + axisX * (coordinate - (centerX * axisX + centerY * axisY))
-        val baseY = centerY + axisY * (coordinate - (centerX * axisX + centerY * axisY))
+        val centerCoordinate = centerX * axisX + centerY * axisY
+        val baseX = centerX + axisX * (coordinate - centerCoordinate)
+        val baseY = centerY + axisY * (coordinate - centerCoordinate)
         val aX = baseX + normalX * transverseLow
         val aY = baseY + normalY * transverseLow
         val bX = baseX + normalX * transverseHigh
         val bY = baseY + normalY * transverseHigh
         val clipped = clipLineSegment(aX, aY, bX, bY, width, height) ?: return null
-        return VisualGateLine(clipped.first.first, clipped.first.second, clipped.second.first, clipped.second.second, coordinate)
+        return VisualGateLine(clipped.first.first, clipped.first.second, clipped.second.first, clipped.second.second)
     }
 
     val line1 = lineAt(adjustedQ1) ?: return null
@@ -316,32 +297,18 @@ private fun percentile(sorted: List<Double>, p: Double): Double {
     return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower)
 }
 
-private fun clipLineSegment(
-    x0: Double,
-    y0: Double,
-    x1: Double,
-    y1: Double,
-    width: Double,
-    height: Double,
-): Pair<Pair<Double, Double>, Pair<Double, Double>>? {
+private fun clipLineSegment(x0: Double, y0: Double, x1: Double, y1: Double, width: Double, height: Double): Pair<Pair<Double, Double>, Pair<Double, Double>>? {
     var t0 = 0.0
     var t1 = 1.0
     val dx = x1 - x0
     val dy = y1 - y0
-
     fun clip(p: Double, q: Double): Boolean {
         if (abs(p) < 1e-12) return q >= 0.0
         val r = q / p
-        if (p < 0.0) {
-            if (r > t1) return false
-            if (r > t0) t0 = r
-        } else {
-            if (r < t0) return false
-            if (r < t1) t1 = r
-        }
+        if (p < 0.0) { if (r > t1) return false; if (r > t0) t0 = r }
+        else { if (r < t0) return false; if (r < t1) t1 = r }
         return true
     }
-
     if (!clip(-dx, x0)) return null
     if (!clip(dx, width - x0)) return null
     if (!clip(-dy, y0)) return null
@@ -349,49 +316,135 @@ private fun clipLineSegment(
     return (x0 + t0 * dx to y0 + t0 * dy) to (x0 + t1 * dx to y0 + t1 * dy)
 }
 
-private fun interpolatedDetection(track: Track, positionMs: Long): Detection? {
-    val observations = track.observations.sortedBy { it.timestampMs }
+private data class RenderSample(
+    val timestampMs: Long,
+    val centerX: Double,
+    val centerY: Double,
+    val width: Double,
+    val height: Double,
+    val confidence: Double,
+)
+
+/** Render-only trajectory smoothing; raw detector history and analytics are unchanged. */
+private fun cinematicDetection(track: Track, targetTimestampMs: Long): Detection? {
+    val observations = track.observations.asSequence()
+        .sortedWith(compareBy { it.timestampMs })
+        .map { o ->
+            val d = o.detection
+            RenderSample(o.timestampMs, ((d.left + d.right) * 0.5).toDouble(), ((d.top + d.bottom) * 0.5).toDouble(),
+                (d.right - d.left).toDouble().coerceAtLeast(1.0), (d.bottom - d.top).toDouble().coerceAtLeast(1.0), d.confidence.toDouble().coerceIn(0.0, 1.0))
+        }.toList()
     if (observations.isEmpty()) return null
 
-    val first = observations.first()
-    val last = observations.last()
-    if (positionMs < first.timestampMs) return null
-    if (positionMs > last.timestampMs) {
-        val previous = observations.asReversed().drop(1).firstOrNull { it.timestampMs < last.timestampMs } ?: return null
-        if (last.timestampMs <= previous.timestampMs) return null
-        val extrapolationMs = (positionMs - last.timestampMs).coerceAtMost(350L)
-        if (positionMs - last.timestampMs > 350L) return null
-        val dt = (last.timestampMs - previous.timestampMs).toFloat()
-        if (dt <= 0f) return null
-        return extrapolateDetection(previous.detection, last.detection, extrapolationMs.toFloat() / dt)
+    val samples = trailingSmooth(observations, 5)
+    val first = samples.first()
+    val last = samples.last()
+    if (targetTimestampMs < first.timestampMs) return null
+
+    if (targetTimestampMs >= last.timestampMs) {
+        val gapMs = targetTimestampMs - last.timestampMs
+        if (gapMs > 800L) return null
+        val velocity = robustVelocity(samples.takeLast(5))
+        return renderSampleToDetection(boundedExtrapolation(last, velocity, gapMs / 1000.0), last.confidence)
     }
 
-    val before = observations.lastOrNull { it.timestampMs <= positionMs }
-    val after = observations.firstOrNull { it.timestampMs >= positionMs }
-    if (before != null && after != null && before.timestampMs != after.timestampMs) {
-        val ratio = ((positionMs - before.timestampMs).toDouble() / (after.timestampMs - before.timestampMs).toDouble()).coerceIn(0.0, 1.0)
-        return interpolateDetection(before.detection, after.detection, ratio)
-    }
-    return before?.detection ?: after?.detection
+    val upperIndex = samples.indexOfFirst { it.timestampMs >= targetTimestampMs }
+    if (upperIndex < 0) return null
+    if (upperIndex == 0) return renderSampleToDetection(first, first.confidence)
+    val lowerIndex = upperIndex - 1
+    val a = samples[lowerIndex]
+    val b = samples[upperIndex]
+    val dtMs = b.timestampMs - a.timestampMs
+    if (dtMs <= 0L) return renderSampleToDetection(a, a.confidence)
+    val ratio = ((targetTimestampMs - a.timestampMs).toDouble() / dtMs.toDouble()).coerceIn(0.0, 1.0)
+    val previous = samples.getOrNull(lowerIndex - 1) ?: a
+    val next = samples.getOrNull(upperIndex + 1) ?: b
+    val interpolated = hermite(a, b, finiteDifference(previous, b), finiteDifference(a, next), ratio)
+    return renderSampleToDetection(interpolated, max(a.confidence, b.confidence))
 }
 
-private fun interpolateDetection(a: Detection, b: Detection, ratio: Double): Detection {
-    fun lerp(x: Float, y: Float): Float = (x + (y - x) * ratio).toFloat()
-    return a.copy(
-        left = lerp(a.left, b.left),
-        top = lerp(a.top, b.top),
-        right = lerp(a.right, b.right),
-        bottom = lerp(a.bottom, b.bottom),
+private fun trailingSmooth(samples: List<RenderSample>, radius: Int): List<RenderSample> {
+    if (samples.size < 3) return samples
+    return samples.indices.map { index ->
+        val window = samples.subList(max(0, index - radius + 1), index + 1)
+        val weights = window.indices.map { (it + 1).toDouble() }
+        val sum = weights.sum().coerceAtLeast(1.0)
+        fun avg(selector: (RenderSample) -> Double): Double = window.indices.sumOf { selector(window[it]) * weights[it] } / sum
+        RenderSample(samples[index].timestampMs, avg { it.centerX }, avg { it.centerY }, avg { it.width }.coerceAtLeast(1.0), avg { it.height }.coerceAtLeast(1.0), window.maxOf { it.confidence })
+    }
+}
+
+private data class RenderVelocity(val xPerSecond: Double, val yPerSecond: Double, val widthPerSecond: Double, val heightPerSecond: Double)
+
+private fun robustVelocity(samples: List<RenderSample>): RenderVelocity {
+    if (samples.size < 2) return RenderVelocity(0.0, 0.0, 0.0, 0.0)
+    val pairs = samples.zipWithNext().mapNotNull { (a, b) ->
+        val dt = (b.timestampMs - a.timestampMs) / 1000.0
+        if (!dt.isFinite() || dt <= 0.0) null else listOf((b.centerX - a.centerX) / dt, (b.centerY - a.centerY) / dt, (b.width - a.width) / dt, (b.height - a.height) / dt)
+    }
+    if (pairs.isEmpty()) return RenderVelocity(0.0, 0.0, 0.0, 0.0)
+    fun median(index: Int): Double {
+        val values = pairs.map { it[index] }.filter { it.isFinite() }.sorted()
+        return if (values.isEmpty()) 0.0 else percentile(values, 0.5)
+    }
+    return RenderVelocity(median(0), median(1), median(2), median(3))
+}
+
+private fun boundedExtrapolation(sample: RenderSample, velocity: RenderVelocity, dtSeconds: Double): RenderSample {
+    val horizon = dtSeconds.coerceIn(0.0, 0.80)
+    val damping = (1.0 - 0.22 * horizon / 0.80).coerceIn(0.72, 1.0)
+    return sample.copy(
+        centerX = sample.centerX + velocity.xPerSecond * horizon * damping,
+        centerY = sample.centerY + velocity.yPerSecond * horizon * damping,
+        width = (sample.width + velocity.widthPerSecond * horizon * damping).coerceAtLeast(1.0),
+        height = (sample.height + velocity.heightPerSecond * horizon * damping).coerceAtLeast(1.0),
+    )
+}
+
+private fun finiteDifference(a: RenderSample, b: RenderSample): RenderVelocity {
+    val dt = (b.timestampMs - a.timestampMs) / 1000.0
+    if (!dt.isFinite() || dt <= 0.0) return RenderVelocity(0.0, 0.0, 0.0, 0.0)
+    return RenderVelocity((b.centerX - a.centerX) / dt, (b.centerY - a.centerY) / dt, (b.width - a.width) / dt, (b.height - a.height) / dt)
+}
+
+private fun hermite(a: RenderSample, b: RenderSample, tangentA: RenderVelocity, tangentB: RenderVelocity, t: Double): RenderSample {
+    val dt = ((b.timestampMs - a.timestampMs).coerceAtLeast(1L)) / 1000.0
+    val t2 = t * t
+    val t3 = t2 * t
+    val h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+    val h10 = t3 - 2.0 * t2 + t
+    val h01 = -2.0 * t3 + 3.0 * t2
+    val h11 = t3 - t2
+    fun curve(p0: Double, v0: Double, p1: Double, v1: Double): Double = h00 * p0 + h10 * v0 * dt + h01 * p1 + h11 * v1 * dt
+    fun bounded(v: Double, p0: Double, p1: Double, padding: Double): Double = v.coerceIn(min(p0, p1) - padding, max(p0, p1) + padding)
+    return RenderSample(
+        timestampMs = a.timestampMs + ((b.timestampMs - a.timestampMs) * t).toLong(),
+        centerX = bounded(curve(a.centerX, tangentA.xPerSecond, b.centerX, tangentB.xPerSecond), a.centerX, b.centerX, max(2.0, abs(b.centerX - a.centerX) * 0.08)),
+        centerY = bounded(curve(a.centerY, tangentA.yPerSecond, b.centerY, tangentB.yPerSecond), a.centerY, b.centerY, max(2.0, abs(b.centerY - a.centerY) * 0.08)),
+        width = bounded(curve(a.width, tangentA.widthPerSecond, b.width, tangentB.widthPerSecond), a.width, b.width, max(1.0, abs(b.width - a.width) * 0.10)).coerceAtLeast(1.0),
+        height = bounded(curve(a.height, tangentA.heightPerSecond, b.height, tangentB.heightPerSecond), a.height, b.height, max(1.0, abs(b.height - a.height) * 0.10)).coerceAtLeast(1.0),
         confidence = max(a.confidence, b.confidence),
     )
 }
 
-private fun extrapolateDetection(previous: Detection, latest: Detection, alpha: Float): Detection {
-    fun extrapolate(old: Float, current: Float): Float = current + (current - old) * alpha
-    return latest.copy(
-        left = extrapolate(previous.left, latest.left),
-        top = extrapolate(previous.top, latest.top),
-        right = extrapolate(previous.right, latest.right),
-        bottom = extrapolate(previous.bottom, latest.bottom),
+private fun renderSampleToDetection(sample: RenderSample, confidence: Double): Detection {
+    val halfWidth = sample.width.toFloat().coerceAtLeast(0.5f) * 0.5f
+    val halfHeight = sample.height.toFloat().coerceAtLeast(0.5f) * 0.5f
+    return Detection(
+        classId = 2,
+        className = "vehicle",
+        confidence = confidence.toFloat().coerceIn(0f, 1f),
+        left = sample.centerX.toFloat() - halfWidth,
+        top = sample.centerY.toFloat() - halfHeight,
+        right = sample.centerX.toFloat() + halfWidth,
+        bottom = sample.centerY.toFloat() + halfHeight,
+        frameIndex = 0L,
+        timestampMs = sample.timestampMs,
     )
+}
+
+private fun safeAddTimestamp(baseMs: Long, offsetMs: Long): Long = try {
+    Math.addExact(baseMs, offsetMs.coerceAtLeast(0L))
+} catch (_: ArithmeticException) {
+    Long.MAX_VALUE
 }
