@@ -55,21 +55,22 @@ class AutoSpeedGateTest {
     private fun syntheticTrack(reverse: Boolean): Track {
         val indices = (0..9).toList().let { if (reverse) it.reversed() else it }
         val observations = indices.mapIndexed { frame, xInt ->
-            val x = xInt.toDouble()
+            val x = xInt.toDouble() * 0.1
+            val timestampMs = frame.toLong() * 100L
             val detection = Detection(
                 classId = 2,
                 className = "car",
                 confidence = 0.95f,
-                left = (x - 2.0).toFloat(),
+                left = (x - 0.02).toFloat(),
                 top = 40f,
-                right = (x + 2.0).toFloat(),
+                right = (x + 0.02).toFloat(),
                 bottom = 50f,
                 frameIndex = frame.toLong(),
-                timestampMs = frame.toLong() * 1000L,
+                timestampMs = timestampMs,
             )
             TrackObservation(
                 frameIndex = frame.toLong(),
-                timestampMs = frame.toLong() * 1000L,
+                timestampMs = timestampMs,
                 detection = detection,
                 groundPoint = GroundPoint(x, 50.0, x, 50.0),
             )
