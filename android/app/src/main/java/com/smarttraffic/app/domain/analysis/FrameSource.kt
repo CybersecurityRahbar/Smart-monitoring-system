@@ -1,3 +1,5 @@
+package com.smarttraffic.app.domain.analysis
+
 /** Timestamped image frame entering the shared analysis pipeline. */
 data class AnalysisFrame(
     val index: Long,
