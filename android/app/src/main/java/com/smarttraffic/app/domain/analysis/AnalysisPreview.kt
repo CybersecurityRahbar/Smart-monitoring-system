@@ -18,7 +18,10 @@ data class AnalysisPreviewFrame(
     val frame: AnalysisFrame,
     val bitmap: Bitmap,
     val detections: List<Detection>,
+    /** Analytics-active tracks only. Never includes render-only predictions. */
     val tracks: List<Track>,
+    /** Short-lived render tracks kept alive through brief detector gaps for smooth presentation. */
+    val renderTracks: List<Track> = tracks,
     val speedEstimates: Map<Long, SpeedEstimate>,
     val calibrated: Boolean,
     /** Fixed coordinate viewport used by the radar; it must not be recomputed from current tracks. */
@@ -27,7 +30,7 @@ data class AnalysisPreviewFrame(
     val speedGate: SpeedGate? = null,
     /** Unique vehicle IDs observed during the current analysis session. */
     val uniqueVehiclesDetected: Long = 0L,
-    /** Recorded-video playback is released only after deterministic analysis has completed. */
+    /** Legacy marker retained for API compatibility; playback now starts immediately for recorded video. */
     val playbackReady: Boolean = false,
     /** Local recorded-video URI used by the independent playback surface; null for images/live. */
     val videoUri: String? = null,
