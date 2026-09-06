@@ -29,6 +29,7 @@ class LocalVideoFrameSource(
     private var nextTimestampUs = 0L
     private var finished = false
     private var closed = false
+    private var released = false
     private var indexDecodeEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
     private val pendingFrames = ArrayDeque<Bitmap>()
 
@@ -72,7 +73,7 @@ class LocalVideoFrameSource(
     }
 
     override suspend fun nextFrame(): AnalysisFrame? {
-        if (finished || closed) return null
+        if (finished || closed || released) return null
 
         if (indexDecodeEnabled && frameCount != null) {
             fillBatchIfNeeded()
@@ -97,7 +98,7 @@ class LocalVideoFrameSource(
     }
 
     private fun fillBatchIfNeeded() {
-        if (pendingFrames.isNotEmpty() || finished || closed || !indexDecodeEnabled || frameCount == null) return
+        if (pendingFrames.isNotEmpty() || finished || closed || released || !indexDecodeEnabled || frameCount == null) return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
             indexDecodeEnabled = false
             return
@@ -165,7 +166,8 @@ class LocalVideoFrameSource(
     }
 
     private fun releaseRetriever() {
-        if (closed && !finished) return
+        if (released) return
+        released = true
         runCatching { retriever.release() }
     }
 
