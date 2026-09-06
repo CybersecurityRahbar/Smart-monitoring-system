@@ -1,9 +1,10 @@
 package com.smarttraffic.app.domain.analysis
 
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
 
 class VehicleKeypointMetricSpeedEstimatorTest {
     private val template = VehicleMetricTemplate36(
@@ -38,8 +39,10 @@ class VehicleKeypointMetricSpeedEstimatorTest {
             maximumObservationGapMs = 600L,
         )
 
-        assertTrue(estimate != null)
+        assertNotNull(estimate)
         assertEquals(36.0, estimate!!.kilometersPerHour, 0.5)
+        assertEquals("36-keypoint dynamic homography (sparse semantic points)", estimate.estimatorLabel)
+        assertTrue(estimate.confidence > 0f)
     }
 
     @Test
