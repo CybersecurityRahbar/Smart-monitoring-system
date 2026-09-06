@@ -39,7 +39,7 @@ interface AnalysisEngine {
 class ModularAnalysisEngine(
     private val detector: ObjectDetector,
     private val tracker: MultiObjectTracker,
-    private val keypoints: VehicleKeypointEstimator? = null,
+    private val keypoints: VehicleKeypointEstimator? = VehicleKeypointRuntimeHolder.active,
     private val plateRecognizer: PlateRecognizer? = null,
     private val frameSourceFactory: FrameSourceFactory? = null,
     private val previewObserver: AnalysisPreviewObserver? = null,
