@@ -10,6 +10,7 @@ import com.smarttraffic.app.data.vision.VehiclePoseModelRegistry
 import com.smarttraffic.app.domain.analysis.ObjectDetector
 import com.smarttraffic.app.domain.analysis.VehicleKeypointConfig
 import com.smarttraffic.app.domain.analysis.VehicleKeypointEstimator
+import com.smarttraffic.app.domain.analysis.VehicleKeypointRuntimeHolder
 
 /**
  * Shared perception runtime construction for local and live analysis sessions.
@@ -27,6 +28,9 @@ object AnalysisRuntimeFactory {
         private val closeableKeypoints: LiteRtVehicleKeypointEstimator?,
     ) : AutoCloseable {
         override fun close() {
+            if (closeableKeypoints != null && VehicleKeypointRuntimeHolder.active === closeableKeypoints) {
+                VehicleKeypointRuntimeHolder.active = null
+            }
             runCatching { closeableKeypoints?.close() }
             closeableDetector.close()
         }
@@ -89,6 +93,7 @@ object AnalysisRuntimeFactory {
                 accelerator = Accelerator.CPU,
             )
             poseBackend = poseRuntime
+            VehicleKeypointRuntimeHolder.active = poseRuntime
         }
 
         return try {
@@ -100,6 +105,7 @@ object AnalysisRuntimeFactory {
                 closeableKeypoints = poseRuntime,
             )
         } catch (error: Throwable) {
+            if (VehicleKeypointRuntimeHolder.active === poseRuntime) VehicleKeypointRuntimeHolder.active = null
             runCatching { poseRuntime?.close() }
             runCatching { baseDetector.close() }
             throw error
