@@ -318,7 +318,7 @@ class AnalysisPipelineRunner(
                 config = config.trafficRules.copy(enabled = true),
                 detectorModel = config.detectorModel,
                 tracker = config.tracker,
-                calibration = config.calibration,
+                profile = config.calibration,
             )
         } else emptyList()
 
