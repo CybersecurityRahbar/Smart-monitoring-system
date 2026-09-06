@@ -123,3 +123,85 @@ The project now has a real Android detector/tracker pipeline, calibration subsys
 
 ## Next stopping point
 Resume all future work from `main`. The calibration-free speed v2 cycle is complete and its corrected code has been merged. The next engineering focus is physical-device/media validation and the remaining lifecycle/accuracy gates, not reopening the branch workflow.
+
+## Comprehensive repository audit — 2026-09-06 (current main)
+
+This section records the results of the comprehensive review performed after the repository advanced beyond the previous context commit. The review started from the live `main` tree and compared current source behavior against the documented architecture, historical context files, tests and CI definitions.
+
+### Current repository head and history
+- Current `main` HEAD is `6000d903a86997bbabb068530b866b0fbb849122`.
+- That commit is a documentation-only upload: it adds `docs/سياق المحادثه الجزء الثالث.md`; no production source file changed in that commit.
+- The previous context-maintenance commit is `3ae4c15eae9ec291c9e46019b9ca258c0068e588`.
+- The calibration-free v2 merge commit remains `b855534ea652a5e27d0eb47c5896b81f6c875793`.
+- Live branch listing currently contains both `main` and the old `feat/calibration-free-speed-v2` ref. The old feature ref still points to `07c2c520...`; it is not the active project branch. No new branch was created during this audit.
+- No workflow run is currently associated with the latest documentation-only HEAD `6000d903...`; the previously green Run #460 is the validation evidence for the merged application code, not for this later docs-only commit.
+
+### Documentation state
+The `docs/` directory contains the current architecture/specification/reliability/local-lab/CI/context documents plus the historical Arabic conversation context files. The comprehensive audit found that several design documents are intentionally historical or higher-level and are not always synchronized with the newest implementation details.
+
+Important documentation/current-code discrepancies to keep explicit:
+- Older reliability/radar documentation still describes calibrated physical speed as the only trustworthy speed path or treats radar as a largely conceptual layer, while current `AnalysisPipelineRunner` and `IntelligentRadarScreen` actually support/display the explicitly labelled calibration-free fallback.
+- Older documentation describes GPU attempts and earlier local-video routing states; the current runtime factory is CPU-only by construction and the current local-video path chooses `ExactPtsVideoFrameSource` when `useGroundPlane=true`.
+- The historical context files (`سياق المحادثة الجزء الثاني .txt`, `سياق المحادثه الجزء الثالث.md`, and the original large Arabic context file) contain chronological development records, not necessarily current specifications. The current code must remain the behavioral source of truth.
+
+### Android runtime path actually present
+The live production path is:
+`UI -> ViewModel/StateFlow -> AnalysisHost -> UnifiedAnalysisSession -> ModularAnalysisEngine -> AnalysisPipelineRunner -> FrameSource -> LiteRT detector -> ByteTrack -> ground/keypoint enrichment -> speed -> traffic rules/evidence -> preview/result`.
+
+`UnifiedAnalysisSession` centralizes job, source and runtime ownership, closes resources after completion, supports cancellation, and guards concurrent analysis starts. The previous mutex/join deadlock pattern is no longer present.
+
+### Detector/model findings
+The repository contains a real `yolo26n.tflite` asset and a strict detector contract. `LiteRtObjectDetector` supports both end-to-end `[1,300,6]` and classic `[1,84,8400]` output formats, but the registry-selected current model contract is the classic 80-class output. Runtime output length is checked before parsing; letterbox scaling/padding is explicit and inverse-mapped to source coordinates; traffic classes parsed are car/motorcycle/bus/truck. `AnalysisRuntimeFactory` always instantiates the CPU accelerator in the current production path.
+
+### Tracker findings
+`ByteTrack` is a custom ByteTrack-inspired tracker rather than an official reference implementation. It uses high/low confidence two-stage association, class gating, Hungarian assignment, Kalman prediction and empirical short-horizon motion. It also applies acceleration bounding, reversal protection, adaptive center-distance gating, optional deterministic appearance similarity, bounded observation history and explicit track states. The code returns only confirmed, currently matched tracks to the live frame preview. No labelled traffic benchmark currently proves HOTA/IDF1/MOTA/ID-switch/fragmentation performance.
+
+### Calibration and physical-speed findings
+The calibrated path validates homography quality, source dimensions, inlier ratio and reprojection error before using the ground projector. Physical-speed eligibility also depends on exact timestamp precision when configured. `AutoSpeedGate` is metric in calibrated mode and visual-only in uncalibrated mode. Traffic rules remain stricter than display/analysis and should not be promoted to enforcement based on calibration-free output.
+
+### Calibration-free speed findings
+`CalibrationFreeSpeedEstimator` is genuinely wired into the production `AnalysisPipelineRunner`; it is not dead code or a screen-only feature. It only runs for confirmed/high-confidence tracks and has explicit temporal, directional and plausibility gates. It uses class width priors, local per-interval scale, dominant-motion projection, robust weighted median, cumulative pseudo-metric trajectory, bounded Theil-Sen slope, agreement residual, width stability and explicit uncertainty. `CALIBRATION_FREE_ESTIMATE` is preserved in the result/UI semantics.
+
+However, the core metric conversion remains heuristic:
+`metricDistanceM = imageDisplacementPx * assumedVehicleWidthM / localWidthPx`.
+This is a useful engineering prior, but it is not a learned 3-D vehicle geometry model, not a camera-intrinsic/extrinsic solution, and not the published 36-keypoint dynamic-homography method referenced in the project documentation. Therefore the implementation should still be treated as an approximate estimate until benchmarked against ground truth. The absence of a trained keypoint backend in the repository is an explicit boundary, not a missing claim.
+
+### Local-video source findings
+`ExactPtsVideoFrameSource` is robustly designed around MediaExtractor + MediaCodec + ImageReader, propagates source PTS and checks monotonic decoder timestamps and image timestamp consistency. It is suitable for device validation, not yet device-certified.
+
+`LocalVideoFrameSource` remains a fallback/indexed-decoding implementation. Its source timestamp precision is deliberately `REQUESTED_SAMPLE_TIME`, and it still contains the previously identified lifecycle flaw: EOF can set `finished=true`, after which `close()` returns before calling `retriever.release()`. It is not the default path when `useGroundPlane=true`, but it remains a real resource-management defect in a supported code path.
+
+### Recorded-video presentation findings
+`AnalysisVideoPlayback` correctly separates analysis from natural-speed replay. It uses ExoPlayer, interpolates historical detections by timestamp and bounds post-track extrapolation to 350 ms. This is the correct direction for avoiding the old inference-coupled slow playback.
+
+A concrete synchronization risk remains: ExoPlayer `currentPosition` is used as the replay clock while track observations preserve source PTS milliseconds. The code currently seeks the player to `0L`, and the completed preview seed frame also uses timestamp `0L`. If a source video begins with a materially non-zero PTS, overlay timing can be offset because no explicit normalization to the first source PTS is applied. This must be tested and should be fixed before claiming robust timestamp synchronization.
+
+### Radar/live findings
+`IntelligentRadarScreen` currently analyzes a user-selected local traffic video through the shared analysis ViewModel and displays the same real detector/tracker/speed output in `AnalysisRadarPreview`; it is not a simulation. The separate live path uses `LiveAnalysisViewModel` + `MjpegFrameSource` and the same detector/tracker engine, with `NativeGroundProjector`/`NativeFirstSpeedEstimator` on the live engine.
+
+The live MJPEG source intentionally keeps only the newest pending frame and drops/recycles stale frames, preventing an unbounded latency queue. Its timestamps are local monotonic arrival times, so calibrated physical live speed is intentionally blocked. Calibration-free speed can run because it does not require a calibrated metre scale, but the live path is not yet physically benchmarked.
+
+The major remaining presentation/performance problem is therefore not algorithmic existence; it is real-time synchronization and scheduling on the target phone: source arrival, detector latency, tracker updates, UI frame presentation, queue/drop behavior, and long-run thermal/memory limits have not been measured on real hardware.
+
+### Evidence/reporting findings
+`FileEvidenceStore` is a real bounded persistence layer with hashing, atomic replacement/fallback handling, integrity checks and cleanup. `LocalAnalysisViewModel` can generate bounded full-frame and vehicle-crop JPEG artifacts for requested events. Exact live-MJPEG event-frame capture and production ANPR are still incomplete.
+
+### ANPR findings
+The domain layer already has `PlateReading`, `PlateConsensus` and the correct architectural insertion point, but `enablePlateRecognition` defaults false and there is no production Android plate-detector/OCR backend installed. Therefore plate recognition is not a completed system capability yet.
+
+### CI findings
+The current workflow executes Android debug build, instrumentation compilation, unit tests, lint, native parity tests, offline Python research tests, and both ESP32 firmware builds. A green run proves only those automated checks at that commit; it does not prove target-phone behavior, decoder compatibility, memory/thermal stability, tracking accuracy or speed accuracy. The current latest main HEAD `6000d903...` is documentation-only and has no workflow run attached in the current GitHub Actions lookup.
+
+### Remaining work ranked by engineering priority
+1. Fix `LocalVideoFrameSource.close()` EOF ownership and add a regression test.
+2. Fix/validate replay clock normalization so ExoPlayer position and source PTS share the same zero point, including non-zero and irregular PTS videos.
+3. Install a target-device validation loop: detector startup, MediaCodec decode, exact-PTS integrity, frame-drop accounting, sustained FPS, memory, thermal and crash/ANR monitoring.
+4. Benchmark live ESP32-to-phone scheduling so the radar can present smoothly without reducing detector/model correctness. The intended solution is timestamped state interpolation/presentation scheduling, not hiding lag by lowering analysis quality.
+5. Establish labelled tracking ground truth and calculate HOTA/IDF1/MOTA, ID switches and fragmentation.
+6. Establish independent speed ground truth and calculate MAE/MAPE, robust error bands and confidence calibration by class, distance, perspective, lighting and occlusion.
+7. Add/validate a real vehicle-keypoint/dynamic-homography calibration-free backend only after selecting deployable weights and comparing it to the current width-prior fallback. Do not substitute fake keypoints.
+8. Complete production ANPR and temporal plate consensus.
+9. Validate the exact ESP32-S3 board/camera pin map, power, Wi-Fi and long-run streaming.
+
+### Exact current stopping point
+The calibration-free v2 work is already merged on `main`, and the current repository head is later than the merge because of a documentation-only upload. The project should now resume on `main` from physical-device/media validation and from the playback/live-radar synchronization problem. No new algorithm should be added merely to make the UI look smooth; correctness, timing provenance and quality metrics must remain intact.
