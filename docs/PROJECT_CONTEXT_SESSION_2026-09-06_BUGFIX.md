@@ -45,73 +45,88 @@ For uncalibrated video, visual timing lines are presentation aids only. The stro
 
 The completed preview no longer seeks the already-running player back to zero. The same player continues from its current position after the analysis completes.
 
-The overlay continues to interpolate the stored track history against the player position and allows bounded 350 ms extrapolation, so green bounding boxes and IDs can appear directly over the moving source video while analysis is running.
-
-This is intentionally a source-video-master-clock design: the video remains smooth even when the detector is slower than real time, while overlay freshness is governed by the available track history.
-
 ### 2. Uncalibrated visual speed gate was made traffic-corridor aware
-`AnalysisVideoPlayback.kt` now computes a presentation-only visual gate from current tracked vehicle observations when `preview.calibrated == false`.
+`AnalysisVideoPlayback.kt` computes a presentation-only visual gate from current tracked vehicle observations when `preview.calibrated == false`.
 
-The new visual gate:
-- estimates the dominant motion axis from actual track motion;
-- places two cross-flow lines at longitudinal quantiles;
-- enforces minimum visual separation;
-- derives the line segment from the observed transverse vehicle corridor instead of blindly spanning the whole frame;
-- clips the result to the video image bounds.
-
-Calibrated runs continue using the physical `SpeedGate` produced by the domain gate builder.
+The visual gate estimates dominant motion, places two cross-flow lines at longitudinal quantiles, enforces minimum separation, derives the segment from the observed transverse vehicle corridor, and clips it to image bounds.
 
 ### 3. Traffic rules are non-fatal and physical-speed-only
-`TrafficRules.kt` was changed so:
-- enabled rules with no calibration return no events instead of throwing an exception;
-- only `CALIBRATED_GROUND_PLANE` estimates can produce traffic-rule violation events;
-- `CALIBRATION_FREE_ESTIMATE` can never become a physical enforcement event.
-
-This restores the separation between analysis/display and enforcement policy without allowing optional rules to destroy the entire analysis result.
+`TrafficRules.kt` was changed so enabled rules with no calibration return no events instead of throwing, and only `CALIBRATED_GROUND_PLANE` estimates can create traffic-rule violation events.
 
 ### 4. Fallback video decoder resource lifecycle was fixed
-`LocalVideoFrameSource.kt` was changed so normal EOF calls the same finish/release path as explicit close. This removes the previously identified path where `finished = true` could cause `close()` to return before releasing `MediaMetadataRetriever`.
+`LocalVideoFrameSource.kt` now releases its fallback retriever consistently at EOF and uses an idempotent release path.
 
-## External implementation comparison
+## Deep tracking/speed refinement — 2026-09-06 follow-up
 
-External/current references were reviewed during this fix cycle:
+The next pass focused on making the on-video tracking visually continuous instead of merely showing the latest detector box. Current research and reference implementations indicate that robust traffic tracking should separate three concerns: identity association, state prediction during missed observations/occlusion, and render-time temporal smoothing. Current Ultralytics documentation describes ByteTrack as the lightweight baseline, BoT-SORT as adding camera-motion compensation and optional ReID, and OC-SORT as adding observation-centric correction/recovery for non-linear motion and occlusion. citeturn320283search6turn320283search0turn320283search2
 
-- Ultralytics YOLO speed estimation keeps the output attached to the processed video frame and explicitly treats speed as an estimate dependent on camera scale. citeturn747959search0turn747959search2
-- Ultralytics tracking keeps boxes/IDs in the same video processing loop; ByteTrack is the lightweight baseline, while BoT-SORT adds camera-motion compensation and optional ReID for moving-camera footage. citeturn457260search3turn457260search0
-- `tomasszu/vehicle_counting_demo` demonstrates line-crossing counts with detections, tracks, IDs and line annotations written directly on the processed video, including robustness work for low-frame-rate/occlusion cases. citeturn747959search3
-- `swhan0329/vehicle_speed_estimation` uses an explicit ROI/lane-scale calibration workflow for practical fixed-camera speed estimation; the important engineering lesson is that scene geometry/scale must be tied to the actual camera view. citeturn457260search6
-- `HasibAlMuzdadid/Real-Time-Traffic-Capacity-and-Speed-Detection` uses detection + ByteTrack + perspective mapping for real-world road coordinates, reinforcing the calibrated road-geometry path for physical speed. citeturn747959search4
+The repository already contains a custom ByteTrack-inspired tracker with Kalman prediction, two-stage high/low confidence matching, appearance signatures, motion gates, acceleration bounds, and bounded history. The latest refinement therefore avoids altering the analytical measurements merely to make the UI look smooth. Instead, `AnalysisVideoPlayback.kt` now adds a render-only cinematic trajectory layer.
 
-## Validation state
+### Cinematic renderer architecture
 
-The fixes were committed directly to `main` in separate commits:
-- `fd28da1...` — non-fatal, physical-speed-only traffic rules.
-- `9b3b47c...` — continuous video playback during analysis + corridor-aware visual gate.
-- `38a24e8...` — fallback video decoder EOF cleanup.
-- `ca825862...` — regression test for traffic-rule policy.
+The source video remains the master visual clock and continues at natural playback speed. For each track, the renderer:
 
-The latest push automatically started Android CI Run #468 (`34050672433`) on `main` at `ca825862aecdcde1faee12e604e0a9618bc1509d`.
+1. converts detector boxes to timestamped center/size samples;
+2. applies a short causal weighted trailing smoother to reduce single-frame detector jitter;
+3. interpolates between timestamped samples with cubic Hermite motion rather than snapping from box to box;
+4. computes recent velocity with a median estimator for short prediction;
+5. extrapolates for at most 800 ms when inference lags behind the video, with damping so the box does not accelerate unrealistically;
+6. bounds interpolation overshoot near neighboring observations;
+7. leaves the underlying track history, speed estimation, and enforcement analytics untouched.
 
-At the last check during this session:
-- Offline Research Math: passed.
-- Native C++ parity: passed.
-- Android build/test: still running.
-- ESP32 firmware build: still running.
+This is intentionally a rendering model, not a measurement rewrite. A visually smooth rectangle must not contaminate the evidence used by the speed estimator.
 
-Do not call the fix fully validated until the remaining CI jobs complete successfully and the repaired APK is tested on the user's target device with the same traffic video.
+### Video/track clock alignment
 
-## Remaining technical risks
+The renderer no longer blindly treats the player position as an absolute detector timestamp. It derives the timeline origin from the earliest available track observation and offsets that by `player.currentPosition`, reducing common non-zero-start PTS misalignment during the analysis preview.
 
-1. Exact PTS versus ExoPlayer timeline origin still needs a non-zero-start PTS test on a physical device.
-2. The corridor-aware visual gate is intentionally presentation-only for uncalibrated video; it is not a source of metric metres.
-3. Calibration-free speed still requires independent real-speed benchmark data before any accuracy claim.
-4. Live MJPEG still uses local arrival timestamps and must not be treated as calibrated physical speed.
-5. Hardware/decoder compatibility and sustained Android memory/thermal behavior remain physical-device validation gates.
+A dedicated source-start timestamp field is still desirable for a final implementation because the earliest currently visible track is not guaranteed to be the actual media PTS origin. A physical-device test with videos whose media starts at non-zero PTS is still required before closing this risk.
 
-## Next stopping point
+### Calibration-free speed position
 
-Once CI is green, install that exact APK and run the same Local Analysis test again. Verify on-screen, in one video surface:
+The current `CalibrationFreeSpeedEstimator` is a robust engineering estimate based on bottom-center image motion, local per-interval scale from a vehicle-width prior, dominant-motion projection, trimmed observations, cumulative pseudo-metric trajectory fitting, Theil-Sen regression, estimator agreement, and explicit uncertainty. This is materially more robust than simple pixel displacement divided by frame time, but it is not the exact 2026 research method.
 
-`moving source video + green vehicle boxes + stable car IDs + calibration-free speed label + two useful visual speed lines`
+The newly published August 17, 2026 calibration-free research framework uses a learned 36-keypoint vehicle template and a homography updated per frame, with an alternative warped optical-flow strategy, and reports validation on more than 400 video clips. citeturn320283academia12 The repository does not currently contain that trained keypoint backend, so the project must not claim reproduction of those reported error rates. The engineering roadmap is to add such a model only after a compatible Android inference artifact and benchmark protocol exist.
 
-The side Tracking Radar should remain an analytical secondary view, not the only place where tracking appears.
+## Current commits at this stopping point
+
+- `fd28da1f...` — traffic rules non-fatal and physical-speed-only.
+- `9b3b47c4...` — continuous recorded-video playback and corridor-aware uncalibrated visual gate.
+- `38a24e8e...` — fallback retriever EOF cleanup.
+- `ca825862...` — regression test for traffic-rule safety policy.
+- `dbc64fd6...` — idempotent fallback retriever release.
+- `44d4e99b...` — cinematic render-only tracking smoothing/interpolation/extrapolation for the video overlay.
+
+`main` currently points to `44d4e99bb0aae4fd804c0f22d6915aa374062613`.
+
+## Validation state after cinematic change
+
+GitHub Actions Run #471 (`34051237156`) was automatically started from `44d4e99bb0aae4fd804c0f22d6915aa374062613`. At the time of this note, Native C++ Parity and Offline Research Math had completed successfully, while Android Build & Test and ESP32 firmware were still running. Do not mark the cinematic change fully validated until the remaining CI jobs complete and the exact APK is exercised on the target Android device with the same traffic video.
+
+## Required physical validation checklist
+
+The same Local Analysis traffic video should visibly show, simultaneously:
+
+`moving source video → green box follows vehicle continuously → stable ID → speed estimate on the vehicle → two useful speed lines aligned with observed traffic flow`
+
+The side Tracking Radar should agree with the on-video trajectory, remain secondary to the source video, and not become a separate truth source.
+
+Success criteria for the next device test:
+
+- the source video never freezes while analysis is running;
+- boxes do not jump several pixels on ordinary detector noise;
+- IDs remain stable through ordinary partial occlusion;
+- a brief detector miss does not immediately make the box disappear;
+- the speed estimate changes smoothly rather than frame-to-frame wildly;
+- calibration-free speed is clearly labelled as an estimate and never creates enforcement events;
+- visual speed lines stay in the vehicle corridor rather than spanning arbitrary image space;
+- analysis completes without a calibration-related exception.
+
+## Remaining research/engineering priorities
+
+1. Replace active-only preview tracks with a short-lived predicted/render state for recently missed tracks so the box can survive detector gaps without changing analytics.
+2. Make radar rendering use the same timestamped smoothed trajectory as the video overlay instead of raw last detections, so both surfaces are visually synchronized.
+3. Add a fixed source PTS origin from `FrameSource` metadata rather than inferring it from visible tracks.
+4. Measure detector-to-video lag on the device and expose a bounded freshness indicator instead of silently hiding boxes after the prediction horizon.
+5. Benchmark IDF1/HOTA/ID-switch/fragmentation on labelled traffic sequences; no such traffic benchmark has yet been established for this project.
+6. Build a separate benchmark for calibration-free speed against known ground-truth speeds before reporting numerical accuracy.
