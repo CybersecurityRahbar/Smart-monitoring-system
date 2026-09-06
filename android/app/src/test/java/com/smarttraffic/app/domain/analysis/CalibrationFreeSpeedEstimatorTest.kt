@@ -105,8 +105,8 @@ class CalibrationFreeSpeedEstimatorTest {
         pixelsPerSecond: Double = 10.0,
     ): Track {
         val observations = (0 until pointCount).map { frame ->
-            val timestamp = if (withGap && frame >= 5) frame.toLong() * 1000L + 800L else frame.toLong() * 1000L
-            val x = frame * pixelsPerSecond
+            val timestamp = if (withGap && frame >= 5) frame.toLong() * 100L + 800L else frame.toLong() * 100L
+            val x = frame * pixelsPerSecond * 0.1
             TrackObservation(
                 frameIndex = frame.toLong(),
                 timestampMs = timestamp,
