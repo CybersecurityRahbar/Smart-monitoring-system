@@ -13,6 +13,7 @@ import com.smarttraffic.app.domain.analysis.HomographyEstimator
 import com.smarttraffic.app.domain.analysis.MediaSource
 import com.smarttraffic.app.domain.analysis.ObjectDetector
 import com.smarttraffic.app.domain.analysis.RobustSpeedEstimator
+import com.smarttraffic.app.domain.analysis.SpeedEstimateMode
 import com.smarttraffic.app.domain.analysis.TrackObservation
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -162,11 +163,15 @@ class TrafficReliabilityTest {
             override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> =
                 listOf(detection(frameIndex, frameIndex * 10f, confidence = 0.95f, width = 40f))
         }
-        val source = SyntheticFrameSource((0L..19L).map { index -> AnalysisFrame(index, index * 100L, index, 1920, 1080) }, FrameTimestampPrecision.REQUESTED_SAMPLE_TIME)
+        val source = SyntheticFrameSource(
+            (0L..19L).map { index -> AnalysisFrame(index, index * 100L, index, 1920, 1080) },
+            FrameTimestampPrecision.REQUESTED_SAMPLE_TIME,
+        )
         val result = AnalysisPipelineRunner(detector, ByteTrack()).run(source, validCalibration())
         assertEquals(FrameTimestampPrecision.REQUESTED_SAMPLE_TIME, result.metrics.timestampPrecision)
-        assertTrue(result.speedEstimates.isEmpty())
-        assertEquals(1L, result.metrics.rejectedSpeedEstimates)
+        assertTrue(result.speedEstimates.isNotEmpty())
+        assertEquals(SpeedEstimateMode.CALIBRATION_FREE_ESTIMATE, result.speedEstimates.values.single().mode)
+        assertEquals(0L, result.metrics.rejectedSpeedEstimates)
     }
 
     @Test
@@ -175,7 +180,10 @@ class TrafficReliabilityTest {
             override suspend fun detect(frame: Any, timestampMs: Long, frameIndex: Long): List<Detection> =
                 listOf(detection(frameIndex, frameIndex * 10f, confidence = 0.95f, width = 40f))
         }
-        val source = SyntheticFrameSource((0L..19L).map { index -> AnalysisFrame(index, index * 100L, index, 1920, 1080) }, FrameTimestampPrecision.EXACT_SOURCE_CLOCK)
+        val source = SyntheticFrameSource(
+            (0L..19L).map { index -> AnalysisFrame(index, index * 100L, index, 1920, 1080) },
+            FrameTimestampPrecision.EXACT_SOURCE_CLOCK,
+        )
         val result = AnalysisPipelineRunner(detector, ByteTrack()).run(source, AnalysisConfig(
             minimumSpeedSamples = 8,
             minimumTrackDurationMs = 500L,
@@ -184,8 +192,9 @@ class TrafficReliabilityTest {
                 homography = listOf(0.01, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             ),
         ))
-        assertTrue(result.speedEstimates.isEmpty())
-        assertEquals(1L, result.metrics.rejectedSpeedEstimates)
+        assertTrue(result.speedEstimates.isNotEmpty())
+        assertEquals(SpeedEstimateMode.CALIBRATION_FREE_ESTIMATE, result.speedEstimates.values.single().mode)
+        assertEquals(0L, result.metrics.rejectedSpeedEstimates)
     }
 
     private fun validCalibration(): AnalysisConfig = AnalysisConfig(
