@@ -318,7 +318,7 @@ class AnalysisPipelineRunner(
                 config = config.trafficRules.copy(enabled = true),
                 detectorModel = config.detectorModel,
                 tracker = config.tracker,
-                calibration = config.calibration,
+                config.calibration,
             )
         } else emptyList()
 
@@ -402,7 +402,7 @@ class AnalysisPipelineRunner(
         if (track.state != TrackState.CONFIRMED || track.trackConfidence < config.minimumTrackConfidenceForSpeed) return SpeedRejectionReason.TRACK_QUALITY_LOW
         if (track.observations.size < config.minimumSpeedSamples) return SpeedRejectionReason.INSUFFICIENT_OBSERVATIONS
         if (track.observations.last().timestampMs - track.observations.first().timestampMs < config.minimumTrackDurationMs) return SpeedRejectionReason.INSUFFICIENT_DURATION
-        if (track.observations.zipWithNext().any { it.second.timestampMs - it.first.timestampMs > config.maximumSpeedObservationGapMs }) return SpeedRejectionReason.DISCONTINUOUS_TRACK
+        if (track.observations.zipWithNext().any { it.second.timestampMs - it.first().timestampMs > config.maximumSpeedObservationGapMs }) return SpeedRejectionReason.DISCONTINUOUS_TRACK
         if (requirePhysical && !calibrationReady) return SpeedRejectionReason.CALIBRATION_INVALID
         if (requirePhysical && config.requireExactTimestampsForPhysicalSpeed && source.source.timestampPrecision != FrameTimestampPrecision.EXACT_SOURCE_CLOCK) return SpeedRejectionReason.TIMESTAMP_INVALID
         if (requirePhysical && config.calibration == null) return SpeedRejectionReason.CALIBRATION_INVALID
@@ -469,25 +469,9 @@ class AnalysisPipelineRunner(
             val timeGap = current.timestampMs - previous.timestampMs
             if (frameGap > 1L) {
                 count++
-                maximumGapMs = maxOf(maximumGapMs, timeGap.coerceAtLeast(0L))
+                maximumGapMs = max(maximumGapMs, timeGap)
             }
         }
         return RecoveryStats(count, maximumGapMs)
     }
-
-    private data class RecoveryStats(val count: Int = 0, val maximumGapMs: Long = 0L)
-
-    private data class MutableTrackBuffer(
-        val id: Long,
-        val className: String,
-        val maxObservations: Int,
-        val observations: ArrayDeque<TrackObservation> = ArrayDeque(maxObservations),
-        val confidenceSamples: ArrayDeque<Double> = ArrayDeque(maxObservations),
-        var hits: Int = 0,
-        var misses: Int = 0,
-        var ageFrames: Int = 0,
-        var lastTimestampMs: Long = 0L,
-        var state: TrackState = TrackState.TENTATIVE,
-        var wasOccluded: Boolean = false,
-    )
 }
