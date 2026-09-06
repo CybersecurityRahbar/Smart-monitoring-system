@@ -9,7 +9,6 @@ import com.smarttraffic.app.domain.analysis.VehicleKeypoint
 import com.smarttraffic.app.domain.analysis.VehicleKeypointEstimator
 import kotlin.math.exp
 import kotlin.math.max
-import kotlin.math.min
 
 /**
  * LiteRT backend for a single-vehicle YOLO classic pose export.
@@ -164,31 +163,32 @@ class LiteRtVehicleKeypointEstimator(
                 raw = raw,
                 candidate = bestCandidate,
                 spec = spec,
-                inputSize = inputSize,
             )
 
-            return buildList(spec.keypointCount) { index ->
-                val base = (5 + index * 3) * spec.candidateCount + bestCandidate
-                val rawX = raw[base]
-                val rawY = raw[base + spec.candidateCount]
-                val rawConfidence = raw[base + 2 * spec.candidateCount]
-                val pointConfidence = normalizeConfidence(rawConfidence)
-                if (!rawX.isFinite() || !rawY.isFinite() || pointConfidence < confidenceThreshold) return@buildList
+            return buildList(spec.keypointCount) {
+                for (index in 0 until spec.keypointCount) {
+                    val base = (5 + index * 3) * spec.candidateCount + bestCandidate
+                    val rawX = raw[base]
+                    val rawY = raw[base + spec.candidateCount]
+                    val rawConfidence = raw[base + 2 * spec.candidateCount]
+                    val pointConfidence = normalizeConfidence(rawConfidence)
+                    if (!rawX.isFinite() || !rawY.isFinite() || pointConfidence < confidenceThreshold) continue
 
-                val modelX = if (outputCoordinatesLookNormalized) rawX * inputSize else rawX
-                val modelY = if (outputCoordinatesLookNormalized) rawY * inputSize else rawY
-                val cropX = (modelX - letterbox.padX) / letterbox.scale
-                val cropY = (modelY - letterbox.padY) / letterbox.scale
-                val sourceX = (cropLeft + cropX.toDouble()).coerceIn(0.0, frameWidth.toDouble())
-                val sourceY = (cropTop + cropY.toDouble()).coerceIn(0.0, frameHeight.toDouble())
-                add(
-                    VehicleKeypoint(
-                        name = spec.keypointNames[index],
-                        x = sourceX,
-                        y = sourceY,
-                        confidence = pointConfidence,
+                    val modelX = if (outputCoordinatesLookNormalized) rawX * inputSize else rawX
+                    val modelY = if (outputCoordinatesLookNormalized) rawY * inputSize else rawY
+                    val cropX = (modelX - letterbox.padX) / letterbox.scale
+                    val cropY = (modelY - letterbox.padY) / letterbox.scale
+                    val sourceX = (cropLeft + cropX.toDouble()).coerceIn(0.0, frameWidth.toDouble())
+                    val sourceY = (cropTop + cropY.toDouble()).coerceIn(0.0, frameHeight.toDouble())
+                    add(
+                        VehicleKeypoint(
+                            name = spec.keypointNames[index],
+                            x = sourceX,
+                            y = sourceY,
+                            confidence = pointConfidence,
+                        )
                     )
-                )
+                }
             }
         }
 
@@ -196,7 +196,6 @@ class LiteRtVehicleKeypointEstimator(
             raw: FloatArray,
             candidate: Int,
             spec: VehiclePoseModelSpec,
-            inputSize: Int,
         ): Boolean {
             var maxAbs = 0f
             for (index in 0 until spec.keypointCount) {
