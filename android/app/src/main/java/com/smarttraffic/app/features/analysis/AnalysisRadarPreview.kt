@@ -44,6 +44,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
 import com.smarttraffic.app.domain.analysis.RadarBounds
+import com.smarttraffic.app.domain.analysis.SpeedEstimateMode
 import com.smarttraffic.app.domain.analysis.Track
 import kotlin.math.max
 
@@ -126,6 +127,13 @@ fun AnalysisRadarPreview(
                             preview = preview,
                             modifier = Modifier.fillMaxSize(),
                         )
+                        VideoAnalysisHud(
+                            preview = preview,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(10.dp),
+                            compact = false,
+                        )
                     } else {
                         VideoFrameWithTracks(
                             preview = preview,
@@ -166,6 +174,13 @@ private fun ImmersiveVideo(
                 showClose = true,
                 onClose = onClose,
             )
+            VideoAnalysisHud(
+                preview = preview,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(14.dp),
+                compact = true,
+            )
         } else {
             VideoFrameWithTracks(
                 preview = preview,
@@ -177,7 +192,7 @@ private fun ImmersiveVideo(
         }
         Surface(
             modifier = Modifier
-                .align(Alignment.TopStart)
+                .align(Alignment.BottomStart)
                 .padding(14.dp),
             color = Color.Black.copy(alpha = 0.72f),
             shape = RoundedCornerShape(14.dp),
@@ -191,6 +206,100 @@ private fun ImmersiveVideo(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun VideoAnalysisHud(
+    preview: AnalysisPreviewFrame,
+    modifier: Modifier,
+    compact: Boolean,
+) {
+    val estimates = preview.speedEstimates
+    val active = preview.tracks
+    val estimatedActive = active.count { it.id in estimates }
+    val modeLabel = if (preview.calibrated) "METRIC" else "VIDEO ESTIMATE"
+    val labelText = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium
+    val valueText = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.titleSmall
+    val visibleTracks = active.take(6)
+    val hiddenCount = (active.size - visibleTracks.size).coerceAtLeast(0)
+
+    Surface(
+        modifier = modifier,
+        color = Color.Black.copy(alpha = 0.74f),
+        shape = RoundedCornerShape(if (compact) 12.dp else 16.dp),
+        tonalElevation = 0.dp,
+        shadowElevation = 4.dp,
+    ) {
+        Column(
+            Modifier.padding(horizontal = if (compact) 8.dp else 11.dp, vertical = if (compact) 6.dp else 8.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp),
+            ) {
+                HudMetric("DETECTED", preview.uniqueVehiclesDetected.toString(), labelText, valueText)
+                HudMetric("TRACKING", active.size.toString(), labelText, valueText)
+                HudMetric("SPEED", estimatedActive.toString(), labelText, valueText)
+                Text(
+                    modeLabel,
+                    style = labelText,
+                    color = Color(0xFF39FF14),
+                )
+            }
+            if (visibleTracks.isNotEmpty()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    visibleTracks.forEach { track ->
+                        val estimate = estimates[track.id]
+                        val speedLabel = estimate?.let { "%.1f".format(it.kilometersPerHour) } ?: "--"
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.52f),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text(
+                                "ID ${track.id}: $speedLabel km/h",
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                            )
+                        }
+                    }
+                    if (hiddenCount > 0) {
+                        Text(
+                            "+$hiddenCount more",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.80f),
+                        )
+                    }
+                }
+            }
+            Text(
+                if (preview.calibrated) {
+                    "Per-vehicle speed uses validated ground-plane timing."
+                } else {
+                    "Per-vehicle speed is estimated from video motion and vehicle-size priors; calibration is not required."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.72f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun HudMetric(
+    label: String,
+    value: String,
+    labelText: androidx.compose.ui.text.TextStyle,
+    valueText: androidx.compose.ui.text.TextStyle,
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, style = labelText, color = Color.White.copy(alpha = 0.68f))
+        Text(value, style = valueText, color = Color.White)
     }
 }
 
