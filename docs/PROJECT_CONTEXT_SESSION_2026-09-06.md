@@ -95,12 +95,30 @@ The first draft of the v2 implementation still used an inferred point index when
 
 The historical Python robust-speed tests remain unchanged; they cover the offline research/reference path separately.
 
+## Android CI failure and correction — 2026-09-06
+Run #454 (`34039504425`) was inspected from the actual GitHub Actions job logs. The failure was isolated to the Android unit-test compilation stage, not to the application APK build.
+
+- `:app:assembleDebug` completed successfully.
+- `:app:assembleDebugAndroidTest` completed successfully.
+- `:app:compileDebugUnitTestKotlin` failed at `AutoSpeedGateTest.kt:26:35` because the test compared nullable `SpeedEstimate.errorKmh` directly with `0.0`.
+- Root cause was Kotlin null-safety in a test assertion; no production detector, tracker, calibration-free speed or calibrated-speed code caused this failure.
+- The correction explicitly unwraps the optional value with `requireNotNull(speed.errorKmh)` before the numeric assertion.
+- No production runtime behavior was changed by this correction.
+- The instrumentation compilation warning in `LiteRtStartupSmokeTest.kt:42:81` (`Condition is always 'true'`) was non-fatal and remains a warning to clean up separately.
+- The same Run #454 also completed the ESP32 firmware builds successfully and completed Offline Research Math and Native C++ Parity successfully.
+
+Corrected test commit: `5baa0852b7ac765afa2e0aa38d6ce9e7a0caf963`.
+
+PR #1 now points to head `5baa0852b7ac765afa2e0aa38d6ce9e7a0caf963` and has five commits across four files. GitHub generated merge commit `015b94d207f69dc4b645b289b95b8d7dfbbb9521` for the current pull-request test merge state.
+
+A fresh Actions run for the corrected head had not yet been surfaced by the connector at the time this context entry was written; therefore the corrected branch is NOT declared green until the new Android unit-test and lint results are observed directly.
+
 ## Current status after code change
-Latest branch code commits:
+Latest branch code commits include:
 - `840f14e74e1b6565d7e9223120dabbd0739bc234` — initial robust temporal calibration-free implementation.
 - `e677acaa59d5355dcda0ca5fabd0e247bbe02e79` — interval timestamp provenance correction.
 - `5a1dd62a78e0c5ba33065d71ec1f37897086becf` — regression tests for the v2 estimator.
-- This context-document update is the next commit on the same branch.
+- `5baa0852b7ac765afa2e0aa38d6ce9e7a0caf963` — Android unit-test nullable assertion correction.
 
 The exact `main` branch before this work was `2b36e3275b710c2b7c979a131a08224c3026a9b4`; it was a docs-only audit commit after the previous speed-cycle SHA. The latest previous speed implementation commit was `8936c54ce3ec2fea5bfea962b7b491aceeb1c405`.
 
