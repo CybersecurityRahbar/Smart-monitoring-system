@@ -12,14 +12,7 @@ import com.smarttraffic.app.domain.analysis.MediaSource
 import kotlin.math.min
 import kotlin.math.roundToLong
 
-/**
- * FrameSource for local video URIs selected by the Analysis Lab.
- *
- * API 28+ videos with frame-count metadata are decoded in small sequential batches. Android
- * recommends getFramesAtIndex() when several consecutive frames are required; this reduces
- * repeated decoder/indexing overhead while keeping frame order deterministic.
- * Timestamps remain REQUESTED_SAMPLE_TIME because indexed frame position is not proof of decoded PTS.
- */
+/** FrameSource for local video using indexed frames when supported, with timestamp-based fallback. */
 class LocalVideoFrameSource(
     private val context: Context,
     private val uri: Uri,
@@ -46,21 +39,14 @@ class LocalVideoFrameSource(
 
     init {
         retriever.setDataSource(context, uri)
-        durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-            ?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
-        width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-            ?.toIntOrNull()?.coerceAtLeast(1) ?: 0
-        height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-            ?.toIntOrNull()?.coerceAtLeast(1) ?: 0
-        frameRate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)
-            ?.toDoubleOrNull()?.takeIf { it > 0.0 }
+        durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+        width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()?.coerceAtLeast(1) ?: 0
+        height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()?.coerceAtLeast(1) ?: 0
+        frameRate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toDoubleOrNull()?.takeIf { it > 0.0 }
         frameCount = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)
-                ?.toLongOrNull()?.takeIf { it > 0L && it <= Int.MAX_VALUE }?.toInt()
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toLongOrNull()?.takeIf { it > 0L && it <= Int.MAX_VALUE }?.toInt()
         } else null
-        sequentialFrameRate = frameRate ?: if (frameCount != null && durationMs > 0L) {
-            frameCount.toDouble() * 1000.0 / durationMs.toDouble()
-        } else null
+        sequentialFrameRate = frameRate ?: if (frameCount != null && durationMs > 0L) frameCount.toDouble() * 1000.0 / durationMs else null
 
         source = MediaSource(
             id = uri.toString(),
@@ -69,45 +55,29 @@ class LocalVideoFrameSource(
             width = width,
             height = height,
             timestampPrecision = FrameTimestampPrecision.REQUESTED_SAMPLE_TIME,
+            timelineStartTimestampMs = 0L,
         )
     }
 
     override suspend fun nextFrame(): AnalysisFrame? {
         if (finished || closed || released) return null
-
         if (indexDecodeEnabled && frameCount != null) {
             fillBatchIfNeeded()
             if (pendingFrames.isNotEmpty()) {
                 val currentIndex = frameIndex++
                 val bitmap = pendingFrames.removeFirst()
-                val timestampMs = sequentialFrameRate?.let {
-                    (currentIndex.toDouble() * 1000.0 / it).roundToLong().coerceAtLeast(0L)
-                } ?: nextTimestampUs / 1000L
-                return AnalysisFrame(
-                    index = currentIndex,
-                    timestampMs = timestampMs,
-                    payload = bitmap,
-                    width = bitmap.width,
-                    height = bitmap.height,
-                )
+                val timestampMs = sequentialFrameRate?.let { (currentIndex.toDouble() * 1000.0 / it).roundToLong().coerceAtLeast(0L) } ?: nextTimestampUs / 1000L
+                return AnalysisFrame(currentIndex, timestampMs, bitmap, bitmap.width, bitmap.height, timelineStartTimestampMs = 0L)
             }
             if (finished) return null
         }
-
         return nextFrameFromTimestamp(frameIndex)
     }
 
     private fun fillBatchIfNeeded() {
         if (pendingFrames.isNotEmpty() || finished || closed || released || !indexDecodeEnabled || frameCount == null) return
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
-            indexDecodeEnabled = false
-            return
-        }
-        if (frameIndex >= frameCount.toLong()) {
-            finish()
-            return
-        }
-
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) { indexDecodeEnabled = false; return }
+        if (frameIndex >= frameCount.toLong()) { finish(); return }
         val startIndex = frameIndex.toInt()
         val count = min(batchSize.toLong(), frameCount.toLong() - frameIndex).toInt()
         try {
@@ -116,62 +86,30 @@ class LocalVideoFrameSource(
             pendingFrames.addAll(decoded)
         } catch (_: RuntimeException) {
             indexDecodeEnabled = false
-            nextTimestampUs = sequentialFrameRate?.let {
-                (frameIndex.toDouble() * 1_000_000.0 / it).roundToLong().coerceAtLeast(0L)
-            } ?: nextTimestampUs
+            nextTimestampUs = sequentialFrameRate?.let { (frameIndex.toDouble() * 1_000_000.0 / it).roundToLong().coerceAtLeast(0L) } ?: nextTimestampUs
         }
     }
 
     private fun nextFrameFromTimestamp(currentIndex: Long): AnalysisFrame? {
-        if (durationMs > 0L && nextTimestampUs / 1000L >= durationMs) {
-            finish()
-            return null
-        }
+        if (durationMs > 0L && nextTimestampUs / 1000L >= durationMs) { finish(); return null }
         val timestampMs = nextTimestampUs / 1000L
-        val bitmap = retriever.getFrameAtTime(
-            nextTimestampUs,
-            MediaMetadataRetriever.OPTION_CLOSEST,
-        ) ?: run {
-            finish()
-            return null
-        }
-        val intervalMs = sequentialFrameRate?.let {
-            (1000.0 / it).coerceAtLeast(1.0)
-        } ?: 33.333
+        val bitmap = retriever.getFrameAtTime(nextTimestampUs, MediaMetadataRetriever.OPTION_CLOSEST) ?: run { finish(); return null }
+        val intervalMs = sequentialFrameRate?.let { (1000.0 / it).coerceAtLeast(1.0) } ?: 33.333
         nextTimestampUs += (intervalMs * 1000.0).roundToLong()
         frameIndex = currentIndex + 1L
-        return AnalysisFrame(
-            index = currentIndex,
-            timestampMs = timestampMs,
-            payload = bitmap,
-            width = bitmap.width,
-            height = bitmap.height,
-        )
+        return AnalysisFrame(currentIndex, timestampMs, bitmap, bitmap.width, bitmap.height, timelineStartTimestampMs = 0L)
     }
 
-    private fun finish() {
-        if (finished) return
-        finished = true
-        releaseRetriever()
-    }
+    private fun finish() { if (finished) return; finished = true; releaseRetriever() }
 
     override suspend fun close() {
         if (closed) return
         closed = true
         finished = true
-        while (pendingFrames.isNotEmpty()) {
-            pendingFrames.removeFirst().recycleIfOwned()
-        }
+        while (pendingFrames.isNotEmpty()) pendingFrames.removeFirst().recycleIfOwned()
         releaseRetriever()
     }
 
-    private fun releaseRetriever() {
-        if (released) return
-        released = true
-        runCatching { retriever.release() }
-    }
-
-    private fun Bitmap.recycleIfOwned() {
-        if (!isRecycled) recycle()
-    }
+    private fun releaseRetriever() { if (released) return; released = true; runCatching { retriever.release() } }
+    private fun Bitmap.recycleIfOwned() { if (!isRecycled) recycle() }
 }
