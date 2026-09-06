@@ -60,9 +60,7 @@ class AnalysisPipelineRunner(
         var speedGate: SpeedGate? = null
         var sourceReadTimeNs = 0L
         var lastPreviewPublishNs = Long.MIN_VALUE
-        val previewIntervalNs = (1_000_000_000.0 / config.maximumPreviewFps)
-            .coerceAtLeast(1.0)
-            .toLong()
+        val previewIntervalNs = (1_000_000_000.0 / config.maximumPreviewFps).coerceAtLeast(1.0).toLong()
         val analysisStartNs = System.nanoTime()
 
         while (true) {
@@ -71,14 +69,11 @@ class AnalysisPipelineRunner(
             sourceReadTimeNs += (System.nanoTime() - sourceReadStartNs).coerceAtLeast(0L)
             if (frame == null) break
             frameCount++
-
             previousFrameIndex?.let { previous ->
                 require(frame.index > previous) { "Frame indices must increase strictly: previous=$previous current=${frame.index}" }
                 if (frame.index > previous + 1L) droppedFrames += frame.index - previous - 1L
             }
-            previousTimestampMs?.let { previous ->
-                require(frame.timestampMs >= previous) { "Frame timestamps must be monotonic: previous=$previous current=${frame.timestampMs}" }
-            }
+            previousTimestampMs?.let { previous -> require(frame.timestampMs >= previous) { "Frame timestamps must be monotonic: previous=$previous current=${frame.timestampMs}" } }
             previousFrameIndex = frame.index
             previousTimestampMs = frame.timestampMs
 
@@ -112,11 +107,7 @@ class AnalysisPipelineRunner(
             lastActiveTracks = tracks.size
             peakActiveTracks = maxOf(peakActiveTracks, tracks.size)
             for (track in tracks) {
-                val observation = track.observations.lastOrNull { it.frameIndex == frame.index } ?: run {
-                    trackingAssociationMisses++
-                    continue
-                }
-
+                val observation = track.observations.lastOrNull { it.frameIndex == frame.index } ?: run { trackingAssociationMisses++; continue }
                 val keypoints = if (config.useVehicleKeypoints) keypointEstimator!!.estimate(frame.payload, observation.detection) else emptyList()
                 val contact = selectContactPoint(observation.detection, keypoints)
                 val ground = if (calibrationReady) {
@@ -124,7 +115,6 @@ class AnalysisPipelineRunner(
                     runCatching { groundProjector.project(calibration, contact.first, contact.second) }
                         .getOrElse { error -> throw IllegalStateException("Ground-plane projection failed at frame=${frame.index}, track=${track.id}", error) }
                 } else null
-
                 val enriched = observation.copy(groundPoint = ground, keypoints = keypoints)
                 val buffer = trackBuffers.getOrPut(track.id) { MutableTrackBuffer(track.id, track.className, config.maxTrackHistoryObservations) }
                 buffer.wasOccluded = buffer.wasOccluded || track.wasOccluded
@@ -137,7 +127,6 @@ class AnalysisPipelineRunner(
                 while (buffer.confidenceSamples.size > config.maxTrackHistoryObservations) buffer.confidenceSamples.removeFirst()
                 buffer.observations.addLast(enriched)
                 while (buffer.observations.size > config.maxTrackHistoryObservations) buffer.observations.removeFirst()
-
                 if (config.enablePlateRecognition) {
                     plateRecognizer!!.recognize(frame.payload, observation.detection)?.let { reading ->
                         plateReadings.addLast(reading.copy(trackId = reading.trackId ?: track.id, timestampMs = frame.timestampMs))
@@ -147,8 +136,7 @@ class AnalysisPipelineRunner(
             }
 
             val nowNs = System.nanoTime()
-            val previewDue = previewObserver != null &&
-                (lastPreviewPublishNs == Long.MIN_VALUE || nowNs - lastPreviewPublishNs >= previewIntervalNs)
+            val previewDue = previewObserver != null && (lastPreviewPublishNs == Long.MIN_VALUE || nowNs - lastPreviewPublishNs >= previewIntervalNs)
             if (previewDue) {
                 val bitmap = frame.payload as? android.graphics.Bitmap
                 if (bitmap != null) {
@@ -156,81 +144,28 @@ class AnalysisPipelineRunner(
                         val buffer = trackBuffers[track.id] ?: return@mapNotNull null
                         val observations = buffer.observations.toList()
                         val recovery = recoveryStats(observations)
-                        Track(
-                            id = buffer.id,
-                            className = buffer.className,
-                            observations = observations,
-                            trackConfidence = buffer.confidenceSamples.average().toFloat().coerceIn(0f, 1f),
-                            wasOccluded = buffer.wasOccluded,
-                            state = track.state,
-                            hits = track.hits,
-                            misses = track.misses,
-                            ageFrames = track.ageFrames,
-                            lastTimestampMs = track.lastTimestampMs,
-                            recoveryCount = recovery.count,
-                            maximumRecoveryGapMs = recovery.maximumGapMs,
-                        )
+                        Track(id = buffer.id, className = buffer.className, observations = observations, trackConfidence = buffer.confidenceSamples.average().toFloat().coerceIn(0f, 1f), wasOccluded = buffer.wasOccluded, state = track.state, hits = track.hits, misses = track.misses, ageFrames = track.ageFrames, lastTimestampMs = track.lastTimestampMs, recoveryCount = recovery.count, maximumRecoveryGapMs = recovery.maximumGapMs)
                     }
-
                     if (speedGate == null) {
-                        speedGate = runCatching {
-                            AutoSpeedGateBuilder.build(
-                                tracks = liveTracks,
-                                imageWidth = frame.width,
-                                imageHeight = frame.height,
-                                calibration = config.calibration.takeIf { calibrationReady },
-                            )
-                        }.getOrNull()
+                        speedGate = runCatching { AutoSpeedGateBuilder.build(tracks = liveTracks, imageWidth = frame.width, imageHeight = frame.height, calibration = config.calibration.takeIf { calibrationReady }) }.getOrNull()
                     }
-
                     val livePhysicalSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
                     val liveSpeeds = if (livePhysicalSpeedAllowed) {
                         liveTracks.mapNotNull { liveTrack ->
                             if (speedRejectionReason(liveTrack, source, config, calibrationReady, requirePhysical = true) != null) return@mapNotNull null
-                            val estimate = speedGate?.takeIf { it.calibrated }?.let { SpeedGateEstimator.estimate(liveTrack, it) }
-                                ?: speedEstimator.estimate(liveTrack.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
+                            val estimate = speedGate?.takeIf { it.calibrated }?.let { SpeedGateEstimator.estimate(liveTrack, it) } ?: speedEstimator.estimate(liveTrack.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
                             estimate?.let { liveTrack.id to it }
                         }.toMap()
                     } else {
                         liveTracks.mapNotNull { liveTrack ->
                             if (speedRejectionReason(liveTrack, source, config, calibrationReady, requirePhysical = false) != null) return@mapNotNull null
-                            val dynamic = if (config.useDynamicKeypointHomography) {
-                                VehicleKeypointMetricSpeedEstimator.estimate(
-                                    track = liveTrack,
-                                    template = requireNotNull(config.vehicleMetricTemplate),
-                                    minimumSamples = config.minimumSpeedSamples,
-                                    minimumDurationMs = config.minimumTrackDurationMs,
-                                    maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
-                                    maximumObservationGapMs = config.maximumSpeedObservationGapMs,
-                                )
-                            } else null
-                            val estimate = dynamic ?: if (config.enableCalibrationFreeSpeedEstimate) {
-                                CalibrationFreeSpeedEstimator.estimate(
-                                    track = liveTrack,
-                                    minimumSamples = config.minimumSpeedSamples,
-                                    minimumDurationMs = config.minimumTrackDurationMs,
-                                    maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
-                                    maximumObservationGapMs = config.maximumSpeedObservationGapMs,
-                                )
-                            } else null
+                            val dynamic = if (config.useDynamicKeypointHomography) VehicleKeypointMetricSpeedEstimator.estimate(track = liveTrack, template = requireNotNull(config.vehicleMetricTemplate), minimumSamples = config.minimumSpeedSamples, minimumDurationMs = config.minimumTrackDurationMs, maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh, maximumObservationGapMs = config.maximumSpeedObservationGapMs) else null
+                            val estimate = dynamic ?: if (config.enableCalibrationFreeSpeedEstimate) CalibrationFreeSpeedEstimator.estimate(track = liveTrack, minimumSamples = config.minimumSpeedSamples, minimumDurationMs = config.minimumTrackDurationMs, maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh, maximumObservationGapMs = config.maximumSpeedObservationGapMs) else null
                             estimate?.let { liveTrack.id to it }
                         }.toMap()
                     }
-
                     val uniqueVehicles = trackBuffers.values.count { it.hits >= 2 }.toLong()
-                    previewObserver.onFrame(
-                        AnalysisPreviewFrame(
-                            frame = frame,
-                            bitmap = bitmap,
-                            detections = reportableDetections,
-                            tracks = liveTracks,
-                            speedEstimates = liveSpeeds,
-                            calibrated = livePhysicalSpeedAllowed,
-                            radarBounds = radarBounds,
-                            speedGate = speedGate,
-                            uniqueVehiclesDetected = uniqueVehicles,
-                        )
-                    )
+                    previewObserver.onFrame(AnalysisPreviewFrame(frame = frame, bitmap = bitmap, detections = reportableDetections, tracks = liveTracks, speedEstimates = liveSpeeds, calibrated = livePhysicalSpeedAllowed, radarBounds = radarBounds, speedGate = speedGate, uniqueVehiclesDetected = uniqueVehicles))
                     lastPreviewPublishNs = System.nanoTime()
                 }
             }
@@ -240,88 +175,28 @@ class AnalysisPipelineRunner(
             val averageConfidence = if (buffer.confidenceSamples.isEmpty()) 0.0 else buffer.confidenceSamples.average()
             val observations = buffer.observations.toList().sortedWith(compareBy<TrackObservation> { it.timestampMs }.thenBy { it.frameIndex })
             val recovery = recoveryStats(observations)
-            Track(
-                id = buffer.id,
-                className = buffer.className,
-                observations = observations,
-                trackConfidence = averageConfidence.toFloat().coerceIn(0f, 1f),
-                wasOccluded = buffer.wasOccluded,
-                state = buffer.state,
-                hits = buffer.hits,
-                misses = buffer.misses,
-                ageFrames = buffer.ageFrames,
-                lastTimestampMs = buffer.lastTimestampMs,
-                recoveryCount = recovery.count,
-                maximumRecoveryGapMs = recovery.maximumGapMs,
-            )
+            Track(id = buffer.id, className = buffer.className, observations = observations, trackConfidence = averageConfidence.toFloat().coerceIn(0f, 1f), wasOccluded = buffer.wasOccluded, state = buffer.state, hits = buffer.hits, misses = buffer.misses, ageFrames = buffer.ageFrames, lastTimestampMs = buffer.lastTimestampMs, recoveryCount = recovery.count, maximumRecoveryGapMs = recovery.maximumGapMs)
         }
-
         if (speedGate == null) {
-            speedGate = runCatching {
-                AutoSpeedGateBuilder.build(
-                    tracks = completedTracks,
-                    imageWidth = source.source.width ?: 0,
-                    imageHeight = source.source.height ?: 0,
-                    calibration = config.calibration.takeIf { calibrationReady },
-                )
-            }.getOrNull()
+            speedGate = runCatching { AutoSpeedGateBuilder.build(tracks = completedTracks, imageWidth = source.source.width ?: 0, imageHeight = source.source.height ?: 0, calibration = config.calibration.takeIf { calibrationReady }) }.getOrNull()
         }
-
         val physicalSpeedAllowed = physicalSpeedAllowed(source, config, calibrationReady)
         val speedEstimates = linkedMapOf<Long, SpeedEstimate>()
         val speedRejections = linkedMapOf<Long, SpeedRejectionReason>()
         for (track in completedTracks) {
             val physicalRejection = speedRejectionReason(track, source, config, calibrationReady, requirePhysical = physicalSpeedAllowed)
-            if (physicalSpeedAllowed && physicalRejection != null) {
-                speedRejections[track.id] = physicalRejection
-                continue
-            }
-
+            if (physicalSpeedAllowed && physicalRejection != null) { speedRejections[track.id] = physicalRejection; continue }
             val estimate = if (physicalSpeedAllowed) {
-                speedGate?.takeIf { it.calibrated }?.let { SpeedGateEstimator.estimate(track, it) }
-                    ?: speedEstimator.estimate(track.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
+                speedGate?.takeIf { it.calibrated }?.let { SpeedGateEstimator.estimate(track, it) } ?: speedEstimator.estimate(track.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
             } else if (physicalRejection == null) {
-                val dynamic = if (config.useDynamicKeypointHomography) {
-                    VehicleKeypointMetricSpeedEstimator.estimate(
-                        track = track,
-                        template = requireNotNull(config.vehicleMetricTemplate),
-                        minimumSamples = config.minimumSpeedSamples,
-                        minimumDurationMs = config.minimumTrackDurationMs,
-                        maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
-                        maximumObservationGapMs = config.maximumSpeedObservationGapMs,
-                    )
-                } else null
-                dynamic ?: if (config.enableCalibrationFreeSpeedEstimate) {
-                    CalibrationFreeSpeedEstimator.estimate(
-                        track = track,
-                        minimumSamples = config.minimumSpeedSamples,
-                        minimumDurationMs = config.minimumTrackDurationMs,
-                        maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
-                        maximumObservationGapMs = config.maximumSpeedObservationGapMs,
-                    )
-                } else null
+                val dynamic = if (config.useDynamicKeypointHomography) VehicleKeypointMetricSpeedEstimator.estimate(track = track, template = requireNotNull(config.vehicleMetricTemplate), minimumSamples = config.minimumSpeedSamples, minimumDurationMs = config.minimumTrackDurationMs, maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh, maximumObservationGapMs = config.maximumSpeedObservationGapMs) else null
+                dynamic ?: if (config.enableCalibrationFreeSpeedEstimate) CalibrationFreeSpeedEstimator.estimate(track = track, minimumSamples = config.minimumSpeedSamples, minimumDurationMs = config.minimumTrackDurationMs, maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh, maximumObservationGapMs = config.maximumSpeedObservationGapMs) else null
             } else null
-
-            if (estimate != null && estimate.kilometersPerHour.isFinite() && estimate.kilometersPerHour >= 0.0 && estimate.kilometersPerHour <= config.maxPlausibleSpeedKmh) {
-                speedEstimates[track.id] = estimate
-            } else {
-                speedRejections[track.id] = if (estimate?.kilometersPerHour?.isFinite() == false || (estimate?.kilometersPerHour ?: 0.0) > config.maxPlausibleSpeedKmh) {
-                    SpeedRejectionReason.PLAUSIBILITY_REJECTION
-                } else SpeedRejectionReason.ROBUST_ESTIMATOR_REJECTION
-            }
+            if (estimate != null && estimate.kilometersPerHour.isFinite() && estimate.kilometersPerHour >= 0.0 && estimate.kilometersPerHour <= config.maxPlausibleSpeedKmh) speedEstimates[track.id] = estimate else speedRejections[track.id] = if (estimate?.kilometersPerHour?.isFinite() == false || (estimate?.kilometersPerHour ?: 0.0) > config.maxPlausibleSpeedKmh) SpeedRejectionReason.PLAUSIBILITY_REJECTION else SpeedRejectionReason.ROBUST_ESTIMATOR_REJECTION
         }
-
         val trafficEvents = if (config.enableRules) {
-            TrafficRuleEngine.evaluate(
-                tracks = completedTracks,
-                speedEstimates = speedEstimates,
-                config = config.trafficRules.copy(enabled = true),
-                detectorModel = config.detectorModel,
-                tracker = config.tracker,
-                profile = config.calibration,
-            )
+            TrafficRuleEngine.evaluate(tracks = completedTracks, speedEstimates = speedEstimates, config = config.trafficRules.copy(enabled = true), detectorModel = config.detectorModel, tracker = config.tracker, profile = config.calibration)
         } else emptyList()
-
         val elapsedMs = (System.nanoTime() - analysisStartNs) / 1_000_000.0
         val elapsedSeconds = elapsedMs / 1000.0
         val decodedSeconds = sourceReadTimeNs / 1_000_000_000.0
@@ -336,115 +211,39 @@ class AnalysisPipelineRunner(
         val maximumRecoveryGapMs = completedTracks.maxOfOrNull { it.maximumRecoveryGapMs } ?: 0L
         val uniqueVehiclesDetected = completedTracks.count { it.hits >= 2 }.toLong()
         val speedModes = speedEstimates.values.map { it.mode }.toSet()
-        val backendName = when {
-            speedModes.contains(SpeedEstimateMode.CALIBRATED_GROUND_PLANE) -> "calibrated ground-plane"
-            speedModes.contains(SpeedEstimateMode.CALIBRATION_FREE_ESTIMATE) -> "calibration-free estimate"
-            else -> "none"
-        }
+        val backendName = when { speedModes.contains(SpeedEstimateMode.CALIBRATED_GROUND_PLANE) -> "calibrated ground-plane"; speedModes.contains(SpeedEstimateMode.CALIBRATION_FREE_ESTIMATE) -> "calibration-free estimate"; else -> "none" }
         val confirmedTracks = completedTracks.count { it.hits >= 2 }.toLong()
-        val report = AnalysisMetrics(
-            decodeFps = measuredDecodeFps,
-            sourceNominalFps = source.source.frameRate,
-            timestampPrecision = source.source.timestampPrecision,
-            inferenceLatencyMs = inferenceSamples.lastOrNull(),
-            inferenceMedianLatencyMs = inferenceMedian,
-            inferenceP95LatencyMs = inferenceP95,
-            endToEndLatencyMs = e2ePerFrameMs,
-            totalProcessingTimeMs = elapsedMs,
-            processingFps = processingFps,
-            droppedFrames = totalDroppedFrames,
-            framesProcessed = frameCount,
-            trackingDetections = trackingDetectionCount,
-            detections = totalReportableDetections,
-            inferenceFailures = 0L,
-            trackingAssociationMisses = trackingAssociationMisses,
-            trackBirths = confirmedTracks,
-            confirmedTracks = confirmedTracks,
-            recoveredTracks = recoveredTracks,
-            maximumRecoveryGapMs = maximumRecoveryGapMs,
-            activeTracks = lastActiveTracks,
-            peakActiveTracks = peakActiveTracks,
-            completedTracks = completedTracks.size.toLong(),
-            uniqueVehiclesDetected = uniqueVehiclesDetected,
-            speedEstimates = speedEstimates.size.toLong(),
-            rejectedSpeedEstimates = speedRejections.size.toLong(),
-            plateReads = plateReadings.size.toLong(),
-            trafficEvents = trafficEvents.size.toLong(),
-            homographyReprojectionError = config.calibration?.reprojectionErrorPixels,
-            speedEstimatorBackend = backendName,
-        )
-
-        return AnalysisResult(
-            source = source.source,
-            detections = retainedDetections.toList(),
-            tracks = completedTracks,
-            speedEstimates = speedEstimates,
-            speedRejectionReasons = speedRejections,
-            plateReadings = plateReadings.toList(),
-            trafficEvents = trafficEvents,
-            metrics = report,
-        )
+        val report = AnalysisMetrics(decodeFps = measuredDecodeFps, sourceNominalFps = source.source.frameRate, timestampPrecision = source.source.timestampPrecision, inferenceLatencyMs = inferenceSamples.lastOrNull(), inferenceMedianLatencyMs = inferenceMedian, inferenceP95LatencyMs = inferenceP95, endToEndLatencyMs = e2ePerFrameMs, totalProcessingTimeMs = elapsedMs, processingFps = processingFps, droppedFrames = totalDroppedFrames, framesProcessed = frameCount, trackingDetections = trackingDetectionCount, detections = totalReportableDetections, inferenceFailures = 0L, trackingAssociationMisses = trackingAssociationMisses, trackBirths = confirmedTracks, confirmedTracks = confirmedTracks, recoveredTracks = recoveredTracks, maximumRecoveryGapMs = maximumRecoveryGapMs, activeTracks = lastActiveTracks, peakActiveTracks = peakActiveTracks, completedTracks = completedTracks.size.toLong(), uniqueVehiclesDetected = uniqueVehiclesDetected, speedEstimates = speedEstimates.size.toLong(), rejectedSpeedEstimates = speedRejections.size.toLong(), plateReads = plateReadings.size.toLong(), trafficEvents = trafficEvents.size.toLong(), homographyReprojectionError = config.calibration?.reprojectionErrorPixels, speedEstimatorBackend = backendName)
+        return AnalysisResult(source = source.source, detections = retainedDetections.toList(), tracks = completedTracks, speedEstimates = speedEstimates, speedRejectionReasons = speedRejections, plateReadings = plateReadings.toList(), trafficEvents = trafficEvents, metrics = report)
     }
-
     private fun physicalSpeedAllowed(source: FrameSource, config: AnalysisConfig, calibrationReady: Boolean): Boolean {
         if (!config.useGroundPlane || !config.requireValidatedCalibration || !calibrationReady) return false
         if (config.requireExactTimestampsForPhysicalSpeed && source.source.timestampPrecision != FrameTimestampPrecision.EXACT_SOURCE_CLOCK) return false
         return true
     }
-
-    private fun speedRejectionReason(
-        track: Track,
-        source: FrameSource,
-        config: AnalysisConfig,
-        calibrationReady: Boolean,
-        requirePhysical: Boolean,
-    ): SpeedRejectionReason? {
+    private fun speedRejectionReason(track: Track, source: FrameSource, config: AnalysisConfig, calibrationReady: Boolean, requirePhysical: Boolean): SpeedRejectionReason? {
         if (track.state != TrackState.CONFIRMED || track.trackConfidence < config.minimumTrackConfidenceForSpeed) return SpeedRejectionReason.TRACK_QUALITY_LOW
         if (track.observations.size < config.minimumSpeedSamples) return SpeedRejectionReason.INSUFFICIENT_OBSERVATIONS
         if (track.observations.last().timestampMs - track.observations.first().timestampMs < config.minimumTrackDurationMs) return SpeedRejectionReason.INSUFFICIENT_DURATION
-        if (track.observations.zipWithNext().any { it.second.timestampMs - it.first.timestampMs > config.maximumSpeedObservationGapMs }) return SpeedRejectionReason.DISCONTINUOUS_TRACK
+        if (track.observations.zipWithNext().any { it.second.timestampMs - it.first().timestampMs > config.maximumSpeedObservationGapMs }) return SpeedRejectionReason.DISCONTINUOUS_TRACK
         if (requirePhysical && !calibrationReady) return SpeedRejectionReason.CALIBRATION_INVALID
         if (requirePhysical && config.requireExactTimestampsForPhysicalSpeed && source.source.timestampPrecision != FrameTimestampPrecision.EXACT_SOURCE_CLOCK) return SpeedRejectionReason.TIMESTAMP_INVALID
         if (requirePhysical && config.calibration == null) return SpeedRejectionReason.CALIBRATION_INVALID
         return null
     }
-
     private fun calibrationAccepted(config: AnalysisConfig, sourceWidth: Int, sourceHeight: Int): Boolean {
         val calibration = config.calibration ?: return false
         if (calibration.imageWidth != sourceWidth || calibration.imageHeight != sourceHeight) return false
-        val validation = CalibrationValidator.validate(
-            calibration = calibration,
-            maxReprojectionErrorPixels = config.maxCalibrationReprojectionErrorPixels,
-            maxReprojectionErrorTargetUnits = config.maxCalibrationReprojectionErrorTargetUnits,
-            minimumInlierRatio = config.minimumCalibrationInlierRatio,
-        )
+        val validation = CalibrationValidator.validate(profile = calibration, maxReprojectionErrorPixels = config.maxCalibrationReprojectionErrorPixels, maxReprojectionErrorTargetUnits = config.maxCalibrationReprojectionErrorTargetUnits, minimumInlierRatio = config.minimumCalibrationInlierRatio)
         return validation.accepted && calibration.imageWidth == sourceWidth && calibration.imageHeight == sourceHeight
     }
-
     private fun buildRadarBounds(config: AnalysisConfig, width: Int, height: Int, calibrationReady: Boolean): RadarBounds {
-        if (!calibrationReady || config.calibration == null) {
-            return RadarBounds(0.0, width.toDouble(), 0.0, height.toDouble())
-        }
+        if (!calibrationReady || config.calibration == null) return RadarBounds(0.0, width.toDouble(), 0.0, height.toDouble())
         val calibration = config.calibration
-        val corners = listOf(
-            0.0 to 0.0,
-            width.toDouble() to 0.0,
-            width.toDouble() to height.toDouble(),
-            0.0 to height.toDouble(),
-        )
-        val groundCorners = runCatching {
-            corners.map { (x, y) -> groundProjector.project(calibration, x, y) }
-        }.getOrElse {
-            return RadarBounds(0.0, width.toDouble(), 0.0, height.toDouble())
-        }
-        return RadarBounds(
-            minX = groundCorners.minOf { it.xMeters },
-            maxX = groundCorners.maxOf { it.xMeters },
-            minY = groundCorners.minOf { it.yMeters },
-            maxY = groundCorners.maxOf { it.yMeters },
-        )
+        val corners = listOf(0.0 to 0.0, width.toDouble() to 0.0, width.toDouble() to height.toDouble(), 0.0 to height.toDouble())
+        val groundCorners = runCatching { corners.map { (x, y) -> groundProjector.project(calibration, x, y) } }.getOrElse { return RadarBounds(0.0, width.toDouble(), 0.0, height.toDouble()) }
+        return RadarBounds(minX = groundCorners.minOf { it.xMeters }, maxX = groundCorners.maxOf { it.xMeters }, minY = groundCorners.minOf { it.yMeters }, maxY = groundCorners.maxOf { it.yMeters })
     }
-
     private fun percentile(sorted: List<Double>, p: Double): Double? {
         if (sorted.isEmpty()) return null
         val position = p.coerceIn(0.0, 1.0) * sorted.lastIndex
@@ -453,13 +252,10 @@ class AnalysisPipelineRunner(
         if (lower == upper) return sorted[lower]
         return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower)
     }
-
     private fun selectContactPoint(detection: Detection, keypoints: List<VehicleKeypoint>): Pair<Double, Double> {
-        val learned = keypoints.filter { it.confidence >= 0.50f && it.x.isFinite() && it.y.isFinite() }
-            .firstOrNull { it.name.lowercase() in setOf("ground_contact", "contact", "footprint", "rear_contact", "front_contact") }
+        val learned = keypoints.filter { it.confidence >= 0.50f && it.x.isFinite() && it.y.isFinite() }.firstOrNull { it.name.lowercase() in setOf("ground_contact", "contact", "footprint", "rear_contact", "front_contact") }
         return if (learned != null) learned.x to learned.y else ((detection.left + detection.right) / 2.0) to detection.bottom.toDouble()
     }
-
     private fun recoveryStats(observations: List<TrackObservation>): RecoveryStats {
         if (observations.size < 2) return RecoveryStats()
         var count = 0
@@ -467,27 +263,10 @@ class AnalysisPipelineRunner(
         observations.sortedWith(compareBy<TrackObservation> { it.frameIndex }.thenBy { it.timestampMs }).zipWithNext().forEach { (previous, current) ->
             val frameGap = current.frameIndex - previous.frameIndex
             val timeGap = current.timestampMs - previous.timestampMs
-            if (frameGap > 1L) {
-                count++
-                maximumGapMs = maxOf(maximumGapMs, timeGap.coerceAtLeast(0L))
-            }
+            if (frameGap > 1L) { count++; maximumGapMs = maxOf(maximumGapMs, timeGap.coerceAtLeast(0L)) }
         }
         return RecoveryStats(count, maximumGapMs)
     }
-
     private data class RecoveryStats(val count: Int = 0, val maximumGapMs: Long = 0L)
-
-    private data class MutableTrackBuffer(
-        val id: Long,
-        val className: String,
-        val maxObservations: Int,
-        val observations: ArrayDeque<TrackObservation> = ArrayDeque(maxObservations),
-        val confidenceSamples: ArrayDeque<Double> = ArrayDeque(maxObservations),
-        var hits: Int = 0,
-        var misses: Int = 0,
-        var ageFrames: Int = 0,
-        var lastTimestampMs: Long = 0L,
-        var state: TrackState = TrackState.TENTATIVE,
-        var wasOccluded: Boolean = false,
-    )
+    private data class MutableTrackBuffer(val id: Long, val className: String, val maxObservations: Int, val observations: ArrayDeque<TrackObservation> = ArrayDeque(maxObservations), val confidenceSamples: ArrayDeque<Double> = ArrayDeque(maxObservations), var hits: Int = 0, var misses: Int = 0, var ageFrames: Int = 0, var lastTimestampMs: Long = 0L, var state: TrackState = TrackState.TENTATIVE, var wasOccluded: Boolean = false)
 }
