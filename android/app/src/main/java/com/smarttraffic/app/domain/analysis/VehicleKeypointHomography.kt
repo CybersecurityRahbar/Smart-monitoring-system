@@ -65,7 +65,7 @@ object VehicleKeypointHomography {
         for (indices in combinations) {
             val candidate = fitDlt(indices.map { usable[it] }) ?: continue
             val errors = usable.map { correspondence ->
-                val projected = candidate.project(correspondence.imageX, correspondence.imageY)
+                val projected = projectPoint(candidate, correspondence.imageX, correspondence.imageY)
                 if (!projected.denominator.isFinite() || kotlin.math.abs(projected.denominator) < 1e-9) {
                     Double.POSITIVE_INFINITY
                 } else {
@@ -78,7 +78,7 @@ object VehicleKeypointHomography {
 
             val refined = fitDlt(usable.indices.filter { inliers[it] }.map { usable[it] }) ?: continue
             val refinedErrors = usable.map { correspondence ->
-                val projected = refinedProjection(refined, correspondence.imageX, correspondence.imageY)
+                val projected = projectPoint(refined, correspondence.imageX, correspondence.imageY)
                 if (!projected.denominator.isFinite() || kotlin.math.abs(projected.denominator) < 1e-9) {
                     Double.POSITIVE_INFINITY
                 } else {
@@ -111,9 +111,6 @@ object VehicleKeypointHomography {
         val projectedY = (matrix[3] * x + matrix[4] * y + matrix[5]) / denominator
         return HomographyProjection(projectedX, projectedY, denominator)
     }
-
-    private fun refinedProjection(matrix: DoubleArray, x: Double, y: Double): HomographyProjection =
-        projectPoint(matrix, x, y)
 
     private fun fitDlt(points: List<VehicleTemplateCorrespondence>): DoubleArray? {
         if (points.size < 4 || areDegenerate(points)) return null
