@@ -12,14 +12,14 @@ class VehicleKeypointHomographyTest {
         val h = doubleArrayOf(1.20, 0.10, 35.0, -0.05, 1.10, 20.0, 0.0007, -0.0004, 1.0)
         val points = listOf(20.0 to 30.0, 220.0 to 25.0, 230.0 to 170.0, 25.0 to 190.0)
         val correspondences = points.mapIndexed { i, p ->
-            val q = VehicleKeypointHomography.project(h, p.first, p.second)
+            val q = VehicleKeypointHomography.projectPoint(h, p.first, p.second)
             VehicleTemplateCorrespondence("k$i", p.first, p.second, q.x, q.y)
         }
         val fit = VehicleKeypointHomography.estimate(correspondences, reprojectionThreshold = 1e-5)
         assertNotNull(fit)
         val result = fit!!
         val got = result.project(120.0, 90.0)
-        val expected = VehicleKeypointHomography.project(h, 120.0, 90.0)
+        val expected = VehicleKeypointHomography.projectPoint(h, 120.0, 90.0)
         assertEquals(expected.x, got.x, 1e-3)
         assertEquals(expected.y, got.y, 1e-3)
         assertEquals(4, result.inlierMask.count { it })
