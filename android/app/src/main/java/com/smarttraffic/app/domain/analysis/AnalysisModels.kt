@@ -79,6 +79,8 @@ data class SpeedEstimate(
     val directionDegrees: Double? = null,
     val positionResidualMeters: Double? = null,
     val errorKmh: Double? = null,
+    /** Backend provenance for diagnostics; this must not be interpreted as certification. */
+    val estimatorLabel: String? = null,
     val mode: SpeedEstimateMode = SpeedEstimateMode.CALIBRATED_GROUND_PLANE,
 )
 
@@ -133,6 +135,8 @@ data class AnalysisConfig(
     val useGroundPlane: Boolean = true,
     val useVehicleKeypoints: Boolean = false,
     val useDynamicKeypointHomography: Boolean = false,
+    /** Explicit metric 36-keypoint template required for the dynamic keypoint speed path. */
+    val vehicleMetricTemplate: VehicleMetricTemplate36? = null,
     val useOpticalFlowRefinement: Boolean = false,
     val useSegmentationRefinement: Boolean = false,
     val useReIdentification: Boolean = false,

@@ -111,6 +111,7 @@ fun AnalysisVideoPlayback(
             val offsetX = (size.width - contentWidth) * 0.5f
             val offsetY = (size.height - contentHeight) * 0.5f
             val trackColor = Color(0xFF39FF14)
+            val renderTracks = preview.renderTracks
             val gateTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 textSize = 24f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -145,20 +146,18 @@ fun AnalysisVideoPlayback(
                     drawGateLine(gate.line2.startPixelX, gate.line2.startPixelY, gate.line2.endPixelX, gate.line2.endPixelY, "SPEED LINE 2")
                 }
             } else {
-                visualGate(preview.tracks, sourceWidth.toDouble(), sourceHeight.toDouble())?.let { gate ->
+                visualGate(renderTracks, sourceWidth.toDouble(), sourceHeight.toDouble())?.let { gate ->
                     drawGateLine(gate.line1.x1, gate.line1.y1, gate.line1.x2, gate.line1.y2, "SPEED LINE 1")
                     drawGateLine(gate.line2.x1, gate.line2.y1, gate.line2.x2, gate.line2.y2, "SPEED LINE 2")
                 }
             }
 
-            val timelineOriginMs = preview.tracks
-                .asSequence()
-                .flatMap { it.observations.asSequence() }
-                .map { it.timestampMs }
-                .minOrNull() ?: preview.frame.timestampMs
+            // The recorded source timeline is authoritative. A vehicle entering the frame late
+            // must never redefine t=0 for the overlay.
+            val timelineOriginMs = preview.timelineStartTimestampMs ?: preview.frame.timestampMs
             val targetTimestampMs = safeAddTimestamp(timelineOriginMs, positionMs)
 
-            preview.tracks.forEach { track ->
+            renderTracks.forEach { track ->
                 val detection = cinematicDetection(track, targetTimestampMs) ?: return@forEach
                 val left = offsetX + detection.left.coerceIn(0f, sourceWidth) * scale
                 val top = offsetY + detection.top.coerceIn(0f, sourceHeight) * scale
@@ -343,7 +342,8 @@ private fun cinematicDetection(track: Track, targetTimestampMs: Long): Detection
 
     if (targetTimestampMs >= last.timestampMs) {
         val gapMs = targetTimestampMs - last.timestampMs
-        if (gapMs > 800L) return null
+        // Rendering can bridge small decode/preview gaps, but never extrapolate indefinitely.
+        if (gapMs > 350L) return null
         val velocity = robustVelocity(samples.takeLast(5))
         return renderSampleToDetection(boundedExtrapolation(last, velocity, gapMs / 1000.0), last.confidence)
     }
@@ -391,8 +391,8 @@ private fun robustVelocity(samples: List<RenderSample>): RenderVelocity {
 }
 
 private fun boundedExtrapolation(sample: RenderSample, velocity: RenderVelocity, dtSeconds: Double): RenderSample {
-    val horizon = dtSeconds.coerceIn(0.0, 0.80)
-    val damping = (1.0 - 0.22 * horizon / 0.80).coerceIn(0.72, 1.0)
+    val horizon = dtSeconds.coerceIn(0.0, 0.35)
+    val damping = (1.0 - 0.22 * horizon / 0.35).coerceIn(0.72, 1.0)
     return sample.copy(
         centerX = sample.centerX + velocity.xPerSecond * horizon * damping,
         centerY = sample.centerY + velocity.yPerSecond * horizon * damping,

@@ -34,6 +34,7 @@ class AnalysisPipelineRunner(
         require(!config.enablePlateRecognition || plateRecognizer != null) { "Plate recognition is enabled but no PlateRecognizer backend is installed" }
         require(!config.useDynamicKeypointHomography || config.useVehicleKeypoints) { "Dynamic keypoint homography requires VehicleKeypoints" }
         require(!config.useDynamicKeypointHomography || keypointEstimator != null) { "Dynamic keypoint homography is enabled but no VehicleKeypointEstimator backend is installed" }
+        require(!config.useDynamicKeypointHomography || config.vehicleMetricTemplate != null) { "Dynamic keypoint homography is enabled but no metric 36-keypoint template is configured" }
         require(!config.useOpticalFlowRefinement) { "Optical-flow refinement is not installed in the current runtime" }
         require(!config.useSegmentationRefinement) { "Segmentation refinement is not installed in the current runtime" }
         require(!config.useReIdentification) { "Learned appearance Re-ID is not installed; deterministic appearance association is available separately" }
@@ -182,18 +183,31 @@ class AnalysisPipelineRunner(
                                 ?: speedEstimator.estimate(liveTrack.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
                             estimate?.let { liveTrack.id to it }
                         }.toMap()
-                    } else if (config.enableCalibrationFreeSpeedEstimate) {
+                    } else {
                         liveTracks.mapNotNull { liveTrack ->
                             if (speedRejectionReason(liveTrack, source, config, calibrationReady, requirePhysical = false) != null) return@mapNotNull null
-                            CalibrationFreeSpeedEstimator.estimate(
-                                track = liveTrack,
-                                minimumSamples = config.minimumSpeedSamples,
-                                minimumDurationMs = config.minimumTrackDurationMs,
-                                maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
-                                maximumObservationGapMs = config.maximumSpeedObservationGapMs,
-                            )?.let { liveTrack.id to it }
+                            val dynamic = if (config.useDynamicKeypointHomography) {
+                                VehicleKeypointMetricSpeedEstimator.estimate(
+                                    track = liveTrack,
+                                    template = requireNotNull(config.vehicleMetricTemplate),
+                                    minimumSamples = config.minimumSpeedSamples,
+                                    minimumDurationMs = config.minimumTrackDurationMs,
+                                    maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
+                                    maximumObservationGapMs = config.maximumSpeedObservationGapMs,
+                                )
+                            } else null
+                            val estimate = dynamic ?: if (config.enableCalibrationFreeSpeedEstimate) {
+                                CalibrationFreeSpeedEstimator.estimate(
+                                    track = liveTrack,
+                                    minimumSamples = config.minimumSpeedSamples,
+                                    minimumDurationMs = config.minimumTrackDurationMs,
+                                    maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
+                                    maximumObservationGapMs = config.maximumSpeedObservationGapMs,
+                                )
+                            } else null
+                            estimate?.let { liveTrack.id to it }
                         }.toMap()
-                    } else emptyMap()
+                    }
 
                     val uniqueVehicles = trackBuffers.values.count { it.hits >= 2 }.toLong()
                     previewObserver.onFrame(
@@ -257,14 +271,26 @@ class AnalysisPipelineRunner(
             val estimate = if (physicalSpeedAllowed) {
                 speedGate?.takeIf { it.calibrated }?.let { SpeedGateEstimator.estimate(track, it) }
                     ?: speedEstimator.estimate(track.observations, config.minimumSpeedSamples, config.minimumTrackDurationMs, config.maxPlausibleSpeedKmh)
-            } else if (config.enableCalibrationFreeSpeedEstimate && physicalRejection == null) {
-                CalibrationFreeSpeedEstimator.estimate(
-                    track = track,
-                    minimumSamples = config.minimumSpeedSamples,
-                    minimumDurationMs = config.minimumTrackDurationMs,
-                    maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
-                    maximumObservationGapMs = config.maximumSpeedObservationGapMs,
-                )
+            } else if (physicalRejection == null) {
+                val dynamic = if (config.useDynamicKeypointHomography) {
+                    VehicleKeypointMetricSpeedEstimator.estimate(
+                        track = track,
+                        template = requireNotNull(config.vehicleMetricTemplate),
+                        minimumSamples = config.minimumSpeedSamples,
+                        minimumDurationMs = config.minimumTrackDurationMs,
+                        maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
+                        maximumObservationGapMs = config.maximumSpeedObservationGapMs,
+                    )
+                } else null
+                dynamic ?: if (config.enableCalibrationFreeSpeedEstimate) {
+                    CalibrationFreeSpeedEstimator.estimate(
+                        track = track,
+                        minimumSamples = config.minimumSpeedSamples,
+                        minimumDurationMs = config.minimumTrackDurationMs,
+                        maxPlausibleSpeedKmh = config.maxPlausibleSpeedKmh,
+                        maximumObservationGapMs = config.maximumSpeedObservationGapMs,
+                    )
+                } else null
             } else null
 
             if (estimate != null && estimate.kilometersPerHour.isFinite() && estimate.kilometersPerHour >= 0.0 && estimate.kilometersPerHour <= config.maxPlausibleSpeedKmh) {
