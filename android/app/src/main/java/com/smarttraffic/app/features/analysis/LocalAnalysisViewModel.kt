@@ -31,6 +31,7 @@ import com.smarttraffic.app.domain.analysis.KotlinSpeedEstimatorBackend
 import com.smarttraffic.app.domain.analysis.ModularAnalysisEngine
 import com.smarttraffic.app.domain.analysis.RadarBounds
 import com.smarttraffic.app.domain.analysis.UnifiedAnalysisSession
+import com.smarttraffic.app.domain.analysis.VehicleKeypointConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -95,7 +96,13 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
 
                 AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.MODEL_INITIALIZE, modelId = spec.id, accelerator = "CPU")
                 _state.value = AnalysisRunState(AnalysisRunPhase.RUNNING, "Initializing LiteRT CPU detector…")
-                runtime = AnalysisRuntimeFactory.createDetector(app, spec.id, effectiveConfig.useAppearanceAssociation)
+                runtime = AnalysisRuntimeFactory.createDetector(
+                    context = app,
+                    modelId = spec.id,
+                    useAppearanceAssociation = effectiveConfig.useAppearanceAssociation,
+                    useVehicleKeypoints = effectiveConfig.useVehicleKeypoints,
+                    vehicleKeypointModelId = VehicleKeypointConfig.DEFAULT_MODEL_ID,
+                )
 
                 AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.MEDIA_OPEN, modelId = spec.id, accelerator = runtime!!.accelerator.name, mediaDescription = "type=$mediaType uri=$uri")
                 _state.value = AnalysisRunState(AnalysisRunPhase.RUNNING, "Opening selected media…", runtime!!.accelerator.name)
@@ -134,8 +141,8 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                             session.publishPreview(previewFrame)
                             _preview.value = previewFrame
                         } else {
-                            // During analysis, expose progress but do not start natural-speed playback.
-                            // The final synchronized replay is published after the complete source has been analyzed.
+                            // During analysis, expose progress; the playback component itself owns
+                            // natural-speed playback and no longer waits for playbackReady.
                             val progressPreview = previewFrame.copy(videoUri = uri.toString(), playbackReady = false)
                             session.publishPreview(progressPreview)
                             _preview.value = progressPreview
@@ -145,6 +152,7 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                 val engine = ModularAnalysisEngine(
                     detector = runtime!!.detector,
                     tracker = ByteTrack(),
+                    keypoints = runtime!!.keypoints,
                     previewObserver = observer,
                     groundProjector = KotlinGroundProjector,
                     speedEstimator = KotlinSpeedEstimatorBackend,
