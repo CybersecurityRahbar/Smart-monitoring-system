@@ -34,8 +34,8 @@ data class AnalysisPreviewFrame(
     val playbackReady: Boolean = false,
     /** Local recorded-video URI used by the independent playback surface; null for images/live. */
     val videoUri: String? = null,
-    /** Absolute media PTS origin. Renderer maps player position 0 to this source timestamp. */
-    val timelineStartTimestampMs: Long? = null,
+    /** Absolute source timeline origin; derived from the frame/source contract when available. */
+    val timelineStartTimestampMs: Long? = frame.timelineStartTimestampMs,
 )
 
 fun interface AnalysisPreviewObserver {
