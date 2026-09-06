@@ -23,7 +23,8 @@ class AutoSpeedGateTest {
         val speed = requireNotNull(SpeedGateEstimator.estimate(track, gate))
         assertEquals(3.6, speed.kilometersPerHour, 0.25)
         assertTrue(speed.durationMs > 0L)
-        assertTrue(speed.errorKmh >= 0.0)
+        val errorKmh = requireNotNull(speed.errorKmh)
+        assertTrue(errorKmh >= 0.0)
         assertTrue(speed.confidence > 0.0f)
     }
 
