@@ -50,7 +50,6 @@ class ExactPtsVideoFrameSource(
 
     init {
         require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) { "MediaCodec video decoding requires API 21+" }
-
         extractor.setDataSource(context, uri, null)
         val trackIndex = selectVideoTrack(extractor)
         require(trackIndex >= 0) { "No video track found in $uri" }
@@ -81,7 +80,6 @@ class ExactPtsVideoFrameSource(
                 }
             }, readerHandler)
         }
-
         decoder = MediaCodec.createDecoderByType(mime)
         decoder.configure(format, reader.surface, null, 0)
         decoder.start()
@@ -122,6 +120,7 @@ class ExactPtsVideoFrameSource(
                                 payload = bitmap,
                                 width = bitmap.width,
                                 height = bitmap.height,
+                                timelineStartTimestampMs = timelineStartTimestampMs,
                             )
                             if (isEos) outputEosReached = true
                             return result
