@@ -60,7 +60,7 @@ The visual gate estimates dominant motion, places two cross-flow lines at longit
 
 The next pass focused on making the on-video tracking visually continuous instead of merely showing the latest detector box. Current research and reference implementations indicate that robust traffic tracking should separate three concerns: identity association, state prediction during missed observations/occlusion, and render-time temporal smoothing. Current Ultralytics documentation describes ByteTrack as the lightweight baseline, BoT-SORT as adding camera-motion compensation and optional ReID, and OC-SORT as adding observation-centric correction/recovery for non-linear motion and occlusion. citeturn320283search6turn320283search0turn320283search2
 
-The repository already contains a custom ByteTrack-inspired tracker with Kalman prediction, two-stage high/low confidence matching, appearance signatures, motion gates, acceleration bounds, and bounded history. The latest refinement therefore avoids altering the analytical measurements merely to make the UI look smooth. Instead, `AnalysisVideoPlayback.kt` now adds a render-only cinematic trajectory layer.
+The repository already contains a custom ByteTrack-inspired tracker with Kalman prediction, two-stage high/low confidence matching, appearance signatures, motion gates, acceleration bounds, and bounded history. The latest refinement therefore avoids altering the analytical measurements merely to make the UI look smooth. Instead, `AnalysisVideoPlayback.kt` adds a render-only cinematic trajectory layer.
 
 ### Cinematic renderer architecture
 
@@ -76,57 +76,73 @@ The source video remains the master visual clock and continues at natural playba
 
 This is intentionally a rendering model, not a measurement rewrite. A visually smooth rectangle must not contaminate the evidence used by the speed estimator.
 
+### Track-state separation
+
+Commit `1dd15ffa7bf0d214f99c0b018d42748e3c61d375` introduced an explicit `renderTracks` field in `AnalysisPreviewFrame`. `tracks` remains the analytics-active set, while `renderTracks` is reserved for short-lived render-only predictions through brief detector gaps. This establishes the correct contract for the next implementation step: render continuity must never be fed back into speed estimation or enforcement analytics.
+
 ### Video/track clock alignment
 
-The renderer no longer blindly treats the player position as an absolute detector timestamp. It derives the timeline origin from the earliest available track observation and offsets that by `player.currentPosition`, reducing common non-zero-start PTS misalignment during the analysis preview.
+The renderer currently derives a timeline origin from available track observations and offsets that by `player.currentPosition`. This reduces common non-zero-start PTS misalignment, but it is not yet definitive because the earliest visible track observation is not guaranteed to equal the media PTS origin.
 
-A dedicated source-start timestamp field is still desirable for a final implementation because the earliest currently visible track is not guaranteed to be the actual media PTS origin. A physical-device test with videos whose media starts at non-zero PTS is still required before closing this risk.
+A fixed source-start timestamp field from `FrameSource` metadata remains required for the final implementation and must be validated with videos whose media starts at non-zero PTS.
 
-### Calibration-free speed position
+### Calibration-free speed and the 36-keypoint research path
 
-The current `CalibrationFreeSpeedEstimator` is a robust engineering estimate based on bottom-center image motion, local per-interval scale from a vehicle-width prior, dominant-motion projection, trimmed observations, cumulative pseudo-metric trajectory fitting, Theil-Sen regression, estimator agreement, and explicit uncertainty. This is materially more robust than simple pixel displacement divided by frame time, but it is not the exact 2026 research method.
+The current `CalibrationFreeSpeedEstimator` is a robust engineering estimate based on bottom-center image motion, local per-interval scale from vehicle-width priors, dominant-motion projection, trimmed observations, cumulative pseudo-metric trajectory fitting, Theil-Sen regression, estimator agreement, and explicit uncertainty. It is not a reproduction of the 2026 36-keypoint research method.
 
-The newly published August 17, 2026 calibration-free research framework uses a learned 36-keypoint vehicle template and a homography updated per frame, with an alternative warped optical-flow strategy, and reports validation on more than 400 video clips. citeturn320283academia12 The repository does not currently contain that trained keypoint backend, so the project must not claim reproduction of those reported error rates. The engineering roadmap is to add such a model only after a compatible Android inference artifact and benchmark protocol exist.
+The paper `Calibration-Free Vehicle Speed Estimation: A Monocular Keypoint-Template Approach` (arXiv:2608.16785, Aug. 17, 2026) proposes a 36-keypoint metric vehicle template and a homography re-estimated at every frame. It selects approximately coplanar semantic keypoints for vehicle facets; at least four non-collinear correspondences are used, with RANSAC for outlier rejection. It then supports both sparse semantic-keypoint tracking and dense warped optical flow within the selected facet. citeturn715612view1
 
-## Current commits at this stopping point
+The current repository does not contain the paper authors' 36-keypoint trained checkpoint or a verified public inference artifact. Therefore the project must not claim that its current estimator reproduces that model or its reported error rates.
 
-- `fd28da1f...` — traffic rules non-fatal and physical-speed-only.
-- `9b3b47c4...` — continuous recorded-video playback and corridor-aware uncalibrated visual gate.
-- `38a24e8e...` — fallback retriever EOF cleanup.
-- `ca825862...` — regression test for traffic-rule safety policy.
-- `dbc64fd6...` — idempotent fallback retriever release.
-- `44d4e99b...` — cinematic render-only tracking smoothing/interpolation/extrapolation for the video overlay.
+## 36-keypoint model/dataset research completed — 2026-09-06
 
-`main` currently points to `44d4e99bb0aae4fd804c0f22d6915aa374062613`.
+### Existing YOLO vehicle-pose implementation checked
 
-## Validation state after cinematic change
+`Habib0905/Vehicle-Pose-Estimation` is a useful YOLOv8 vehicle-pose reference, but its configuration is explicitly `kpt_shape: [14, 3]`, not 36. It is based on CarFusion plus additional Bangladesh traffic data and provides downloadable `best.pt` / `last.pt` weights. It is therefore a training/reference baseline, not the required 36-keypoint solution. citeturn343474view1
 
-GitHub Actions Run #471 (`34051237156`) was automatically started from `44d4e99bb0aae4fd804c0f22d6915aa374062613`. At the time of this note, Native C++ Parity and Offline Research Math had completed successfully, while Android Build & Test and ESP32 firmware were still running. Do not mark the cinematic change fully validated until the remaining CI jobs complete and the exact APK is exercised on the target Android device with the same traffic video.
+Changing `kpt_shape` from 14 to 36 in that project would change the output shape expected by the network, but it would not create labels or a trained 36-point model. A real 36-point dataset and corresponding annotations are still required.
 
-## Required physical validation checklist
+### CarFusion checked
 
-The same Local Analysis traffic video should visibly show, simultaneously:
+The official CMU CarFusion project provides 14 semantic keypoints for 100,000 vehicle instances across 53,000 images from 18 moving cameras at Pittsburgh intersections. Access is provided for research purposes through the project page. citeturn343474view2 The public conversion repository exposes the 14-keypoint annotation pipeline. This makes CarFusion valuable for bootstrapping vehicle-pose training, but it cannot directly supply the 36-keypoint target schema.
 
-`moving source video → green box follows vehicle continuously → stable ID → speed estimate on the vehicle → two useful speed lines aligned with observed traffic flow`
+A current public Hugging Face artifact `kiselyovd/vehicle-keypoints` provides a YOLO26-pose checkpoint trained on CarFusion with the canonical 14-keypoint schema; its code and weights are listed as MIT, while the underlying CarFusion dataset retains Carnegie Mellon terms. It is explicitly a research/educational artifact and not validated for safety-critical deployment. citeturn822412search0turn273799search2
 
-The side Tracking Radar should agree with the on-video trajectory, remain secondary to the source video, and not become a separate truth source.
+### SKoPe3D checked
 
-Success criteria for the next device test:
+SKoPe3D is a synthetic CARLA-based roadside traffic dataset containing 33 keypoints per vehicle, more than 25,000 images, 28 scenes, over 150,000 vehicle instances, and roughly 4.9 million keypoints according to its paper. The project evaluates Keypoint R-CNN and explicitly targets traffic-monitoring viewpoints. citeturn912271academia68turn715612view0
 
-- the source video never freezes while analysis is running;
-- boxes do not jump several pixels on ordinary detector noise;
-- IDs remain stable through ordinary partial occlusion;
-- a brief detector miss does not immediately make the box disappear;
-- the speed estimate changes smoothly rather than frame-to-frame wildly;
-- calibration-free speed is clearly labelled as an estimate and never creates enforcement events;
-- visual speed lines stay in the vehicle corridor rather than spanning arbitrary image space;
-- analysis completes without a calibration-related exception.
+SKoPe3D is therefore highly relevant to this project because it matches roadside traffic monitoring better than CarFusion and provides dense vehicle keypoint supervision. However, it is 33 points, not 36. The published material identifies the project/paper license as CC BY-NC-SA 4.0. citeturn273799search8 Any use in this project must preserve that license constraint and must not be treated as an unrestricted commercial dataset.
 
-## Remaining research/engineering priorities
+### Exact 36-keypoint target status
 
-1. Replace active-only preview tracks with a short-lived predicted/render state for recently missed tracks so the box can survive detector gaps without changing analytics.
-2. Make radar rendering use the same timestamped smoothed trajectory as the video overlay instead of raw last detections, so both surfaces are visually synchronized.
-3. Add a fixed source PTS origin from `FrameSource` metadata rather than inferring it from visible tracks.
-4. Measure detector-to-video lag on the device and expose a bounded freshness indicator instead of silently hiding boxes after the prediction horizon.
-5. Benchmark IDF1/HOTA/ID-switch/fragmentation on labelled traffic sequences; no such traffic benchmark has yet been established for this project.
-6. Build a separate benchmark for calibration-free speed against known ground-truth speeds before reporting numerical accuracy.
+The exact 36-keypoint target required for the calibration-free speed method is currently the paper's metric vehicle template, not an already verified public dataset/checkpoint found in this search. The research paper describes a sedan-based metric template with 36 semantic keypoints and uses subsets associated with approximately planar vehicle facets. citeturn715612view1
+
+Therefore the implementation plan is:
+
+1. keep the existing YOLO26n detector for object detection;
+2. keep ByteTrack-inspired identity tracking independent from keypoint inference;
+3. add a `VehicleKeypointEstimator` abstraction;
+4. prototype the keypoint pipeline using an available 14-point YOLO26-pose CarFusion model where useful for parser/inference integration tests;
+5. use SKoPe3D as a possible synthetic pretraining/transfer source, subject to its non-commercial license;
+6. build or obtain an actual 36-point labeled training set matching the paper's semantic/template ordering;
+7. train/fine-tune a small YOLO pose model with `kpt_shape: [36, 3]` (or an equivalent architecture) rather than pretending that changing the config alone creates a 36-point model;
+8. export a compatible Android inference artifact only after verifying output layout, latency, and keypoint quality;
+9. feed reliable keypoint correspondences into dynamic per-frame homography + RANSAC, then use sparse keypoint tracking and/or facet-restricted warped optical flow for calibration-free metric displacement;
+10. retain the current width-prior speed estimator as a fallback when the keypoint backend is unavailable or insufficiently confident.
+
+### Model-selection conclusion
+
+`YOLOv8-Pose` or `YOLO11-Pose` is a valid architectural family for a custom 36-point model, but neither one becomes a 36-point vehicle model merely by changing `nk`/`kpt_shape`. The network must be trained with 36-point vehicle annotations. `Keypoint R-CNN` is also a legitimate alternative, and SKoPe3D itself used it as a baseline, but integrating it into this Android CPU-only repository is a larger deployment path than a compact YOLO pose head.
+
+For this repository, the preferred production-engineering direction is therefore a compact YOLO pose backend with a custom 36-point vehicle schema, while keeping the detector (`yolo26n.tflite`) and tracker separate. The 14-point CarFusion model is a temporary compatibility/reference model only; it must never be labeled as the final 36-keypoint model.
+
+## Current repository model note
+
+The repository already contains `android/app/src/main/assets/models/yolo26n.tflite`; this remains the object detector and is not the vehicle-keypoint model. The keypoint backend must be introduced as a separate model artifact and interface so detection/tracking continue to work if the keypoint model is absent or disabled.
+
+## Validation / stopping point
+
+The latest repository history contains the render-track separation commit `1dd15ffa7bf0d214f99c0b018d42748e3c61d375` and the context documentation commit `bab0dcf220d1851c0153e2cbe3d0b824519e3b35`. Validation must be checked against the actual latest commit before claiming CI completion.
+
+The next engineering milestone is not to tune another arbitrary tracker coefficient. It is to implement the explicit render-state lifecycle and source-PTS alignment, then introduce the `VehicleKeypointEstimator` abstraction and a measured 36-keypoint training/inference path backed by real annotations.
