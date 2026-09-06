@@ -1,0 +1,56 @@
+# Dataset contract for the final calibration-free vehicle keypoint model.
+# Semantic keypoint names/order are intentionally not filled in until the paper's
+# 36-point metric template is frozen as a machine-readable annotation schema.
+path: vehicle_pose_36
+train: images/train
+val: images/val
+
+# One vehicle class, 36 keypoints, x/y + visibility.
+kpt_shape: [36, 3]
+
+# Do not enable horizontal-flip augmentation until a verified left/right flip map exists.
+names:
+  0: vehicle
+
+kpt_names:
+  0:
+    - template_kp_00
+    - template_kp_01
+    - template_kp_02
+    - template_kp_03
+    - template_kp_04
+    - template_kp_05
+    - template_kp_06
+    - template_kp_07
+    - template_kp_08
+    - template_kp_09
+    - template_kp_10
+    - template_kp_11
+    - template_kp_12
+    - template_kp_13
+    - template_kp_14
+    - template_kp_15
+    - template_kp_16
+    - template_kp_17
+    - template_kp_18
+    - template_kp_19
+    - template_kp_20
+    - template_kp_21
+    - template_kp_22
+    - template_kp_23
+    - template_kp_24
+    - template_kp_25
+    - template_kp_26
+    - template_kp_27
+    - template_kp_28
+    - template_kp_29
+    - template_kp_30
+    - template_kp_31
+    - template_kp_32
+    - template_kp_33
+    - template_kp_34
+    - template_kp_35
+
+# IMPORTANT: this file is a schema placeholder. It must not be used for training until the
+# actual 36-point labels and semantic ordering are supplied. The generic names above exist
+# only so tooling can validate tensor dimensionality without falsely claiming the semantics.
