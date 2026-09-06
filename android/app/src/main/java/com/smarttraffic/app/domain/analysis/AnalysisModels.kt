@@ -9,6 +9,8 @@ data class MediaSource(
     val width: Int? = null,
     val height: Int? = null,
     val timestampPrecision: FrameTimestampPrecision = FrameTimestampPrecision.UNKNOWN,
+    /** First media PTS observed by the source, in milliseconds, when the source can expose it. */
+    val timelineStartTimestampMs: Long? = null,
 )
 
 data class Detection(
