@@ -34,7 +34,8 @@ data class HomographyFit(
         require(maxReprojectionError.isFinite() && maxReprojectionError >= 0.0)
     }
 
-    fun project(x: Double, y: Double): HomographyProjection = project(matrix, x, y)
+    fun project(x: Double, y: Double): HomographyProjection =
+        VehicleKeypointHomography.projectPoint(matrix, x, y)
 }
 
 /**
@@ -77,7 +78,7 @@ object VehicleKeypointHomography {
 
             val refined = fitDlt(usable.indices.filter { inliers[it] }.map { usable[it] }) ?: continue
             val refinedErrors = usable.map { correspondence ->
-                val projected = refined.project(correspondence.imageX, correspondence.imageY)
+                val projected = refinedProjection(refined, correspondence.imageX, correspondence.imageY)
                 if (!projected.denominator.isFinite() || kotlin.math.abs(projected.denominator) < 1e-9) {
                     Double.POSITIVE_INFINITY
                 } else {
@@ -100,7 +101,7 @@ object VehicleKeypointHomography {
         return best
     }
 
-    fun project(matrix: DoubleArray, x: Double, y: Double): HomographyProjection {
+    fun projectPoint(matrix: DoubleArray, x: Double, y: Double): HomographyProjection {
         require(matrix.size == 9)
         val denominator = matrix[6] * x + matrix[7] * y + matrix[8]
         if (kotlin.math.abs(denominator) < 1e-12) {
@@ -110,6 +111,9 @@ object VehicleKeypointHomography {
         val projectedY = (matrix[3] * x + matrix[4] * y + matrix[5]) / denominator
         return HomographyProjection(projectedX, projectedY, denominator)
     }
+
+    private fun refinedProjection(matrix: DoubleArray, x: Double, y: Double): HomographyProjection =
+        projectPoint(matrix, x, y)
 
     private fun fitDlt(points: List<VehicleTemplateCorrespondence>): DoubleArray? {
         if (points.size < 4 || areDegenerate(points)) return null
