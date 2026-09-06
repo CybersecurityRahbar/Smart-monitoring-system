@@ -58,7 +58,7 @@ The visual gate estimates dominant motion, places two cross-flow lines at longit
 
 ## Deep tracking/speed refinement — 2026-09-06 follow-up
 
-The next pass focused on making the on-video tracking visually continuous instead of merely showing the latest detector box. Current research and reference implementations indicate that robust traffic tracking should separate three concerns: identity association, state prediction during missed observations/occlusion, and render-time temporal smoothing. Current Ultralytics documentation describes ByteTrack as the lightweight baseline, BoT-SORT as adding camera-motion compensation and optional ReID, and OC-SORT as adding observation-centric correction/recovery for non-linear motion and occlusion. citeturn320283search6turn320283search0turn320283search2
+The next pass focused on making the on-video tracking visually continuous instead of merely showing the latest detector box. Current research and reference implementations indicate that robust traffic tracking should separate three concerns: identity association, state prediction during missed observations/occlusion, and render-time temporal smoothing. Current Ultralytics documentation describes ByteTrack as the lightweight baseline, BoT-SORT as adding camera-motion compensation and optional ReID, and OC-SORT as adding observation-centric correction/recovery for non-linear motion and occlusion.
 
 The repository already contains a custom ByteTrack-inspired tracker with Kalman prediction, two-stage high/low confidence matching, appearance signatures, motion gates, acceleration bounds, and bounded history. The latest refinement therefore avoids altering the analytical measurements merely to make the UI look smooth. Instead, `AnalysisVideoPlayback.kt` adds a render-only cinematic trajectory layer.
 
@@ -78,7 +78,7 @@ This is intentionally a rendering model, not a measurement rewrite. A visually s
 
 ### Track-state separation
 
-Commit `1dd15ffa7bf0d214f99c0b018d42748e3c61d375` introduced an explicit `renderTracks` field in `AnalysisPreviewFrame`. `tracks` remains the analytics-active set, while `renderTracks` is reserved for short-lived render-only predictions through brief detector gaps. This establishes the correct contract for the next implementation step: render continuity must never be fed back into speed estimation or enforcement analytics.
+Commit `1dd15ffa7bf0d214f99c0b018d42748e3c61d375` introduced an explicit `renderTracks` field in `AnalysisPreviewFrame`. `tracks` remains the analytics-active set, while `renderTracks` is reserved for short-lived render-only predictions through brief detector gaps. This establishes the correct contract: render continuity must never be fed back into speed estimation or enforcement analytics.
 
 ### Video/track clock alignment
 
@@ -90,7 +90,7 @@ A fixed source-start timestamp field from `FrameSource` metadata remains require
 
 The current `CalibrationFreeSpeedEstimator` is a robust engineering estimate based on bottom-center image motion, local per-interval scale from vehicle-width priors, dominant-motion projection, trimmed observations, cumulative pseudo-metric trajectory fitting, Theil-Sen regression, estimator agreement, and explicit uncertainty. It is not a reproduction of the 2026 36-keypoint research method.
 
-The paper `Calibration-Free Vehicle Speed Estimation: A Monocular Keypoint-Template Approach` (arXiv:2608.16785, Aug. 17, 2026) proposes a 36-keypoint metric vehicle template and a homography re-estimated at every frame. It selects approximately coplanar semantic keypoints for vehicle facets; at least four non-collinear correspondences are used, with RANSAC for outlier rejection. It then supports both sparse semantic-keypoint tracking and dense warped optical flow within the selected facet. citeturn715612view1
+The paper `Calibration-Free Vehicle Speed Estimation: A Monocular Keypoint-Template Approach` (arXiv:2608.16785, Aug. 17, 2026) proposes a 36-keypoint metric vehicle template and a homography re-estimated at every frame. It selects approximately coplanar semantic keypoints for vehicle facets; at least four non-collinear correspondences are used, with RANSAC for outlier rejection. It then supports both sparse semantic-keypoint tracking and dense warped optical flow within the selected facet. This is the target geometry architecture for the project, not a claim that the present estimator reproduces the paper.
 
 The current repository does not contain the paper authors' 36-keypoint trained checkpoint or a verified public inference artifact. Therefore the project must not claim that its current estimator reproduces that model or its reported error rates.
 
@@ -98,51 +98,215 @@ The current repository does not contain the paper authors' 36-keypoint trained c
 
 ### Existing YOLO vehicle-pose implementation checked
 
-`Habib0905/Vehicle-Pose-Estimation` is a useful YOLOv8 vehicle-pose reference, but its configuration is explicitly `kpt_shape: [14, 3]`, not 36. It is based on CarFusion plus additional Bangladesh traffic data and provides downloadable `best.pt` / `last.pt` weights. It is therefore a training/reference baseline, not the required 36-keypoint solution. citeturn343474view1
+`Habib0905/Vehicle-Pose-Estimation` is a useful YOLOv8 vehicle-pose reference, but its configuration is explicitly `kpt_shape: [14, 3]`, not 36. It is based on CarFusion plus additional Bangladesh traffic data and provides downloadable `best.pt` / `last.pt` weights. It is a training/reference baseline, not the required 36-keypoint solution.
 
-Changing `kpt_shape` from 14 to 36 in that project would change the output shape expected by the network, but it would not create labels or a trained 36-point model. A real 36-point dataset and corresponding annotations are still required.
+Changing `kpt_shape` from 14 to 36 in that project would change the configured output dimensionality, but it would not create 36-point labels or a trained 36-point model. A real 36-point dataset and corresponding annotations are required.
 
 ### CarFusion checked
 
-The official CMU CarFusion project provides 14 semantic keypoints for 100,000 vehicle instances across 53,000 images from 18 moving cameras at Pittsburgh intersections. Access is provided for research purposes through the project page. citeturn343474view2 The public conversion repository exposes the 14-keypoint annotation pipeline. This makes CarFusion valuable for bootstrapping vehicle-pose training, but it cannot directly supply the 36-keypoint target schema.
+The official CMU CarFusion project provides 14 semantic keypoints for large-scale vehicle data and is useful for bootstrap pose experiments. It cannot directly supply the final 36-keypoint target schema.
 
-A current public Hugging Face artifact `kiselyovd/vehicle-keypoints` provides a YOLO26-pose checkpoint trained on CarFusion with the canonical 14-keypoint schema; its code and weights are listed as MIT, while the underlying CarFusion dataset retains Carnegie Mellon terms. It is explicitly a research/educational artifact and not validated for safety-critical deployment. citeturn822412search0turn273799search2
+A current public Hugging Face artifact `kiselyovd/vehicle-keypoints` provides a YOLO26-pose checkpoint trained on CarFusion with the canonical 14-keypoint schema. It is a compatibility/reference model only and must never be called the project's final 36-point model.
 
 ### SKoPe3D checked
 
-SKoPe3D is a synthetic CARLA-based roadside traffic dataset containing 33 keypoints per vehicle, more than 25,000 images, 28 scenes, over 150,000 vehicle instances, and roughly 4.9 million keypoints according to its paper. The project evaluates Keypoint R-CNN and explicitly targets traffic-monitoring viewpoints. citeturn912271academia68turn715612view0
+SKoPe3D is a synthetic CARLA-based roadside traffic dataset containing 33 keypoints per vehicle, more than 25,000 images, 28 scenes, over 150,000 vehicle instances, and roughly 4.9 million keypoints according to its paper. The project evaluates Keypoint R-CNN and explicitly targets traffic-monitoring viewpoints.
 
-SKoPe3D is therefore highly relevant to this project because it matches roadside traffic monitoring better than CarFusion and provides dense vehicle keypoint supervision. However, it is 33 points, not 36. The published material identifies the project/paper license as CC BY-NC-SA 4.0. citeturn273799search8 Any use in this project must preserve that license constraint and must not be treated as an unrestricted commercial dataset.
+SKoPe3D is highly relevant because it matches roadside traffic monitoring better than ordinary vehicle datasets, but it is 33 points, not 36, and its published license is non-commercial/share-alike. It must not be treated as an unrestricted dataset.
 
-### Exact 36-keypoint target status
+### Exact 36-point lineage found: Deep MANTA / Ansari / PAMTRI
 
-The exact 36-keypoint target required for the calibration-free speed method is currently the paper's metric vehicle template, not an already verified public dataset/checkpoint found in this search. The research paper describes a sedan-based metric template with 36 semantic keypoints and uses subsets associated with approximately planar vehicle facets. citeturn715612view1
+The research search found a direct, mature lineage for the 36-point vehicle model rather than only generic pose architectures.
 
-Therefore the implementation plan is:
+Deep MANTA describes a 36-part vehicle model and uses vehicle geometry to perform 2D/3D analysis. The Ansari vehicle-pose work also uses a 36-keypoint vehicle wireframe. PAMTRI's official code is especially valuable because its `PoseEstNet` contains the actual 36-joint training/evaluation data contract used for the vehicle pose model.
 
-1. keep the existing YOLO26n detector for object detection;
-2. keep ByteTrack-inspired identity tracking independent from keypoint inference;
-3. add a `VehicleKeypointEstimator` abstraction;
-4. prototype the keypoint pipeline using an available 14-point YOLO26-pose CarFusion model where useful for parser/inference integration tests;
-5. use SKoPe3D as a possible synthetic pretraining/transfer source, subject to its non-commercial license;
-6. build or obtain an actual 36-point labeled training set matching the paper's semantic/template ordering;
-7. train/fine-tune a small YOLO pose model with `kpt_shape: [36, 3]` (or an equivalent architecture) rather than pretending that changing the config alone creates a 36-point model;
-8. export a compatible Android inference artifact only after verifying output layout, latency, and keypoint quality;
-9. feed reliable keypoint correspondences into dynamic per-frame homography + RANSAC, then use sparse keypoint tracking and/or facet-restricted warped optical flow for calibration-free metric displacement;
-10. retain the current width-prior speed estimator as a fallback when the keypoint backend is unavailable or insufficiently confident.
+The PAMTRI repository explicitly sets `self.num_joints = 36` and provides the exact left/right symmetry mapping:
 
-### Model-selection conclusion
+`0↔18, 1↔19, 2↔20, 3↔21, 4↔22, 5↔23, 6↔24, 7↔25, 8↔26, 9↔27, 10↔28, 11↔29, 12↔30, 13↔31, 14↔32, 15↔33, 16↔34, 17↔35`.
 
-`YOLOv8-Pose` or `YOLO11-Pose` is a valid architectural family for a custom 36-point model, but neither one becomes a 36-point vehicle model merely by changing `nk`/`kpt_shape`. The network must be trained with 36-point vehicle annotations. `Keypoint R-CNN` is also a legitimate alternative, and SKoPe3D itself used it as a baseline, but integrating it into this Android CPU-only repository is a larger deployment path than a compact YOLO pose head.
+Its annotations are stored as:
 
-For this repository, the preferred production-engineering direction is therefore a compact YOLO pose backend with a custom 36-point vehicle schema, while keeping the detector (`yolo26n.tflite`) and tracker separate. The 14-point CarFusion model is a temporary compatibility/reference model only; it must never be labeled as the final 36-keypoint model.
+`image_name,width,height,(x,y,visibility) * 36`.
 
-## Current repository model note
+The official README also states that the 36-keypoint vehicle model is used with 13 vehicle-surface segments. This is the strongest available machine-readable 36-point contract found during this session. The semantic names themselves are not exposed as a simple authoritative text table in the repository, so the project must continue using index-based names until the exact Figure/annotation semantics are frozen.
 
-The repository already contains `android/app/src/main/assets/models/yolo26n.tflite`; this remains the object detector and is not the vehicle-keypoint model. The keypoint backend must be introduced as a separate model artifact and interface so detection/tracking continue to work if the keypoint model is absent or disabled.
+PAMTRI also provides pretrained pose models and code, but its implementation is an older HRNet-based research stack rather than a lightweight Android-ready model. Its source code is under the NVIDIA Source Code License. It is therefore a reference for the 36-point schema/training representation, not a binary to copy blindly into the Android APK.
 
-## Validation / stopping point
+## 36-keypoint implementation work committed to `main`
 
-The latest repository history contains the render-track separation commit `1dd15ffa7bf0d214f99c0b018d42748e3c61d375` and the context documentation commit `bab0dcf220d1851c0153e2cbe3d0b824519e3b35`. Validation must be checked against the actual latest commit before claiming CI completion.
+### 1. Vehicle pose model registry
 
-The next engineering milestone is not to tune another arbitrary tracker coefficient. It is to implement the explicit render-state lifecycle and source-PTS alignment, then introduce the `VehicleKeypointEstimator` abstraction and a measured 36-keypoint training/inference path backed by real annotations.
+Commit `041d7a4c3213303571d994216917759e7407585c` added:
+
+`android/app/src/main/java/com/smarttraffic/app/data/vision/VehiclePoseModelRegistry.kt`
+
+The registry defines separate metadata for:
+
+- a 14-point CarFusion/YOLO26-pose reference model;
+- the target 36-point vehicle-template model.
+
+The 36-point entry is deliberately `readyForInference=false` and requires a real trained artifact before inference. It declares that an ordinary one-class Ultralytics-style pose export with 8400 candidates would have `5 + 36*3 = 113` output channels.
+
+### 2. LiteRT vehicle keypoint backend
+
+Commit `a7f966f4e171f236685c298975ee3daf904fdd2f` added:
+
+`android/app/src/main/java/com/smarttraffic/app/data/vision/LiteRtVehicleKeypointEstimator.kt`
+
+The backend:
+
+- runs independently from YOLO26n object detection;
+- uses CPU LiteRT like the existing detector;
+- crops each detected vehicle and applies the existing letterbox preprocessing;
+- validates the expected flattened output size before parsing;
+- supports the classic channel-major YOLO pose layout `[1, 5 + 3*K, 8400]`;
+- maps crop/letterbox coordinates back to source-frame pixels;
+- returns only confident keypoints;
+- returns an empty keypoint list rather than altering detector/tracker identity if pose inference fails.
+
+This is a deployment adapter, not proof that the final 36-point model exists.
+
+### 3. Runtime integration
+
+Commit `452c4068a48df52b22ed82ae23a0d5154a5db5ad` first added runtime construction for optional pose. It was then cleaned up in `9ef470d8eaf779c15da59674056e6e39e8b76aaa` so the final design uses explicit lifecycle-scoped injection with no global holder.
+
+`AnalysisRuntimeFactory.DetectorRuntime` now contains an optional `keypoints` backend and closes it independently from the detector. The backward-compatible detector-only factory remains available.
+
+Commit `8fd1994ffb18f6472b8474fb9c33feb986c2194e` updated `LocalAnalysisViewModel` to explicitly pass `runtime.keypoints` into `ModularAnalysisEngine` and to enable it only when `AnalysisConfig.useVehicleKeypoints` is true.
+
+Commit `de9d8127324a662706ae81e8476d594ad0bfd84d` keeps `ModularAnalysisEngine` keypoint injection explicit and does not depend on a process-global runtime.
+
+The existing detector and tracker therefore remain independent from pose inference.
+
+### 4. 36-point training contract
+
+Commit `39df7eed0ac3c3d657d177fa66dfa48b3a44da2d` added the dataset contract at:
+
+`ai/vehicle_pose/vehicle_pose_36.yaml`
+
+It was refined in `6ac8ef309dba9c12ad13f1662ac3f57529681caa` to record the PAMTRI 18↔18 flip mapping. The dataset contract uses:
+
+```yaml
+kpt_shape: [36, 3]
+```
+
+and a one-class `vehicle` task.
+
+The semantic names remain index-based placeholders (`manta_kp_00 ... manta_kp_35`) because inventing names from the figure would be unsafe. The verified flip mapping is authoritative for the PAMTRI index convention.
+
+### 5. PAMTRI-to-YOLO converter
+
+Commit `fb86c4b8b3dc74127b3600121945b4b5c4b5261a` added:
+
+`ai/vehicle_pose/convert_pamtri_veri_to_yolo.py`
+
+It consumes the PAMTRI/VeRi 36-point CSV format and writes single-class Ultralytics pose labels with:
+
+`5 + 36*3 = 113` values per object line after the class id representation is flattened into the normal YOLO pose structure.
+
+Visibility is converted to a YOLO pose visibility value, and a complete annotated bbox is derived from the 36-point extent for bootstrap experiments.
+
+This converter is explicitly for research/bootstrap use; it does not imply that PAMTRI labels are automatically compatible with the 2026 paper's metric template semantics.
+
+Commit `7627858aa30f02a3c61ede70606140ac355a5f7b` added `ai/tests/test_vehicle_pose_converter.py` to validate label field count, visibility handling, and invalid-row rejection.
+
+### 6. Vehicle dynamic homography + RANSAC
+
+Commit `557b80f6140fd534c89f45b198cf64756bb517dd` added:
+
+`android/app/src/main/java/com/smarttraffic/app/domain/analysis/VehicleKeypointHomography.kt`
+
+The implementation is pure Kotlin and independent of the keypoint model semantics. It provides:
+
+- image/template point correspondences;
+- normalized DLT homography fitting;
+- deterministic RANSAC over four-point subsets;
+- non-collinearity/degeneracy rejection;
+- reprojection-error gating;
+- inlier refinement using the normalized DLT fit;
+- median/max reprojection error reporting;
+- projective point projection.
+
+This is the geometry layer required by the dynamic keypoint-template speed architecture. It intentionally does not hard-code the paper's semantic index map.
+
+Commit `e74ebcc188292eb47b2ecb9291198d8863e74166` added JVM tests for:
+
+- recovery of a synthetic projective transform;
+- gross-outlier rejection by RANSAC;
+- rejection of collinear correspondence sets.
+
+### 7. Pose configuration contract
+
+Commit `70bbeac04ff94aa7983b86d0d6a30e2ddaa4c6b6` added `VehicleKeypointConfig.kt` with:
+
+- `DEFAULT_MODEL_ID = vehicle-keypoints-36-template`;
+- `REFERENCE_14_MODEL_ID = vehicle-keypoints-14`;
+- `TARGET_KEYPOINT_COUNT = 36`.
+
+The existing `AnalysisConfig.useVehicleKeypoints` remains false by default, so the unfinished 36-point backend cannot accidentally break normal analysis.
+
+### 8. Model contract tests
+
+Commit `162957e3a3145303858a309aa7c858dbffc4d7e5` added tests for the 14-point reference contract and the 36-point `[1,113,8400]` output-size contract, including the requirement that the 36-point spec is not yet marked ready for inference.
+
+Commit `7fa40b816ec44691d83825bb4907ae346bd478a3` added parser tests for letterbox/source coordinate mapping and low-confidence keypoint filtering.
+
+## Important model-selection conclusion
+
+The project must not simply download `yolo26n-pose.pt`, `yolov8-pose`, or `yolo11-pose` and rename it as a 36-point vehicle model. Generic YOLO pose defaults target other keypoint schemas, and the public vehicle model found in this search is 14-point.
+
+The intended final architecture remains:
+
+`YOLO26n detector → ByteTrack identity → VehicleKeypointEstimator → 36 keypoints → dynamic homography/RANSAC → metric trajectory → calibration-free speed → cinematic renderer`
+
+Keypoint inference remains a separate concern from identity tracking. A temporary 14-point model can be used to exercise the inference plumbing, but the final 36-point backend requires labels that match the chosen 36-point semantic/template ordering.
+
+Keypoint R-CNN remains a legitimate alternative. SKoPe3D demonstrates its use for roadside vehicle pose. However, for this Android CPU-first project, a compact YOLO pose backend is the preferred production engineering path because it fits the existing LiteRT deployment and model registry architecture more naturally.
+
+## CI validation state — current implementation head
+
+The repository's latest `main` head at the end of this implementation pass is:
+
+`7627858aa30f02a3c61ede70606140ac355a5f7b`
+
+GitHub Actions Run #494 (`34053108853`) is running against this exact commit. At the latest observed state:
+
+- Offline Research Math: passed;
+- Native C++ Parity Vectors: passed;
+- ESP32 Camera Firmware: still running, with the AI-Thinker target already passed and the ESP32-S3 target still building;
+- Android Build & Test: still running during the last poll, with setup complete and the debug APK build in progress.
+
+The full run must finish before this implementation is declared CI-green. Earlier runs were cancelled because the workflow is configured with `cancel-in-progress: true`; therefore only the final-head run is relevant for validation.
+
+## Local validation limitation
+
+A direct `git clone` attempt in the current execution environment failed because the environment could not resolve `github.com`. Consequently, the implementation was validated through the GitHub repository itself and GitHub Actions rather than a local Android Gradle invocation from a cloned working tree.
+
+## Current engineering state and remaining work
+
+Completed in this pass:
+
+1. verified 36-point research lineage and PAMTRI's machine-readable 36-joint contract;
+2. separated YOLO26n detection from vehicle pose;
+3. added 14-point and target-36 model metadata contracts;
+4. added an optional LiteRT pose runtime;
+5. explicitly injected pose into local analysis without a global runtime bridge;
+6. added a 36-point dataset contract and PAMTRI converter;
+7. added normalized DLT/RANSAC dynamic homography geometry;
+8. added unit tests for model contracts, parser transforms, converter, and homography;
+9. kept the unfinished 36-point model disabled by default and refused to fabricate a checkpoint.
+
+Still required before claiming the research method is implemented end-to-end:
+
+1. freeze the exact 36 semantic index/template coordinates against the authoritative MANTA/Ansari/PAMTRI representation and the 2026 paper;
+2. build or acquire a legal dataset whose 36 labels match that metric template rather than merely having 36 arbitrary vehicle keypoints;
+3. train a compact vehicle pose model with exactly that schema;
+4. export it to a verified Android-compatible LiteRT artifact and record SHA-256/provenance;
+5. integrate per-frame facet selection and dynamic H into `AnalysisPipelineRunner` so keypoint geometry is actually consumed by the speed estimator;
+6. add robust metric displacement/speed from the keypoint template and optionally facet-restricted warped optical flow;
+7. compare the keypoint speed against the existing width-prior calibration-free estimator and expose uncertainty rather than silently replacing it;
+8. finish render-track population, speed-label smoothing, and fixed source-PTS origin;
+9. run physical Android-device tests with a real traffic video, including a non-zero media PTS sample;
+10. establish a labelled tracking/speed benchmark before reporting numerical accuracy.
+
+The project must not report the 2026 paper's MAE figures as project results until this project's own benchmark reproduces them under a documented protocol.
