@@ -183,9 +183,7 @@ data class AnalysisMetrics(
     val trafficEvents: Long = 0,
     val homographyReprojectionError: Double? = null,
     val speedEstimatorBackend: String = "Kotlin reference",
-    /** Requires an external ground-truth benchmark; null means it has not been evaluated. */
     val idSwitches: Long? = null,
-    /** Requires an external ground-truth benchmark; null means it has not been evaluated. */
     val trackFragmentations: Long? = null,
 )
 
