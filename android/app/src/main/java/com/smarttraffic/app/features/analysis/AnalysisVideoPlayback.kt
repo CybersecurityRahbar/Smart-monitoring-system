@@ -3,6 +3,7 @@ package com.smarttraffic.app.features.analysis
 import android.graphics.Paint
 import android.net.Uri
 import android.view.LayoutInflater
+import android.widget.FrameLayout
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -32,9 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
-import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.smarttraffic.app.R
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
@@ -45,7 +44,6 @@ import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
 
-@UnstableApi
 @Composable
 fun AnalysisVideoPlayback(
     videoUri: Uri,
@@ -89,10 +87,10 @@ fun AnalysisVideoPlayback(
     Box(modifier) {
         AndroidView(
             factory = { viewContext ->
-                (LayoutInflater.from(viewContext).inflate(R.layout.view_analysis_player, null) as PlayerView).apply {
+                val parent = FrameLayout(viewContext)
+                (LayoutInflater.from(viewContext).inflate(R.layout.view_analysis_player, parent, false) as PlayerView).apply {
                     this.player = player
-                    setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
-                    useController = true
+                    useController = false
                 }
             },
             update = { view -> (view as PlayerView).player = player },
