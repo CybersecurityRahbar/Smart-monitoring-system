@@ -19,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -30,8 +31,9 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.smarttraffic.app.R
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
@@ -87,7 +89,7 @@ fun AnalysisVideoPlayback(
             factory = { viewContext ->
                 (LayoutInflater.from(viewContext).inflate(R.layout.view_analysis_player, null) as PlayerView).apply {
                     this.player = player
-                    setResizeMode(PlayerView.RESIZE_MODE_FIT)
+                    setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
                     useController = true
                 }
             },
