@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -44,6 +45,7 @@ import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
 
+@OptIn(UnstableApi::class)
 @Composable
 fun AnalysisVideoPlayback(
     videoUri: Uri,
