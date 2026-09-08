@@ -3,10 +3,10 @@ package com.smarttraffic.app.features.analysis
 import android.graphics.Paint
 import android.net.Uri
 import android.view.LayoutInflater
-import android.view.View
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -16,9 +16,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -30,11 +30,12 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.common.MediaItem
 import androidx.media3.ui.PlayerView
 import com.smarttraffic.app.R
 import com.smarttraffic.app.domain.analysis.AnalysisPreviewFrame
+import com.smarttraffic.app.domain.analysis.ResolvedTrackState
 import com.smarttraffic.app.domain.analysis.SpeedEstimateMode
 import com.smarttraffic.app.domain.analysis.TrackRenderResolver
 import kotlinx.coroutines.delay
@@ -76,7 +77,7 @@ fun AnalysisVideoPlayback(
         }
     }
 
-    LaunchedEffect(player, preview.videoUri) {
+    LaunchedEffect(player) {
         player.playWhenReady = true
         player.play()
     }
@@ -90,11 +91,11 @@ fun AnalysisVideoPlayback(
                     useController = true
                 }
             },
-            update = { view: View -> (view as PlayerView).player = player },
-            modifier = Modifier.matchParentSize(),
+            update = { view -> (view as PlayerView).player = player },
+            modifier = Modifier.fillMaxSize(),
         )
 
-        Canvas(Modifier.matchParentSize()) {
+        Canvas(Modifier.fillMaxSize()) {
             val sourceWidth = preview.frame.width.toFloat().coerceAtLeast(1f)
             val sourceHeight = preview.frame.height.toFloat().coerceAtLeast(1f)
             val scale = min(size.width / sourceWidth, size.height / sourceHeight)
@@ -115,18 +116,11 @@ fun AnalysisVideoPlayback(
                 color = android.graphics.Color.WHITE
                 setShadowLayer(5f, 0f, 2f, android.graphics.Color.BLACK)
             }
-            val predictedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = android.graphics.Color.rgb(57, 255, 20)
-                strokeWidth = 3f
-                style = android.graphics.Paint.Style.STROKE
-                setPathEffect(android.graphics.DashPathEffect(floatArrayOf(10f, 7f), 0f))
-                setShadowLayer(4f, 0f, 1f, android.graphics.Color.BLACK)
-            }
 
             val timelineOrigin = preview.timelineStartTimestampMs ?: preview.frame.timestampMs
             val targetTimestampMs = safeAddTimestamp(timelineOrigin, positionMs)
             val resolvedTracks = preview.renderTracks.mapNotNull { track ->
-                TrackRenderResolver.resolve(track, targetTimestampMs)?.let { it }
+                TrackRenderResolver.resolve(track, targetTimestampMs)
             }.sortedBy { it.track.id }
 
             resolvedTracks.forEach { state ->
@@ -140,7 +134,7 @@ fun AnalysisVideoPlayback(
                     topLeft = Offset(left, top),
                     size = Size((right - left).coerceAtLeast(0f), (bottom - top).coerceAtLeast(0f)),
                     cornerRadius = CornerRadius(10f, 10f),
-                    style = if (state.predicted) predictedPaint.asStroke() else Stroke(width = 4f),
+                    style = Stroke(width = if (state.predicted) 3f else 4f),
                 )
                 drawContext.canvas.nativeCanvas.drawText(
                     "ID ${state.track.id}",
@@ -150,14 +144,12 @@ fun AnalysisVideoPlayback(
                 )
             }
 
-            val availableHeight = size.height - 32f
             val rowHeight = 30f
-            val maxRowsPerSide = max(1, (availableHeight / rowHeight).toInt())
+            val maxRowsPerSide = max(1, ((size.height - 32f) / rowHeight).toInt())
             val leftTracks = resolvedTracks.filter { it.track.id % 2L == 1L }
             val rightTracks = resolvedTracks.filter { it.track.id % 2L == 0L }
-            val orderedSides = listOf(leftTracks, rightTracks)
 
-            fun drawTelemetry(trackList: List<com.smarttraffic.app.domain.analysis.ResolvedTrackState>, rightAligned: Boolean) {
+            fun drawTelemetry(trackList: List<ResolvedTrackState>, rightAligned: Boolean) {
                 trackList.take(maxRowsPerSide).forEachIndexed { row, state ->
                     val estimate = preview.speedEstimates[state.track.id]
                     val speed = estimate?.let {
@@ -165,18 +157,14 @@ fun AnalysisVideoPlayback(
                         "%.0f km/h%s".format(it.kilometersPerHour, suffix)
                     } ?: "--"
                     val text = "ID ${state.track.id}  •  $speed"
-                    val x = if (rightAligned) {
-                        size.width - sidePaint.measureText(text) - 14f
-                    } else {
-                        14f
-                    }
+                    val x = if (rightAligned) size.width - sidePaint.measureText(text) - 14f else 14f
                     val y = 30f + row * rowHeight
                     drawContext.canvas.nativeCanvas.drawText(text, x.coerceAtLeast(8f), y, sidePaint)
                 }
             }
 
-            drawTelemetry(orderedSides[0], rightAligned = false)
-            drawTelemetry(orderedSides[1], rightAligned = true)
+            drawTelemetry(leftTracks, rightAligned = false)
+            drawTelemetry(rightTracks, rightAligned = true)
         }
 
         if (showClose) {
@@ -192,8 +180,6 @@ fun AnalysisVideoPlayback(
         }
     }
 }
-
-private fun Paint.asStroke(): Stroke = Stroke(width = strokeWidth)
 
 private fun safeAddTimestamp(baseMs: Long, offsetMs: Long): Long = try {
     Math.addExact(baseMs, offsetMs.coerceAtLeast(0L))
