@@ -52,7 +52,6 @@ data class AnalysisRunState(
     val result: AnalysisResult? = null,
 )
 
-/** Local Lab adapter. The execution lifecycle is owned by the application-scoped AnalysisHost. */
 class LocalAnalysisViewModel(application: android.app.Application) : AndroidViewModel(application) {
     private val session: UnifiedAnalysisSession = application.cast<SmartTrafficApplication>().analysisHost.session
     private val _state = MutableStateFlow(AnalysisRunState())
@@ -94,8 +93,8 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                 val spec = DetectorModelRegistry.requireSpec(effectiveConfig.detectorModel)
                 require(DetectorModelRegistry.isInstalled(app, spec)) { "Detector model is not installed: ${spec.assetPath}" }
 
-                AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.MODEL_INITIALIZE, modelId = spec.id, accelerator = "CPU")
-                _state.value = AnalysisRunState(AnalysisRunPhase.RUNNING, "Initializing LiteRT CPU detector…")
+                AnalysisDiagnostics.mark(app, runId, AnalysisDiagnostics.Stage.MODEL_INITIALIZE, modelId = spec.id, accelerator = "GPU preferred / CPU fallback")
+                _state.value = AnalysisRunState(AnalysisRunPhase.RUNNING, "Initializing LiteRT hardware-accelerated detector…")
                 runtime = AnalysisRuntimeFactory.createDetector(
                     context = app,
                     modelId = spec.id,
@@ -137,16 +136,12 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
                     val nowNs = System.nanoTime()
                     if (lastPreviewNs == Long.MIN_VALUE || nowNs - lastPreviewNs >= previewIntervalNs) {
                         lastPreviewNs = nowNs
-                        if (mediaType == AnalysisMediaType.IMAGE) {
-                            session.publishPreview(previewFrame)
-                            _preview.value = previewFrame
-                        } else {
-                            // During analysis, expose progress; the playback component itself owns
-                            // natural-speed playback and no longer waits for playbackReady.
-                            val progressPreview = previewFrame.copy(videoUri = uri.toString(), playbackReady = false)
-                            session.publishPreview(progressPreview)
-                            _preview.value = progressPreview
-                        }
+                        // During recorded-video analysis we intentionally do NOT expose videoUri.
+                        // ExoPlayer must not start before analysis is complete. The current decoded
+                        // frame is still available as analysis progress, while the final replay uses
+                        // the complete timestamped track history and the source video clock.
+                        session.publishPreview(previewFrame.copy(videoUri = null, playbackReady = false))
+                        _preview.value = previewFrame.copy(videoUri = null, playbackReady = false)
                     }
                 }
                 val engine = ModularAnalysisEngine(
@@ -240,6 +235,7 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
 
         val width = bitmap.width
         val height = bitmap.height
+        val timelineOriginMs = result.source.timelineStartTimestampMs
         val calibrated = config.calibration != null && config.useGroundPlane && result.metrics.timestampPrecision.name == "EXACT_SOURCE_CLOCK"
         val gate = runCatching {
             AutoSpeedGateBuilder.build(
@@ -251,10 +247,18 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
         }.getOrNull()
         val bounds = _preview.value?.radarBounds ?: RadarBounds(0.0, width.toDouble().coerceAtLeast(1.0), 0.0, height.toDouble().coerceAtLeast(1.0))
         _preview.value = AnalysisPreviewFrame(
-            frame = AnalysisFrame(0L, 0L, bitmap, width, height),
+            frame = AnalysisFrame(
+                index = 0L,
+                timestampMs = timelineOriginMs ?: 0L,
+                payload = bitmap,
+                width = width,
+                height = height,
+                timelineStartTimestampMs = timelineOriginMs,
+            ),
             bitmap = bitmap,
             detections = result.detections,
             tracks = result.tracks,
+            renderTracks = result.tracks,
             speedEstimates = result.speedEstimates,
             calibrated = calibrated,
             radarBounds = bounds,
@@ -262,6 +266,7 @@ class LocalAnalysisViewModel(application: android.app.Application) : AndroidView
             uniqueVehiclesDetected = result.metrics.uniqueVehiclesDetected,
             playbackReady = true,
             videoUri = uri.toString(),
+            timelineStartTimestampMs = timelineOriginMs,
         )
     }
 
