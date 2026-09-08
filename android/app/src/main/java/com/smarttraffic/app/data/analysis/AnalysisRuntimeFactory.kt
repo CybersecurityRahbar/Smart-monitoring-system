@@ -11,13 +11,7 @@ import com.smarttraffic.app.domain.analysis.ObjectDetector
 import com.smarttraffic.app.domain.analysis.VehicleKeypointConfig
 import com.smarttraffic.app.domain.analysis.VehicleKeypointEstimator
 
-/**
- * Shared perception runtime construction for local and live analysis sessions.
- *
- * The production-safe default is CPU. The vehicle-pose stage is optional and independently
- * closable. Keeping it separate from the object detector means a missing/unready pose artifact
- * can never silently replace or corrupt YOLO26n detection/tracking.
- */
+/** Shared perception runtime construction for local and live analysis sessions. */
 object AnalysisRuntimeFactory {
     data class DetectorRuntime(
         val detector: ObjectDetector,
@@ -32,7 +26,6 @@ object AnalysisRuntimeFactory {
         }
     }
 
-    /** Backward-compatible factory for callers that only need object detection. */
     fun createDetector(
         context: Context,
         modelId: String,
@@ -46,11 +39,9 @@ object AnalysisRuntimeFactory {
     )
 
     /**
-     * Constructs the object detector and, when explicitly enabled, the vehicle-pose backend.
-     *
-     * Pose configuration is fail-fast: an enabled pose stage without a verified trained artifact
-     * is a configuration error, never a fake-success path. At present the 36-point registry entry
-     * is metadata-only, so normal existing analyses continue to operate with pose disabled.
+     * GPU is preferred for sustained detector throughput. If the LiteRT GPU runtime rejects the
+     * model/device configuration through a normal exception, the factory constructs the exact same
+     * model on CPU. NNAPI is intentionally not used because Android deprecated NNAPI in API 35.
      */
     fun createDetector(
         context: Context,
@@ -64,19 +55,13 @@ object AnalysisRuntimeFactory {
             "Detector model is not installed: ${spec.assetPath}"
         }
 
-        // Do not probe GPU implicitly. Native delegate failures are not guaranteed to be
-        // catchable at the Kotlin layer, which can produce an "app keeps stopping" symptom.
-        val baseDetector = LiteRtObjectDetector(
-            context = context,
-            assetName = spec.assetPath,
-            accelerator = Accelerator.CPU,
-            inputSize = spec.inputSize,
-            expectedOutput = spec.expectedOutput,
-        )
+        val baseDetector = createBaseDetector(context, spec, Accelerator.GPU)
+            ?: createBaseDetector(context, spec, Accelerator.CPU)
+            ?: error("Unable to initialize LiteRT detector on GPU or CPU")
 
         val detector: ObjectDetector = if (useAppearanceAssociation) {
-            AppearanceAugmentingDetector(baseDetector)
-        } else baseDetector
+            AppearanceAugmentingDetector(baseDetector.first)
+        } else baseDetector.first
 
         var poseRuntime: LiteRtVehicleKeypointEstimator? = null
         var poseBackend: VehicleKeypointEstimator? = null
@@ -87,21 +72,35 @@ object AnalysisRuntimeFactory {
                 poseRuntime = LiteRtVehicleKeypointEstimator(
                     context = context,
                     spec = poseSpec,
-                    accelerator = Accelerator.CPU,
+                    accelerator = baseDetector.second,
                 )
                 poseBackend = poseRuntime
             }
             return DetectorRuntime(
                 detector = detector,
-                accelerator = Accelerator.CPU,
+                accelerator = baseDetector.second,
                 keypoints = poseBackend,
-                closeableDetector = baseDetector,
+                closeableDetector = baseDetector.first,
                 closeableKeypoints = poseRuntime,
             )
         } catch (error: Throwable) {
             runCatching { poseRuntime?.close() }
-            runCatching { baseDetector.close() }
+            runCatching { baseDetector.first.close() }
             throw error
         }
     }
+
+    private fun createBaseDetector(
+        context: Context,
+        spec: DetectorModelRegistry.ModelSpec,
+        accelerator: Accelerator,
+    ): Pair<LiteRtObjectDetector, Accelerator>? = runCatching {
+        LiteRtObjectDetector(
+            context = context,
+            assetName = spec.assetPath,
+            accelerator = accelerator,
+            inputSize = spec.inputSize,
+            expectedOutput = spec.expectedOutput,
+        ) to accelerator
+    }.getOrNull()
 }
