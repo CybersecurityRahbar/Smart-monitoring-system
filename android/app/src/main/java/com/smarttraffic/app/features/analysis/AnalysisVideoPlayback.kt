@@ -45,7 +45,7 @@ import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
 
-@OptIn(UnstableApi::class)
+@UnstableApi
 @Composable
 fun AnalysisVideoPlayback(
     videoUri: Uri,
