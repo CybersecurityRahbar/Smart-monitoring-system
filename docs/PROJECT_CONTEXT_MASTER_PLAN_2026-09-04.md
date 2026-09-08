@@ -1,6 +1,6 @@
 # Smart Traffic Monitoring System — Master Engineering Context
 
-Last verified context update: 2026-09-05
+Last verified context update: 2026-09-08
 Repository: `CybersecurityRahbar/Smart-monitoring-system`
 
 ## 1. Engineering rule
@@ -67,16 +67,16 @@ It is intentionally an estimate for ordinary phone videos where validated camera
 
 Current vehicle-width priors are assumptions, not measured scene geometry: motorcycle 0.85 m, car 1.80 m, van 2.00 m, truck 2.50 m, bus 2.55 m, unknown 1.90 m. Consequently the error bound is deliberately broad and this output must never be described as exact or enforcement-grade.
 
-The current implementation is a pragmatic fallback, not a reproduction of the strongest calibration-free research method. The 2026 paper **Calibration-Free Vehicle Speed Estimation: A Monocular Keypoint-Template Approach** uses a 36-keypoint vehicle template and dynamic homography and reports nonzero error on hundreds of clips; its results support treating calibration-free speed as a benchmarked estimate rather than an exact measurement. Future work can add a dedicated vehicle-keypoint backend and dynamic homography to strengthen this mode. Reference: arXiv 2608.16785 (2026-08-17). citeturn821121academia24
+The current implementation is a pragmatic fallback, not a reproduction of the strongest calibration-free research method. The 2026 paper **Calibration-Free Vehicle Speed Estimation: A Monocular Keypoint-Template Approach** uses a 36-keypoint vehicle template and dynamic homography and reports nonzero error on hundreds of clips; its results support treating calibration-free speed as a benchmarked estimate rather than an exact measurement. Future work can add a dedicated vehicle-keypoint backend and dynamic homography to strengthen this mode. Reference: arXiv 2608.16785 (2026-08-17).
 
-A separate GitHub calibration-free implementation (`damiadedayo/Vehicle-Speed-Estimation`) uses YOLOv8n + DeepSORT and a learned XGBoost speed regression trained from labelled speeds; it is useful as a reference for a future learned calibration-free backend, not as code copied into this Android implementation. citeturn821121search0
+A separate GitHub calibration-free implementation (`damiadedayo/Vehicle-Speed-Estimation`) uses YOLOv8n + DeepSORT and a learned XGBoost speed regression trained from labelled speeds; it is useful as a reference for a future learned calibration-free backend, not as code copied into this Android implementation.
 
-A simpler fixed-camera OpenCV reference (`swhan0329/vehicle_speed_estimation`) uses Lucas–Kanade optical flow, forward/backward consistency and scene-specific `px_to_meter` calibration. Its main lesson is that pixel-to-metre scale is camera/scene-specific unless a physical prior or calibration model is supplied. citeturn647289search11
+A simpler fixed-camera OpenCV reference (`swhan0329/vehicle_speed_estimation`) uses Lucas–Kanade optical flow, forward/backward consistency and scene-specific `px_to_meter` calibration. Its main lesson is that pixel-to-metre scale is camera/scene-specific unless a physical prior or calibration model is supplied.
 
 ## 6. Speed gating and UI semantics
 The automatic gate is visual in both modes, but only calibrated mode has a physical separation in metres.
 
-Recorded-video playback is deterministic analyze-then-replay: analysis runs over the source first, then ExoPlayer starts at natural playback speed with complete track histories. This avoids the visible box latency observed in APK #420 without weakening detector quality.
+Recorded-video playback is intended to be deterministic analyze-then-replay: analysis runs over the source first, then ExoPlayer starts at natural playback speed with complete track histories. This is the required product behavior because it prevents inference latency from changing the apparent speed of the recorded source.
 
 Current speed labels distinguish modes:
 - calibrated: `speed: X km/h ± E`
@@ -100,7 +100,7 @@ Live MJPEG currently uses `LOCAL_MONOTONIC_ARRIVAL`; therefore calibrated physic
 Rejection reasons include:
 `CALIBRATION_INVALID`, `TIMESTAMP_INVALID`, `INSUFFICIENT_OBSERVATIONS`, `INSUFFICIENT_DURATION`, `TRACK_QUALITY_LOW`, `DISCONTINUOUS_TRACK`, `GROUND_GEOMETRY_INCOMPLETE`, `PLAUSIBILITY_REJECTION`, `ROBUST_ESTIMATOR_REJECTION`.
 
-Traffic-rule enforcement remains intentionally stricter: `TrafficRuleEngine` requires a validated physical calibration and therefore does not turn a calibration-free estimate into an enforcement event. fileciteturn388file0L1-L2
+Traffic-rule enforcement remains intentionally stricter: `TrafficRuleEngine` requires a validated physical calibration and therefore does not turn a calibration-free estimate into an enforcement event.
 
 ## 9. Tests added in this cycle
 `CalibrationFreeSpeedEstimatorTest` covers:
@@ -118,72 +118,187 @@ Current evidence limitation: exact live MJPEG event-frame capture and a real ANP
 
 Persistent incident-report storage exists and is tested.
 
-## 11. ANPR
-Required pipeline remains:
-`vehicle -> plate detector -> bounded crop -> perspective correction -> plate-quality gate -> OCR -> normalization -> plate-format validation -> temporal consensus -> evidence`.
+## 11. Radar/video reference review — 2026-09-08
 
-A production Android-deployable plate detector/OCR backend has not yet been installed. The UI must not invent plate text.
+### 11.1 Reference links supplied for this review
+The user supplied three YouTube Shorts as visual references:
 
-## 12. ESP32
-PlatformIO targets:
-- `esp32cam_ai_thinker`, board `esp32cam`
-- `esp32s3_n16r8`, board `esp32-s3-devkitc-1`, 16 MB flash, OPI PSRAM
+- `https://youtube.com/shorts/13nMnmQMK38?si=FKYnWki97sOv4woM`
+- `https://youtube.com/shorts/PT5eoS7ZrxM?si=dGthtskeuQdYfMk6`
+- `https://youtube.com/shorts/AEd7tev39Ns?si=9UFyhuul4R-Ha8Vg`
 
-Endpoints: `/stream`, `/capture`, `/status`, `/control`.
-Wi-Fi: STA then AP fallback.
-AI-Thinker flash control exists; S3 returns unsupported for that control.
-Configured stream is approximately 15 FPS at VGA 640x480.
-Credentials are isolated in ignored `src/secrets.h`; `secrets.example.h` is committed.
+A direct frame-by-frame playback of these Shorts was attempted, but the current web retrieval path returned YouTube cache/fetch failures for the supplied URLs. Therefore this context **must not claim that the assistant visually verified every frame of the three videos**. The visual requirements below are recorded from the user's described reference behavior and from a direct audit of the current repository implementation. They are requirements to match, not fabricated observations from unavailable frames.
 
-ESP32 firmware compilation is not physical hardware validation. The S3 camera pin map is board-revision dependent and must be checked on the exact PCB.
+### 11.2 Required reference behavior for vehicle tracking
+The reference behavior to reproduce is:
+- the recorded video remains the visual master and plays at its native/natural temporal rate;
+- tracking boxes remain attached to the same physical vehicle while the vehicle moves through the frame;
+- IDs do not jump between nearby vehicles merely because one detector frame is missed;
+- the apparent tracker motion is continuous rather than a sequence of slow snapshots;
+- the radar representation advances at the same temporal rate as the video, not at the much slower rate of detector callbacks;
+- each active vehicle has one stable identity and one current position at the current video time;
+- historical trails are time-consistent and should not change duration merely because detector/preview FPS changes;
+- visual state should be generated by interpolation/prediction from timestamped observations, not by drawing whichever observation happened to be published most recently;
+- seeking and replay must render the same vehicle at the corresponding source timestamp instead of retaining stale state from a previous playback position.
 
-## 13. Performance / real-time roadmap
-The recorded-video lab latency issue was solved architecturally by analyze-then-replay. It does not solve live ESP32 real-time operation.
+### 11.3 Root cause found in current implementation
+The repository currently contains a critical architecture contradiction.
 
-Future live benchmark must measure detector median/P95, tracker latency, queue depth, source-to-result timestamp lag, dropped frames, sustained FPS and thermal/memory behavior on the target Android device. Hardware acceleration can become default only after these measurements pass.
+`docs/PROJECT_CONTEXT_MASTER_PLAN_2026-09-04.md` describes recorded playback as analyze-then-replay, but the current code still exposes a video URI during the analysis loop:
 
-Ultralytics YOLO26 documentation lists ByteTrack, BoT-SORT and other tracking backends; BoT-SORT adds camera-motion compensation and optional ReID and is the primary future candidate when moving-camera identity becomes a requirement. citeturn647289search0turn647289search3
+`LocalAnalysisViewModel.AnalysisPreviewObserver` copies each progress preview with `videoUri = uri.toString()` and publishes it before analysis completes.
 
-## 14. Key historical fixes
-Important verified fixes include:
-- Run #331: duplicate local image source, stale `sourceUri`, missing `nativeCanvas`, malformed live VM initialization.
-- `cedc14d789e05962b87d7e993ed88702883ae69d`: stale `droppedFrameCount()` call after property conversion.
-- `a3d83a715eadcc11dbc556b482eda7119314b105`: `FileEvidenceStore.clear(): Unit` fix.
-- `02fc5e83e1c909b36ac64140297cc905cdba991b` and `64e38afc33130571892d068af42023d42029715d`: nullable evidence hash and metadata-only regression.
-- `dbef0c69d18edb2e64b53c8fdf730792625a6799`: stale ViewModel scope in MJPEG source construction and invalid PlatformIO dependency removal.
-- `a4a4666cbc70fc6a0295317a4c71e180d71806f5`: ESP32 `camera_status_t.width/height` compile fix.
-- `1165b2dc64f41f1764f18a1dc50f1e29a452b009`: `UnifiedAnalysisSessionTest` unresolved-result compile fix.
+`AnalysisVideoPlayback` then creates ExoPlayer, calls `prepare()`, sets `playWhenReady = true`, and starts playback. As a result, the player can begin advancing through the source while detector/tracker inference is still behind the player's timeline.
 
-## 15. Current speed-cycle commits
-- `40c05cd55b806a67cae4e5a2598df47323bd857f`: corrected bidirectional automatic-gate velocity sign.
-- `ce12902f9044897a69b7b78b03745ea893eec9a2`: speed-gate test cycle before the nullable assertion correction.
-- `b50bddb9e5bc001bca6a1faee725f12aeedd87d1`: fixed nullable reverse-speed test assertion.
-- `4528ff29878591d7e7eae7a1933903a48db5f677`: added explicit `SpeedEstimateMode` and calibration-free configuration switch.
-- `3a072084039f2fa5592cb08e9a72fe4b58b9e4f5`: initial calibration-free vehicle-width-prior estimator.
-- `a386d8a30d20f8f879bef8f9f64c585504ebbc7b`: integrated calibration-free estimates into the analysis pipeline.
-- `2e47a94d579c08b699b0825860f97623bb40a968`: added calibration-free speed unit tests.
-- `7762e4ec9a5ea8c4aac27e7ef13112a72fd57102`: UI explicitly labels calibration-free speed.
-- `8936c54ce3ec2fea5bfea962b7b491aceeb1c405`: corrected calibration-free motion projection to avoid filtered-index coupling and refreshed local scale per interval.
+The renderer attempts to compensate by asking `cinematicDetection(track, targetTimestampMs)` for a state near the current player PTS, but that track object is only the latest published preview snapshot. For future timestamps beyond the latest analyzed observation, it permits only a 350 ms extrapolation and then returns no detection. This cannot guarantee a real-time visual lock when inference falls behind by more than a small fraction of a second.
 
-## 16. CI status / truth
-Run #442 (`33989677478`) on the earlier speed-gate SHA reached Android compilation and failed at unit-test compilation because a nullable velocity value was asserted as non-null; ESP32, native parity and research math succeeded.
+This is why the failure is not best described as a simple ByteTrack tuning problem. The visual master clock and the analytics availability clock are still allowed to diverge.
 
-Run #447 (`33990283152`) was started after the nullable test fix.
+### 11.4 Radar root cause
+`AnalysisRadarPreview.RadarPanel` currently selects the latest observation matching `preview.frame.index`, otherwise the last observation in the track. It then draws a fixed-count trail using `takeLast(12)` observations.
 
-After subsequent pushes, the newest workflow visible on `main` is Run #450 (`33990470253`) at SHA `8936c54ce3ec2fea5bfea962b7b491aceeb1c405`. At the latest repository check it was still `pending`; therefore the current speed implementation is **not yet CI-certified at this final SHA**.
+No ExoPlayer current-position timestamp is passed into `RadarPanel`. Therefore the radar is not asking: “Where was vehicle ID N at the exact video time the user is currently seeing?” It is asking: “What is the newest state present in the latest preview snapshot?”
 
-Do not distribute a new APK as verified until the final SHA passes Android Build/Test, instrumentation compilation, unit tests, lint, Native C++ parity, Offline Research Math, and both ESP32 targets.
+This makes the radar advance according to analysis publication timing rather than playback time. When the analysis pipeline publishes slowly, the radar visibly lags or moves in large jumps.
 
-## 17. Immediate next engineering targets
-1. Finish CI verification for the current SHA and fix every compile/test/lint failure rather than weakening tests.
-2. Physically validate calibration-free speed on multiple different phone videos and camera/road configurations, comparing estimates against an independent reference speed wherever possible.
-3. Build an accuracy report by vehicle class, perspective, lighting, distance, occlusion and camera angle. Record MAE/MAPE, median absolute error, percentage within ±10/±20 km/h or ±20%, failure rate, and confidence calibration.
-4. Replace the current vehicle-width prior fallback with an optional real vehicle-keypoint backend plus dynamic homography inspired by the 2026 calibration-free research, once an Android-deployable model is selected and benchmarked. citeturn821121academia24
-5. Keep calibrated and calibration-free outputs separate in analytics, evidence and enforcement policies.
+The `takeLast(12)` trail also gives a variable temporal trail length because 12 samples can represent very different durations at different source/detector rates. Trails must instead use a time window (for example, the most recent 1–2 seconds) and be interpolated on the same render clock.
 
-## 18. Non-negotiable honesty constraints
-Never call calibration-free speed “exact”.
-Never invent a metre-per-pixel constant for an arbitrary camera.
-Never convert a calibration-free estimate into an enforcement-grade violation by lowering a threshold.
-Never treat a green CI run as physical-device proof.
-Never weaken detector/model quality solely to hide performance problems; performance improvements must be benchmarked separately from correctness.
+### 11.5 The speed problem is separate but related
+The system has two speed modes and the calibration-free estimator is intentionally labelled as an estimate. That distinction is correct and must remain.
+
+However, even a mathematically valid speed estimate is not useful to the user when the displayed vehicle state is temporally stale. A speed label belongs to the current rendered track state, and its timestamp/quality must correspond to the same vehicle ID and source time being displayed.
+
+For recorded-video replay, speed and vehicle state should therefore be resolved from completed timestamped track history using the player's current source timestamp. A single final `speedEstimates` map is insufficient as a visual time-series representation when speed changes materially during the video.
+
+### 11.6 Required UI behavior derived from the third reference
+The desired information presentation is explicitly **inside the video frame but outside the evidence area**, similar to a professional telemetry overlay rather than a blocking dashboard card.
+
+Required rules:
+- no large black panel in the top-center of the video;
+- no opaque/large translucent card covering vehicles or road evidence;
+- vehicle telemetry should be presented as compact text rows/chips anchored to the left and/or right safe margins of the video;
+- each visible row corresponds to one vehicle ID and its current speed, for example `ID 7  •  52 km/h`;
+- when more vehicles are active, rows are appended downward rather than widening a central panel over the video;
+- the list may be split into a left column and right column when the number of vehicles is large, preserving visibility of the central roadway;
+- rows must be bounded by the video viewport and use a deterministic ordering, such as stable ID or scene position, so the list does not reshuffle every frame;
+- inactive vehicles are removed after a small time-out rather than instantly disappearing on one detector miss;
+- text size and background treatment should be minimal and legible over varied footage; the background should be a small text shadow/outline or very small rounded backing behind each row, not a full-width panel;
+- the primary evidence region remains the video itself; telemetry is subordinate.
+
+### 11.7 Proposed information layout
+The target recorded-video UI should conceptually be:
+
+`VIDEO FRAME`
+
+`LEFT SAFE MARGIN                         RIGHT SAFE MARGIN`
+`ID 03   48 km/h                          ID 07   71 km/h`
+`ID 11   36 km/h                          ID 09   54 km/h`
+`ID 14   --                                ID 12   63 km/h`
+`...                                      ...`
+
+The vehicle boxes/labels stay attached to the actual cars in the roadway. The telemetry list stays attached to the screen edges. The two must not be conflated.
+
+When the list grows beyond the available vertical space, rows should continue downward up to a bounded maximum, then use the second side column, and only then compact/scroll a telemetry area. The video itself must never become a scrolling black list.
+
+### 11.8 Required new rendering architecture
+The desired implementation should use one canonical render timestamp:
+
+`ExoPlayer currentPosition -> source timeline timestamp -> TrackHistoryRenderer -> video overlay + radar projection + telemetry list`
+
+The pipeline should retain timestamped observations for the full recorded media session. Rendering then performs:
+1. choose the current source timestamp;
+2. query each active track history at that timestamp;
+3. interpolate between bracketing observations when available;
+4. use bounded prediction only for a short detector gap;
+5. mark the track temporarily predicted rather than silently switching to a new ID;
+6. remove the visual state only after an explicit time-out;
+7. project the same resolved state into the radar;
+8. derive the same current-state speed/direction/confidence for telemetry.
+
+The renderer must not maintain a second independent tracking algorithm.
+
+### 11.9 Recorded-video synchronization policy
+For local recorded videos, the safest default product flow is:
+
+`Analyze complete source -> retain full timestamped track history -> enable playback -> start ExoPlayer at natural speed -> render everything from player PTS`
+
+This means detector speed is allowed to be faster or slower than real time during preprocessing, but it cannot alter the user's visual playback speed afterward.
+
+The current implementation does not yet enforce this policy because progress previews expose `videoUri` before completion and playback starts immediately. The documentation requirement and the code path therefore must be reconciled before the next UI/tracking fix is considered complete.
+
+### 11.10 Non-zero PTS requirement
+`publishCompletedVideoPreview()` currently reconstructs the final preview with `AnalysisFrame(0L, 0L, ...)`. The source contract already contains `timelineStartTimestampMs`. The final preview must preserve that origin so recorded replay remains correct for files whose first decoder PTS is not zero.
+
+Required invariant:
+`preview.timelineStartTimestampMs == result.source.timelineStartTimestampMs`
+for completed recorded-video analysis.
+
+### 11.11 Required radar behavior after the fix
+The radar is not a second video player and not a second detector. It is a synchronized projection of the same resolved track state.
+
+At every render tick:
+- current player source timestamp is calculated;
+- each track obtains `stateAt(timestamp)`;
+- the video overlay consumes that state;
+- the radar consumes that same state;
+- the telemetry list consumes that same state;
+- all three therefore move together frame-for-frame in source time.
+
+For a vehicle moving continuously from left to right, the radar point must move continuously at the same perceived temporal rate as the car's movement. A faster/slower inference callback must not change that relationship.
+
+### 11.12 Required telemetry identity model
+Every vehicle row must be keyed by `track.id`, not by array position.
+
+Example logical record:
+
+`VehicleTelemetry(trackId=7, timestampMs=T, speedKmh=52.1, speedMode=CALIBRATION_FREE_ESTIMATE, confidence=0.73, state=CONFIRMED)`
+
+The screen list is a view over those records. It must never use “first item/second item” semantics for vehicle identity.
+
+### 11.13 Important distinction: analytics clock vs render clock
+The project must preserve two different concepts:
+- **analytics clock:** timestamps attached to source frames as they are decoded and analysed;
+- **render clock:** the source timestamp currently presented by the player.
+
+The analytics clock may run ahead of or behind wall-clock time. The render clock must follow the video playback position for recorded media.
+
+The job of the renderer is to reconcile these clocks through timestamped history, not by slowing the video and not by using the latest callback as the truth.
+
+### 11.14 Acceptance tests to add before claiming the fix
+A future synchronization/UI fix is not complete until the following are tested:
+
+1. **Natural playback:** video remains at the source playback rate independent of detector throughput.
+2. **Track lock:** a vehicle moving across the frame retains one ID throughout ordinary detector gaps.
+3. **Clock equality:** for several sampled playback timestamps, video overlay, radar and telemetry resolve the same track state timestamp.
+4. **Slow-analysis simulation:** artificially delay inference/publication; vehicle overlay and radar must remain synchronized once playback uses completed history.
+5. **Fast-analysis simulation:** publish analysis far ahead of playback; rendering must still show the vehicle at the player's current time rather than the newest analysed state.
+6. **Seek:** seek backward/forward; overlay, radar and telemetry must jump to the corresponding historical state without stale carry-over.
+7. **Many vehicles:** 1, 4, 8, 12, and 20+ active tracks; telemetry must stack downward and/or split across side columns without covering the video evidence region.
+8. **Detector miss:** short misses must use bounded prediction/interpolation and must not create an immediate replacement ID.
+9. **Trail duration:** radar trail duration remains fixed in seconds when FPS changes.
+10. **Non-zero source origin:** a file with non-zero first PTS renders the first video state at the correct source timestamp.
+11. **Speed timestamp consistency:** displayed speed belongs to the currently rendered track/time state, not merely the final session aggregate.
+
+### 11.15 Current implementation status after this review
+The following are confirmed from direct repository inspection:
+- `AnalysisVideoPlayback.kt` uses ExoPlayer as the video playback clock, performs render-time interpolation and only allows 350 ms extrapolation;
+- `LocalAnalysisViewModel.kt` publishes progress previews with `videoUri` before analysis completes, so playback can start before complete track history exists;
+- `AnalysisRadarPreview.kt` does not receive player position and currently renders from latest preview observations;
+- `AnalysisRadarPreview.kt` draws radar trails using `takeLast(12)` rather than a time-bounded window;
+- `VideoAnalysisHud` is a large black translucent surface (`alpha = 0.74f`) and can show multiple vehicle chips plus explanatory text, which explains why the user experiences it as a black panel covering the video;
+- `publishCompletedVideoPreview()` still resets the final preview frame timestamp to zero and does not carry the authoritative source timeline origin into the constructed `AnalysisFrame`.
+
+### 11.16 Decision recorded for the next implementation cycle
+The next repair cycle must **not** merely tune tracker thresholds or increase preview FPS. The primary fix is architectural:
+
+**Make recorded-video playback authoritative, make timestamped track history authoritative, make video overlay/radar/telemetry three projections of the same `stateAt(playerTimestamp)`, and replace the blocking HUD with side-safe telemetry rows.**
+
+Only after this synchronization foundation is correct should tracker micro-tuning, speed-estimator refinements, or cosmetic polish be evaluated against real-device video samples.
+
+## 12. Working repository baseline
+
+Current main branch head observed during this context update: `bbda96a3eb4bd55e0ddeded7f155683a7aaa8044`.
+
+The most recent code change immediately before this review corrected Kotlin `Pair.first` access in `AnalysisPipelineRunner.speedRejectionReason()`. This was a compile repair; it does not address the newly documented synchronization/UI architecture problem.
+
+The project should not claim the new radar behavior as implemented until the acceptance tests in section 11.14 pass on real recorded-video samples and on a physical Android device.
