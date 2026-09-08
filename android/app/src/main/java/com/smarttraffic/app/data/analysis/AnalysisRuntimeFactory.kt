@@ -4,6 +4,7 @@ import android.content.Context
 import com.google.ai.edge.litert.Accelerator
 import com.smarttraffic.app.data.vision.AppearanceAugmentingDetector
 import com.smarttraffic.app.data.vision.DetectorModelRegistry
+import com.smarttraffic.app.data.vision.DetectorModelSpec
 import com.smarttraffic.app.data.vision.LiteRtObjectDetector
 import com.smarttraffic.app.data.vision.LiteRtVehicleKeypointEstimator
 import com.smarttraffic.app.data.vision.VehiclePoseModelRegistry
@@ -92,7 +93,7 @@ object AnalysisRuntimeFactory {
 
     private fun createBaseDetector(
         context: Context,
-        spec: DetectorModelRegistry.ModelSpec,
+        spec: DetectorModelSpec,
         accelerator: Accelerator,
     ): Pair<LiteRtObjectDetector, Accelerator>? = runCatching {
         LiteRtObjectDetector(
