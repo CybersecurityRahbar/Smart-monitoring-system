@@ -1,41 +1,65 @@
 package com.smarttraffic.app.features.live
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.shadow.Shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.activity.ComponentActivity
 import com.smarttraffic.app.core.AppLanguage
 import com.smarttraffic.app.core.AppSettings
 import com.smarttraffic.app.core.DeviceSettings
 import com.smarttraffic.app.core.VideoDisplayMode
+import com.smarttraffic.app.core.network.Esp32CameraClient
 import com.smarttraffic.app.core.network.MjpegStreamClient
 import com.smarttraffic.app.core.tr
 import com.smarttraffic.app.core.ui.VideoViewport
@@ -44,25 +68,50 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
-import java.net.URL
 
 @Composable
 fun LiveCameraScreen(
     paddingValues: PaddingValues,
     analysisViewModel: LiveAnalysisViewModel = viewModel(),
 ) {
-    var videoMode by remember { mutableStateOf(VideoDisplayMode.FULLSCREEN) }
+    var videoMode by remember { mutableStateOf(VideoDisplayMode.STANDARD) }
+    var fullscreen by remember { mutableStateOf(false) }
     var frame by remember { mutableStateOf<Bitmap?>(null) }
     var streamState by remember { mutableStateOf(StreamState.IDLE) }
     var streamMessage by remember { mutableStateOf<String?>(null) }
+    var captureBusy by remember { mutableStateOf(false) }
+    var controlsOpen by remember { mutableStateOf(false) }
+    var controlBusy by remember { mutableStateOf(false) }
+    var controlMessage by remember { mutableStateOf<String?>(null) }
+    var jpegQuality by remember { mutableIntStateOf(10) }
+    var flashOn by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val client = remember { MjpegStreamClient() }
+    val esp32 = remember { Esp32CameraClient() }
     var streamJob by remember { mutableStateOf<Job?>(null) }
+    val context = LocalContext.current
     val analysisState by analysisViewModel.state.collectAsStateWithLifecycle()
     val analysisPreview by analysisViewModel.preview.collectAsStateWithLifecycle()
 
     val analyzing = analysisState.phase == LiveAnalysisPhase.STARTING || analysisState.phase == LiveAnalysisPhase.RUNNING
+
+    DisposableEffect(fullscreen) {
+        val activity = context as? ComponentActivity
+        val controller = activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView) }
+        if (fullscreen) {
+            controller?.let {
+                it.systemBarsBehavior = WindowInsetsCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                it.hide(WindowInsetsCompat.Type.systemBars())
+            }
+        } else {
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    BackHandler(enabled = fullscreen) { fullscreen = false }
 
     fun startRawStream() {
         streamJob?.cancel()
@@ -73,7 +122,7 @@ fun LiveCameraScreen(
                 client.collect(DeviceSettings.streamUrl()) { bitmap ->
                     frame = bitmap
                     streamState = StreamState.LIVE
-                    streamMessage = liveText("LIVE • ESP32-CAM", "مباشر • ESP32-CAM")
+                    streamMessage = liveText("LIVE • ESP32-S3 camera", "مباشر • كاميرا ESP32-S3")
                 }
                 if (streamState == StreamState.LIVE) {
                     streamState = StreamState.DISCONNECTED
@@ -89,17 +138,184 @@ fun LiveCameraScreen(
     }
 
     fun startAnalysis() {
+        fullscreen = false
         streamJob?.cancel()
         streamJob = null
         frame = null
         analysisViewModel.start()
     }
 
+    fun captureFrame() {
+        if (captureBusy) return
+        captureBusy = true
+        streamMessage = liveText("Capturing still image…", "جارٍ التقاط صورة ثابتة…")
+        scope.launch {
+            runCatching { esp32.capture() }
+                .onSuccess { captured ->
+                    frame = captured
+                    streamState = StreamState.LIVE
+                    streamMessage = liveText("Captured from ESP32-S3", "تم الالتقاط من ESP32-S3")
+                }
+                .onFailure { error ->
+                    streamState = StreamState.ERROR
+                    streamMessage = "${liveText("Capture error", "خطأ في الالتقاط")}: ${error.message ?: "HTTP error"}"
+                }
+            captureBusy = false
+        }
+    }
+
+    fun applyControl(action: suspend () -> String, successText: (String) -> String) {
+        if (controlBusy) return
+        controlBusy = true
+        scope.launch {
+            runCatching { action() }
+                .onSuccess { response ->
+                    controlMessage = successText(response.ifBlank { "OK" })
+                }
+                .onFailure { error ->
+                    controlMessage = "${liveText("Control error", "خطأ في التحكم")}: ${error.message ?: "network error"}"
+                }
+            controlBusy = false
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
+            fullscreen = false
             streamJob?.cancel()
             analysisViewModel.stop()
         }
+    }
+
+    if (fullscreen && analysisPreview == null) {
+        Dialog(
+            onDismissRequest = { fullscreen = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .navigationBarsPadding(),
+            ) {
+                if (frame != null) {
+                    Image(
+                        bitmap = frame!!.asImageBitmap(),
+                        contentDescription = tr("primaryCamera"),
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                } else {
+                    Text(
+                        streamMessage ?: tr("streamNotConnected"),
+                        modifier = Modifier.align(Alignment.Center).graphicsLayer(shadowElevation = 6f),
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+
+                Row(
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    IconButton(
+                        onClick = { fullscreen = false },
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.48f), RoundedCornerShape(50)),
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = liveText("Close", "إغلاق"), tint = Color.White)
+                    }
+                    Text(
+                        text = streamMessage ?: liveText("ESP32-S3 live", "بث ESP32-S3 مباشر"),
+                        color = Color.White,
+                        modifier = Modifier.align(Alignment.CenterVertically).graphicsLayer(shadowElevation = 8f),
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+
+                Row(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(onClick = ::captureFrame, enabled = !captureBusy && !analyzing) {
+                        Icon(Icons.Filled.CameraAlt, null, Modifier.size(18.dp))
+                        Spacer(Modifier.size(6.dp))
+                        Text(tr("capture"))
+                    }
+                    OutlinedButton(onClick = { controlsOpen = true }, enabled = !analyzing) {
+                        Icon(Icons.Filled.SettingsRemote, null, Modifier.size(18.dp))
+                        Spacer(Modifier.size(6.dp))
+                        Text(tr("cameraControl"))
+                    }
+                }
+            }
+        }
+    }
+
+    if (controlsOpen) {
+        AlertDialog(
+            onDismissRequest = { if (!controlBusy) controlsOpen = false },
+            title = { Text(liveText("ESP32 camera control", "تحكم بكاميرا ESP32")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        liveText("These commands use the firmware /control contract.", "هذه الأوامر تستخدم عقد /control الخاص بالـFirmware."),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val target = !flashOn
+                                applyControl(
+                                    action = { esp32.setFlash(target) },
+                                    successText = { response ->
+                                        flashOn = target
+                                        liveText("Flash updated: $response", "تم تحديث الفلاش: $response")
+                                    },
+                                )
+                            },
+                            enabled = !controlBusy,
+                            modifier = Modifier.weight(1f),
+                        ) { Text(if (flashOn) liveText("Flash OFF", "إيقاف الفلاش") else liveText("Flash ON", "تشغيل الفلاش")) }
+                        OutlinedButton(
+                            onClick = {
+                                applyControl(
+                                    action = { esp32.status() },
+                                    successText = { response -> liveText("Status: $response", "الحالة: $response") },
+                                )
+                            },
+                            enabled = !controlBusy,
+                            modifier = Modifier.weight(1f),
+                        ) { Text(liveText("Read status", "قراءة الحالة")) }
+                    }
+                    Text(liveText("JPEG quality: $jpegQuality (5 = higher quality / larger frames)", "جودة JPEG: $jpegQuality (5 = جودة أعلى / إطارات أكبر)"))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(5, 10, 20, 30).forEach { value ->
+                            TextButton(
+                                onClick = {
+                                    applyControl(
+                                        action = { esp32.setJpegQuality(value) },
+                                        successText = { response ->
+                                            jpegQuality = value
+                                            liveText("Quality $value: $response", "الجودة $value: $response")
+                                        },
+                                    )
+                                },
+                                enabled = !controlBusy,
+                                modifier = Modifier.weight(1f),
+                            ) { Text(value.toString()) }
+                        }
+                    }
+                    controlMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { controlsOpen = false }, enabled = !controlBusy) { Text(liveText("Done", "تم")) }
+            },
+        )
     }
 
     Column(
@@ -109,7 +325,7 @@ fun LiveCameraScreen(
         Column {
             Text(tr("live"), style = MaterialTheme.typography.headlineSmall)
             Text(
-                "ESP32-CAM can now feed the same real analysis engine used by the Local Analysis Lab.",
+                liveText("ESP32-S3 camera • local Wi-Fi • live MJPEG", "كاميرا ESP32-S3 • Wi-Fi محلي • بث MJPEG مباشر"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -122,6 +338,7 @@ fun LiveCameraScreen(
                 title = tr("primaryCamera"),
                 mode = videoMode,
                 onModeChange = { videoMode = it },
+                onFullscreenRequested = { fullscreen = true },
                 frame = frame,
                 statusText = streamMessage ?: tr("streamNotConnected"),
                 modifier = Modifier.fillMaxWidth(),
@@ -136,7 +353,7 @@ fun LiveCameraScreen(
             ) {
                 Icon(if (analyzing) Icons.Filled.Stop else Icons.Filled.PlayArrow, null, Modifier.size(18.dp))
                 Spacer(Modifier.size(6.dp))
-                Text(if (analyzing) "Stop analysis" else "Analyze live")
+                Text(if (analyzing) liveText("Stop analysis", "إيقاف التحليل") else liveText("Analyze live", "تحليل مباشر"))
             }
             OutlinedButton(
                 onClick = { analysisViewModel.stop(); startRawStream() },
@@ -149,35 +366,22 @@ fun LiveCameraScreen(
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
-                onClick = {
-                    scope.launch(Dispatchers.IO) {
-                        runCatching { fetchCapture(DeviceSettings.captureUrl()) }
-                            .onSuccess { captured ->
-                                withContext(Dispatchers.Main.immediate) {
-                                    frame = captured
-                                    streamState = StreamState.LIVE
-                                    streamMessage = liveText("Captured frame", "تم التقاط الإطار")
-                                }
-                            }
-                            .onFailure { error ->
-                                withContext(Dispatchers.Main.immediate) {
-                                    streamState = StreamState.ERROR
-                                    streamMessage = "${liveText("Capture error", "خطأ في الالتقاط")}: ${error.message ?: "HTTP error"}"
-                                }
-                            }
-                    }
-                },
-                enabled = !analyzing,
+                onClick = ::captureFrame,
+                enabled = !analyzing && !captureBusy,
                 modifier = Modifier.weight(1f),
             ) {
-                Icon(Icons.Filled.CameraAlt, null, Modifier.size(18.dp)); Spacer(Modifier.size(6.dp)); Text(tr("capture"))
+                Icon(Icons.Filled.CameraAlt, null, Modifier.size(18.dp))
+                Spacer(Modifier.size(6.dp))
+                Text(tr("capture"))
             }
             OutlinedButton(
-                onClick = { streamMessage = liveText("Camera control endpoint is not defined by the current ESP32 contract.", "واجهة تحكم الكاميرا غير معرفة في عقد ESP32 الحالي.") },
+                onClick = { controlsOpen = true },
                 enabled = !analyzing,
                 modifier = Modifier.weight(1f),
             ) {
-                Icon(Icons.Filled.SettingsRemote, null, Modifier.size(18.dp)); Spacer(Modifier.size(6.dp)); Text(tr("cameraControl"))
+                Icon(Icons.Filled.SettingsRemote, null, Modifier.size(18.dp))
+                Spacer(Modifier.size(6.dp))
+                Text(tr("cameraControl"))
             }
         }
 
@@ -188,23 +392,6 @@ fun LiveCameraScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-    }
-}
-
-private suspend fun fetchCapture(urlString: String): Bitmap {
-    val connection = (URL(urlString).openConnection() as HttpURLConnection).apply {
-        connectTimeout = 3000
-        readTimeout = 5000
-        requestMethod = "GET"
-        useCaches = false
-        doInput = true
-    }
-    return try {
-        check(connection.responseCode in 200..299) { "HTTP ${connection.responseCode}" }
-        val bitmap = connection.inputStream.use { BitmapFactory.decodeStream(it) }
-        requireNotNull(bitmap) { "Capture endpoint returned invalid image data" }
-    } finally {
-        connection.disconnect()
     }
 }
 
