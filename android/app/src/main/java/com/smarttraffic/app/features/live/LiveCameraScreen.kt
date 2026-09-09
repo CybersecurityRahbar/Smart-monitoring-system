@@ -1,11 +1,11 @@
 package com.smarttraffic.app.features.live
 
 import android.graphics.Bitmap
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -32,7 +32,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -43,7 +42,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -54,7 +52,6 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.activity.ComponentActivity
 import com.smarttraffic.app.core.AppLanguage
 import com.smarttraffic.app.core.AppSettings
 import com.smarttraffic.app.core.DeviceSettings
@@ -64,10 +61,8 @@ import com.smarttraffic.app.core.network.MjpegStreamClient
 import com.smarttraffic.app.core.tr
 import com.smarttraffic.app.core.ui.VideoViewport
 import com.smarttraffic.app.features.analysis.AnalysisRadarPreview
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @Composable
 fun LiveCameraScreen(
@@ -86,7 +81,7 @@ fun LiveCameraScreen(
     var jpegQuality by remember { mutableIntStateOf(10) }
     var flashOn by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val client = remember { MjpegStreamClient() }
+    val streamClient = remember { MjpegStreamClient() }
     val esp32 = remember { Esp32CameraClient() }
     var streamJob by remember { mutableStateOf<Job?>(null) }
     val context = LocalContext.current
@@ -119,7 +114,7 @@ fun LiveCameraScreen(
         streamMessage = liveText("Connecting to stream…", "جارٍ الاتصال بالبث…")
         streamJob = scope.launch {
             try {
-                client.collect(DeviceSettings.streamUrl()) { bitmap ->
+                streamClient.collect(DeviceSettings.streamUrl()) { bitmap ->
                     frame = bitmap
                     streamState = StreamState.LIVE
                     streamMessage = liveText("LIVE • ESP32-S3 camera", "مباشر • كاميرا ESP32-S3")
@@ -137,6 +132,20 @@ fun LiveCameraScreen(
         }
     }
 
+    suspend fun pauseRawStream() {
+        streamJob?.cancel()
+        streamJob = null
+        if (streamState == StreamState.LIVE || streamState == StreamState.CONNECTING) {
+            streamState = StreamState.CONNECTING
+            streamMessage = liveText("Pausing stream for camera command…", "جارٍ إيقاف البث مؤقتًا لتنفيذ أمر الكاميرا…")
+            kotlinx.coroutines.delay(80L)
+        }
+    }
+
+    fun reconnectRawStreamIfNeeded() {
+        if (!analyzing && streamState != StreamState.ERROR) startRawStream()
+    }
+
     fun startAnalysis() {
         fullscreen = false
         streamJob?.cancel()
@@ -146,10 +155,11 @@ fun LiveCameraScreen(
     }
 
     fun captureFrame() {
-        if (captureBusy) return
+        if (captureBusy || analyzing) return
         captureBusy = true
-        streamMessage = liveText("Capturing still image…", "جارٍ التقاط صورة ثابتة…")
         scope.launch {
+            val shouldReconnect = streamState == StreamState.LIVE || streamState == StreamState.CONNECTING
+            pauseRawStream()
             runCatching { esp32.capture() }
                 .onSuccess { captured ->
                     frame = captured
@@ -161,13 +171,16 @@ fun LiveCameraScreen(
                     streamMessage = "${liveText("Capture error", "خطأ في الالتقاط")}: ${error.message ?: "HTTP error"}"
                 }
             captureBusy = false
+            if (shouldReconnect && streamState != StreamState.ERROR) reconnectRawStreamIfNeeded()
         }
     }
 
     fun applyControl(action: suspend () -> String, successText: (String) -> String) {
-        if (controlBusy) return
+        if (controlBusy || analyzing) return
         controlBusy = true
         scope.launch {
+            val shouldReconnect = streamState == StreamState.LIVE || streamState == StreamState.CONNECTING
+            pauseRawStream()
             runCatching { action() }
                 .onSuccess { response ->
                     controlMessage = successText(response.ifBlank { "OK" })
@@ -176,6 +189,7 @@ fun LiveCameraScreen(
                     controlMessage = "${liveText("Control error", "خطأ في التحكم")}: ${error.message ?: "network error"}"
                 }
             controlBusy = false
+            if (shouldReconnect && controlMessage?.contains("error", ignoreCase = true) != true) reconnectRawStreamIfNeeded()
         }
     }
 
@@ -190,29 +204,26 @@ fun LiveCameraScreen(
     if (fullscreen && analysisPreview == null) {
         Dialog(
             onDismissRequest = { fullscreen = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+            properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(Color.Black)
-                    .navigationBarsPadding(),
+                    .background(Color.Black),
             ) {
-                if (frame != null) {
+                frame?.let {
                     Image(
-                        bitmap = frame!!.asImageBitmap(),
+                        bitmap = it.asImageBitmap(),
                         contentDescription = tr("primaryCamera"),
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Fit,
                     )
-                } else {
-                    Text(
-                        streamMessage ?: tr("streamNotConnected"),
-                        modifier = Modifier.align(Alignment.Center).graphicsLayer(shadowElevation = 6f),
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                }
+                } ?: Text(
+                    streamMessage ?: tr("streamNotConnected"),
+                    modifier = Modifier.align(Alignment.Center).graphicsLayer(shadowElevation = 6f),
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                )
 
                 Row(
                     Modifier
@@ -262,7 +273,7 @@ fun LiveCameraScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        liveText("These commands use the firmware /control contract.", "هذه الأوامر تستخدم عقد /control الخاص بالـFirmware."),
+                        liveText("Commands use the firmware /control contract. The live MJPEG stream pauses for each command.", "الأوامر تستخدم عقد /control الخاص بالـFirmware، ويتوقف بث MJPEG لحظيًا لكل أمر."),
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
