@@ -47,6 +47,7 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
     var streamPath by remember { mutableStateOf(DeviceSettings.streamPath) }
     var capturePath by remember { mutableStateOf(DeviceSettings.capturePath) }
     var statusPath by remember { mutableStateOf(DeviceSettings.statusPath) }
+    var controlPath by remember { mutableStateOf(DeviceSettings.controlPath) }
     var connectionState by remember { mutableStateOf(ConnectionState.IDLE) }
     var resultMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -60,6 +61,7 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
             newStreamPath = streamPath,
             newCapturePath = capturePath,
             newStatusPath = statusPath,
+            newControlPath = controlPath,
         )
     }
 
@@ -73,7 +75,7 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
         }
 
         Text(
-            text = deviceText("Configure the real ESP32-CAM endpoint. Nothing is hard-coded beyond the initial prototype defaults.", "اضبط نقطة اتصال ESP32-CAM الفعلية. لا يوجد عنوان ثابت داخل التطبيق باستثناء القيم الافتراضية الأولية."),
+            text = deviceText("Configure the real ESP32-CAM endpoint. The default profile matches the Smart Traffic firmware contract.", "اضبط نقطة اتصال ESP32-CAM الفعلية. الإعداد الافتراضي يطابق عقد Firmware الخاص بـ Smart Traffic."),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -98,29 +100,15 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
                     textStyle = technicalTextStyle,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                endpointField(
-                    value = streamPath,
-                    label = deviceText("Stream endpoint", "مسار البث"),
-                    onValueChange = { streamPath = it },
-                    textStyle = technicalTextStyle,
-                )
-                endpointField(
-                    value = capturePath,
-                    label = deviceText("Capture endpoint", "مسار الالتقاط"),
-                    onValueChange = { capturePath = it },
-                    textStyle = technicalTextStyle,
-                )
-                endpointField(
-                    value = statusPath,
-                    label = deviceText("Status endpoint", "مسار الحالة"),
-                    onValueChange = { statusPath = it },
-                    textStyle = technicalTextStyle,
-                )
+                endpointField(streamPath, deviceText("Stream endpoint", "مسار البث"), { streamPath = it }, technicalTextStyle)
+                endpointField(capturePath, deviceText("Capture endpoint", "مسار الالتقاط"), { capturePath = it }, technicalTextStyle)
+                endpointField(statusPath, deviceText("Status endpoint", "مسار الحالة"), { statusPath = it }, technicalTextStyle)
+                endpointField(controlPath, deviceText("Control endpoint", "مسار التحكم"), { controlPath = it }, technicalTextStyle)
 
                 Text(
                     text = deviceText(
-                        "Each endpoint is technical data and is displayed left-to-right for readability, even when the app language is Arabic.",
-                        "هذه المسارات بيانات تقنية، لذلك تُعرض من اليسار إلى اليمين لسهولة القراءة حتى عند استخدام العربية.",
+                        "The application uses /capture for still images and /control?action=... for camera controls.",
+                        "يستخدم التطبيق /capture للصور الثابتة و /control?action=... للتحكم بالكاميرا.",
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -158,6 +146,7 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
                             streamPath = "/stream"
                             capturePath = "/capture"
                             statusPath = "/status"
+                            controlPath = "/control"
                             saveProfile()
                             connectionState = ConnectionState.IDLE
                             resultMessage = deviceText("Defaults restored", "تمت استعادة القيم الافتراضية")
@@ -183,8 +172,8 @@ fun DevicesScreen(paddingValues: androidx.compose.foundation.layout.PaddingValue
 
         Text(
             text = deviceText(
-                "The profile is stored locally and can later drive stream, capture, status and control calls. The first hardware milestone remains local Wi-Fi only.",
-                "يُحفظ ملف الجهاز محليًا وسيقود لاحقًا طلبات البث والالتقاط والحالة والتحكم. المرحلة الأولى من العتاد تبقى ضمن شبكة Wi-Fi المحلية فقط.",
+                "The profile is stored locally and drives stream, capture, status and control calls. The first hardware milestone remains local Wi-Fi only.",
+                "يُحفظ ملف الجهاز محليًا ويقود طلبات البث والالتقاط والحالة والتحكم. المرحلة الأولى من العتاد تبقى ضمن شبكة Wi-Fi المحلية فقط.",
             ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
