@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -12,7 +14,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -142,10 +143,6 @@ fun LiveCameraScreen(
         }
     }
 
-    fun reconnectRawStreamIfNeeded() {
-        if (!analyzing && streamState != StreamState.ERROR) startRawStream()
-    }
-
     fun startAnalysis() {
         fullscreen = false
         streamJob?.cancel()
@@ -158,20 +155,18 @@ fun LiveCameraScreen(
         if (captureBusy || analyzing) return
         captureBusy = true
         scope.launch {
-            val shouldReconnect = streamState == StreamState.LIVE || streamState == StreamState.CONNECTING
             pauseRawStream()
             runCatching { esp32.capture() }
                 .onSuccess { captured ->
                     frame = captured
-                    streamState = StreamState.LIVE
-                    streamMessage = liveText("Captured from ESP32-S3", "تم الالتقاط من ESP32-S3")
+                    streamState = StreamState.DISCONNECTED
+                    streamMessage = liveText("Captured from ESP32-S3 • press Connect stream to resume", "تم الالتقاط من ESP32-S3 • اضغط اتصال بالبث للمتابعة")
                 }
                 .onFailure { error ->
                     streamState = StreamState.ERROR
                     streamMessage = "${liveText("Capture error", "خطأ في الالتقاط")}: ${error.message ?: "HTTP error"}"
                 }
             captureBusy = false
-            if (shouldReconnect && streamState != StreamState.ERROR) reconnectRawStreamIfNeeded()
         }
     }
 
@@ -181,15 +176,17 @@ fun LiveCameraScreen(
         scope.launch {
             val shouldReconnect = streamState == StreamState.LIVE || streamState == StreamState.CONNECTING
             pauseRawStream()
+            var success = false
             runCatching { action() }
                 .onSuccess { response ->
+                    success = true
                     controlMessage = successText(response.ifBlank { "OK" })
                 }
                 .onFailure { error ->
                     controlMessage = "${liveText("Control error", "خطأ في التحكم")}: ${error.message ?: "network error"}"
                 }
             controlBusy = false
-            if (shouldReconnect && controlMessage?.contains("error", ignoreCase = true) != true) reconnectRawStreamIfNeeded()
+            if (shouldReconnect && success) startRawStream()
         }
     }
 
@@ -206,62 +203,17 @@ fun LiveCameraScreen(
             onDismissRequest = { fullscreen = false },
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black),
-            ) {
-                frame?.let {
-                    Image(
-                        bitmap = it.asImageBitmap(),
-                        contentDescription = tr("primaryCamera"),
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit,
-                    )
-                } ?: Text(
-                    streamMessage ?: tr("streamNotConnected"),
-                    modifier = Modifier.align(Alignment.Center).graphicsLayer(shadowElevation = 6f),
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
+            Column(Modifier.fillMaxSize().background(Color.Black)) {
+                BoxFullscreenVideo(
+                    frame = frame,
+                    title = tr("primaryCamera"),
+                    message = streamMessage,
+                    onClose = { fullscreen = false },
+                    onCapture = ::captureFrame,
+                    onControl = { controlsOpen = true },
+                    captureBusy = captureBusy,
+                    controlsEnabled = !analyzing,
                 )
-
-                Row(
-                    Modifier
-                        .align(Alignment.TopStart)
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    IconButton(
-                        onClick = { fullscreen = false },
-                        modifier = Modifier.background(Color.Black.copy(alpha = 0.48f), RoundedCornerShape(50)),
-                    ) {
-                        Icon(Icons.Filled.Close, contentDescription = liveText("Close", "إغلاق"), tint = Color.White)
-                    }
-                    Text(
-                        text = streamMessage ?: liveText("ESP32-S3 live", "بث ESP32-S3 مباشر"),
-                        color = Color.White,
-                        modifier = Modifier.align(Alignment.CenterVertically).graphicsLayer(shadowElevation = 8f),
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
-
-                Row(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedButton(onClick = ::captureFrame, enabled = !captureBusy && !analyzing) {
-                        Icon(Icons.Filled.CameraAlt, null, Modifier.size(18.dp))
-                        Spacer(Modifier.size(6.dp))
-                        Text(tr("capture"))
-                    }
-                    OutlinedButton(onClick = { controlsOpen = true }, enabled = !analyzing) {
-                        Icon(Icons.Filled.SettingsRemote, null, Modifier.size(18.dp))
-                        Spacer(Modifier.size(6.dp))
-                        Text(tr("cameraControl"))
-                    }
-                }
             }
         }
     }
@@ -330,7 +282,11 @@ fun LiveCameraScreen(
     }
 
     Column(
-        Modifier.fillMaxSize().padding(paddingValues).padding(horizontal = 16.dp, vertical = 12.dp),
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(paddingValues)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Column {
@@ -402,6 +358,72 @@ fun LiveCameraScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+@Composable
+private fun BoxFullscreenVideo(
+    frame: Bitmap?,
+    title: String,
+    message: String?,
+    onClose: () -> Unit,
+    onCapture: () -> Unit,
+    onControl: () -> Unit,
+    captureBusy: Boolean,
+    controlsEnabled: Boolean,
+) {
+    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()) {
+        frame?.let {
+            Image(
+                bitmap = it.asImageBitmap(),
+                contentDescription = title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+            )
+        } ?: Text(
+            message ?: "",
+            modifier = Modifier.align(Alignment.Center).graphicsLayer(shadowElevation = 6f),
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium,
+        )
+
+        Row(
+            Modifier
+                .align(Alignment.TopStart)
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.background(Color.Black.copy(alpha = 0.48f), RoundedCornerShape(50)),
+            ) {
+                Icon(Icons.Filled.Close, contentDescription = liveText("Close", "إغلاق"), tint = Color.White)
+            }
+            Text(
+                text = message ?: liveText("ESP32-S3 live", "بث ESP32-S3 مباشر"),
+                color = Color.White,
+                modifier = Modifier.align(Alignment.CenterVertically).graphicsLayer(shadowElevation = 8f),
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+
+        Row(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(onClick = onCapture, enabled = !captureBusy && controlsEnabled) {
+                Icon(Icons.Filled.CameraAlt, null, Modifier.size(18.dp))
+                Spacer(Modifier.size(6.dp))
+                Text(tr("capture"))
+            }
+            OutlinedButton(onClick = onControl, enabled = controlsEnabled) {
+                Icon(Icons.Filled.SettingsRemote, null, Modifier.size(18.dp))
+                Spacer(Modifier.size(6.dp))
+                Text(tr("cameraControl"))
+            }
         }
     }
 }
