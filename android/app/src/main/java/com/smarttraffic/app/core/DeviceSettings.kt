@@ -13,6 +13,7 @@ object DeviceSettings {
     private const val STREAM_PATH = "stream_path"
     private const val CAPTURE_PATH = "capture_path"
     private const val STATUS_PATH = "status_path"
+    private const val CONTROL_PATH = "control_path"
 
     var host by mutableStateOf("192.168.4.1")
         private set
@@ -24,6 +25,8 @@ object DeviceSettings {
         private set
     var statusPath by mutableStateOf("/status")
         private set
+    var controlPath by mutableStateOf("/control")
+        private set
 
     fun load(context: Context) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -32,6 +35,7 @@ object DeviceSettings {
         streamPath = normalizePath(prefs.getString(STREAM_PATH, streamPath) ?: streamPath)
         capturePath = normalizePath(prefs.getString(CAPTURE_PATH, capturePath) ?: capturePath)
         statusPath = normalizePath(prefs.getString(STATUS_PATH, statusPath) ?: statusPath)
+        controlPath = normalizePath(prefs.getString(CONTROL_PATH, controlPath) ?: controlPath)
     }
 
     fun save(
@@ -41,18 +45,21 @@ object DeviceSettings {
         newStreamPath: String,
         newCapturePath: String,
         newStatusPath: String,
+        newControlPath: String = controlPath,
     ) {
         val cleanHost = newHost.trim().removePrefix("http://").removePrefix("https://").trimEnd('/')
         val cleanPort = newHttpPort.coerceIn(1, 65535)
         val cleanStream = normalizePath(newStreamPath)
         val cleanCapture = normalizePath(newCapturePath)
         val cleanStatus = normalizePath(newStatusPath)
+        val cleanControl = normalizePath(newControlPath)
 
         host = cleanHost
         httpPort = cleanPort
         streamPath = cleanStream
         capturePath = cleanCapture
         statusPath = cleanStatus
+        controlPath = cleanControl
 
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString(HOST, host)
@@ -60,6 +67,7 @@ object DeviceSettings {
             .putString(STREAM_PATH, streamPath)
             .putString(CAPTURE_PATH, capturePath)
             .putString(STATUS_PATH, statusPath)
+            .putString(CONTROL_PATH, controlPath)
             .apply()
     }
 
@@ -67,6 +75,7 @@ object DeviceSettings {
     fun streamUrl(): String = baseUrl() + streamPath
     fun captureUrl(): String = baseUrl() + capturePath
     fun statusUrl(): String = baseUrl() + statusPath
+    fun controlUrl(): String = baseUrl() + controlPath
 
     private fun normalizePath(value: String): String {
         val trimmed = value.trim()
