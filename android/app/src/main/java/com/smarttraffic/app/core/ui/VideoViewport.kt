@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -46,16 +47,16 @@ fun VideoViewport(
     showPipAction: Boolean = true,
     frame: Bitmap? = null,
     statusText: String? = null,
+    onFullscreenRequested: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
-    val height = when (mode) {
-        VideoDisplayMode.FULLSCREEN -> 460.dp
-        VideoDisplayMode.STANDARD -> 280.dp
-        VideoDisplayMode.COMPACT -> 180.dp
+    val viewportModifier = when (mode) {
+        VideoDisplayMode.COMPACT -> Modifier.fillMaxWidth().height(180.dp)
+        VideoDisplayMode.STANDARD, VideoDisplayMode.FULLSCREEN -> Modifier.fillMaxWidth().aspectRatio(16f / 9f)
     }
 
     Card(
-        modifier = modifier.fillMaxWidth().height(height),
+        modifier = modifier.then(viewportModifier),
         shape = RoundedCornerShape(26.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Black),
     ) {
@@ -79,14 +80,16 @@ fun VideoViewport(
             Surface(
                 modifier = Modifier.align(Alignment.TopCenter).padding(9.dp),
                 shape = RoundedCornerShape(15.dp),
-                color = Color.Black.copy(alpha = 0.76f),
+                color = Color.Black.copy(alpha = 0.58f),
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 5.dp, vertical = 5.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    ViewModeChip(tr("full"), mode == VideoDisplayMode.FULLSCREEN) { onModeChange(VideoDisplayMode.FULLSCREEN) }
+                    ViewModeChip(tr("full"), mode == VideoDisplayMode.FULLSCREEN) {
+                        if (onFullscreenRequested != null) onFullscreenRequested() else onModeChange(VideoDisplayMode.FULLSCREEN)
+                    }
                     ViewModeChip(tr("standard"), mode == VideoDisplayMode.STANDARD) { onModeChange(VideoDisplayMode.STANDARD) }
                     ViewModeChip(tr("compact"), mode == VideoDisplayMode.COMPACT) { onModeChange(VideoDisplayMode.COMPACT) }
                     if (showPipAction) {
@@ -102,7 +105,7 @@ fun VideoViewport(
             Surface(
                 modifier = Modifier.align(Alignment.BottomStart).padding(11.dp),
                 shape = RoundedCornerShape(14.dp),
-                color = Color.Black.copy(alpha = 0.74f),
+                color = Color.Black.copy(alpha = 0.54f),
             ) {
                 Row(
                     Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
