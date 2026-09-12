@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Camera housing -->
+    <path
+        android:fillColor="#10283A"
+        android:pathData="M24,34 L31,26 C32.5,24.3 34.8,23.3 37.2,23.3 L70.8,23.3 C73.2,23.3 75.5,24.3 77,26 L84,34 L84,69.5 C84,73.4 80.9,76.5 77,76.5 L31,76.5 C27.1,76.5 24,73.4 24,69.5 Z" />
+    <path
+        android:fillColor="#39FF14"
+        android:pathData="M41,29 L67,29 C68.7,29 70,30.3 70,32 L70,34 L38,34 L38,32 C38,30.3 39.3,29 41,29 Z" />
+
+    <!-- Lens outer rings -->
+    <path
+        android:fillColor="#07131F"
+        android:pathData="M54,34 A20,20 0 1,0 54,74 A20,20 0 1,0 54,34 Z" />
+    <path
+        android:fillColor="#0C3150"
+        android:pathData="M54,38 A16,16 0 1,0 54,70 A16,16 0 1,0 54,38 Z" />
+    <path
+        android:fillColor="#12C2FF"
+        android:pathData="M54,43 A11,11 0 1,0 54,65 A11,11 0 1,0 54,43 Z" />
+    <path
+        android:fillColor="#07131F"
+        android:pathData="M54,47 A7,7 0 1,0 54,61 A7,7 0 1,0 54,47 Z" />
+    <path
+        android:fillColor="#39FF14"
+        android:pathData="M50.5,49.5 A3.5,3.5 0 1,0 57.5,49.5 A3.5,3.5 0 1,0 50.5,49.5 Z" />
+
+    <!-- Radar sweep and arcs -->
+    <path
+        android:strokeColor="#39FF14"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M14,78 C19,49 33,34 54,31" />
+    <path
+        android:strokeColor="#39FF14"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M94,78 C89,49 75,34 54,31" />
+    <path
+        android:strokeColor="#0FC8FF"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M22,82 C27,60 38,48 54,43" />
+    <path
+        android:strokeColor="#0FC8FF"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M86,82 C81,60 70,48 54,43" />
+
+    <!-- Traffic lane -->
+    <path
+        android:fillColor="#0B2232"
+        android:pathData="M43,90 L51,57 L57,57 L65,90 Z" />
+    <path
+        android:fillColor="#39FF14"
+        android:pathData="M52.2,84 L55.8,84 L55.2,75 L52.8,75 Z" />
+    <path
+        android:fillColor="#39FF14"
+        android:pathData="M51.5,69 L56.5,69 L56,63 L52,63 Z" />
+
+    <!-- Center vehicle tracking target -->
+    <path
+        android:strokeColor="#39FF14"
+        android:strokeWidth="2.4"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M38,80 L38,71 L46,71 M62,71 L70,71 L70,80 M38,80 L38,86 L46,86 M70,80 L70,86 L62,86" />
+    <path
+        android:fillColor="#0D3245"
+        android:pathData="M47,75 L61,75 L64,82 L44,82 Z" />
+    <path
+        android:fillColor="#39FF14"
+        android:pathData="M48,78 L60,78 L61.5,81 L46.5,81 Z" />
+
+    <!-- Radar targets -->
+    <path android:fillColor="#39FF14" android:pathData="M24,60 A2.2,2.2 0 1,0 28.4,60 A2.2,2.2 0 1,0 24,60 Z" />
+    <path android:fillColor="#39FF14" android:pathData="M79.6,58 A2.2,2.2 0 1,0 84,58 A2.2,2.2 0 1,0 79.6,58 Z" />
+    <path android:fillColor="#0FC8FF" android:pathData="M30,46 A1.8,1.8 0 1,0 33.6,46 A1.8,1.8 0 1,0 30,46 Z" />
+    <path android:fillColor="#0FC8FF" android:pathData="M74.4,46 A1.8,1.8 0 1,0 78,46 A1.8,1.8 0 1,0 74.4,46 Z" />
+</vector>
