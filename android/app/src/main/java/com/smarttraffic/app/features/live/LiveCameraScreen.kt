@@ -2,7 +2,7 @@ package com.smarttraffic.app.features.live
 
 import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
+import androidx.activity.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
@@ -95,10 +95,7 @@ fun LiveCameraScreen(
         val activity = context as? ComponentActivity
         val controller = activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView) }
         if (fullscreen) {
-            controller?.let {
-                it.systemBarsBehavior = WindowInsetsCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                it.hide(WindowInsetsCompat.Type.systemBars())
-            }
+            controller?.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             controller?.show(WindowInsetsCompat.Type.systemBars())
         }
