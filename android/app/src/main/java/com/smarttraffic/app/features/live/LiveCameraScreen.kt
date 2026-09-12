@@ -2,7 +2,7 @@ package com.smarttraffic.app.features.live
 
 import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
-import androidx.activity.BackHandler
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
