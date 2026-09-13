@@ -30,6 +30,14 @@ class Esp32CameraClient(
         getText(buildControlUrl("quality", mapOf("value" to quality.toString())))
     }
 
+    suspend fun setFrameSize(value: String): String = withContext(Dispatchers.IO) {
+        val normalized = value.trim().uppercase()
+        require(normalized in setOf("VGA", "SVGA", "XGA", "HD", "FHD", "QHD", "5MP")) {
+            "Unsupported frame size: $value"
+        }
+        getText(buildControlUrl("framesize", mapOf("value" to normalized)))
+    }
+
     suspend fun status(): String = withContext(Dispatchers.IO) {
         getText(DeviceSettings.statusUrl())
     }
