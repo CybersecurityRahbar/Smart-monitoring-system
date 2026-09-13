@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import com.smarttraffic.app.core.AppLanguage
 import com.smarttraffic.app.core.AppSettings
 import com.smarttraffic.app.core.DeviceSettings
+import com.smarttraffic.app.core.MediaStorageSettings
 import com.smarttraffic.app.ui.theme.SmartTrafficTheme
 
 class MainActivity : ComponentActivity() {
@@ -24,16 +25,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         AppSettings.load(applicationContext)
         DeviceSettings.load(applicationContext)
+        MediaStorageSettings.load(applicationContext)
         setContent {
-            val direction = if (AppSettings.language == AppLanguage.ARABIC) {
-                LayoutDirection.Rtl
-            } else {
-                LayoutDirection.Ltr
-            }
+            val direction = if (AppSettings.language == AppLanguage.ARABIC) LayoutDirection.Rtl else LayoutDirection.Ltr
             CompositionLocalProvider(LocalLayoutDirection provides direction) {
-                SmartTrafficTheme(darkTheme = AppSettings.darkMode) {
-                    SmartTrafficApp()
-                }
+                SmartTrafficTheme(darkTheme = AppSettings.darkMode) { SmartTrafficApp() }
             }
         }
     }
@@ -41,24 +37,17 @@ class MainActivity : ComponentActivity() {
     fun enterVideoPictureInPicture() {
         pipArmed = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val params = PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(16, 9))
-                .build()
+            val params = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build()
             enterPictureInPictureMode(params)
         }
     }
 
     override fun onUserLeaveHint() {
-        if (pipArmed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            enterVideoPictureInPicture()
-        }
+        if (pipArmed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) enterVideoPictureInPicture()
         super.onUserLeaveHint()
     }
 
-    override fun onPictureInPictureModeChanged(
-        isInPictureInPictureMode: Boolean,
-        newConfig: android.content.res.Configuration,
-    ) {
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         if (!isInPictureInPictureMode) pipArmed = false
     }
