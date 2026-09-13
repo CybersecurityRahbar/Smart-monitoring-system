@@ -2,10 +2,11 @@ package com.smarttraffic.app.core.network
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import kotlinx.coroutines.Job
 import java.io.BufferedInputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.coroutineContext
 
 /** Lightweight dependency-free MJPEG client for local ESP32-CAM streams. */
 class MjpegStreamClient(
@@ -13,8 +14,6 @@ class MjpegStreamClient(
     private val readTimeoutMs: Int = 7000,
     private val maxJpegBytes: Int = 2_000_000,
 ) {
-    private val activeConnection = AtomicReference<HttpURLConnection?>(null)
-
     suspend fun collect(
         urlString: String,
         onFrame: suspend (Bitmap) -> Unit,
@@ -26,7 +25,9 @@ class MjpegStreamClient(
             useCaches = false
             doInput = true
         }
-        activeConnection.set(connection)
+        val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
+            connection.disconnect()
+        }
 
         try {
             if (connection.responseCode !in 200..299) {
@@ -60,17 +61,9 @@ class MjpegStreamClient(
                 }
             }
         } finally {
-            if (activeConnection.compareAndSet(connection, null)) {
-                connection.disconnect()
-            } else {
-                connection.disconnect()
-            }
+            cancellationHandle?.dispose()
+            connection.disconnect()
         }
-    }
-
-    /** Immediately closes the current HTTP stream, allowing the ESP32 to accept another request. */
-    fun disconnect() {
-        activeConnection.getAndSet(null)?.disconnect()
     }
 
     private fun parseBoundary(contentType: String): String? {
