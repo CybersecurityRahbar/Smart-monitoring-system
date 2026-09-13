@@ -17,30 +17,25 @@ class Esp32CameraClient(
     private val connectTimeoutMs: Int = 3000,
     private val readTimeoutMs: Int = 5000,
 ) {
-    suspend fun capture(): Bitmap = withContext(Dispatchers.IO) {
-        getBitmap(DeviceSettings.captureUrl())
-    }
+    suspend fun capture(): Bitmap = withContext(Dispatchers.IO) { getBitmap(DeviceSettings.captureUrl()) }
 
     suspend fun setFlash(on: Boolean): String = withContext(Dispatchers.IO) {
         getText(buildControlUrl("flash", mapOf("on" to if (on) "1" else "0")))
     }
 
     suspend fun setJpegQuality(value: Int): String = withContext(Dispatchers.IO) {
-        val quality = value.coerceIn(5, 63)
-        getText(buildControlUrl("quality", mapOf("value" to quality.toString())))
+        getText(buildControlUrl("quality", mapOf("value" to value.coerceIn(5, 63).toString())))
     }
 
     suspend fun setFrameSize(value: String): String = withContext(Dispatchers.IO) {
         val normalized = value.trim().uppercase()
-        require(normalized in setOf("VGA", "SVGA", "XGA", "HD", "FHD", "QHD", "5MP")) {
+        require(normalized in setOf("VGA", "SVGA", "XGA", "HD", "FHD", "QHD", "SXGA", "UXGA")) {
             "Unsupported frame size: $value"
         }
         getText(buildControlUrl("framesize", mapOf("value" to normalized)))
     }
 
-    suspend fun status(): String = withContext(Dispatchers.IO) {
-        getText(DeviceSettings.statusUrl())
-    }
+    suspend fun status(): String = withContext(Dispatchers.IO) { getText(DeviceSettings.statusUrl()) }
 
     private fun buildControlUrl(action: String, args: Map<String, String>): String {
         val query = buildString {
@@ -62,9 +57,7 @@ class Esp32CameraClient(
             check(connection.responseCode in 200..299) { responseError(connection) }
             val bitmap = connection.inputStream.use { BitmapFactory.decodeStream(it) }
             requireNotNull(bitmap) { "Capture endpoint returned invalid image data" }
-        } finally {
-            connection.disconnect()
-        }
+        } finally { connection.disconnect() }
     }
 
     private fun getText(urlString: String): String {
@@ -72,9 +65,7 @@ class Esp32CameraClient(
         return try {
             check(connection.responseCode in 200..299) { responseError(connection) }
             BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { it.readText() }
-        } finally {
-            connection.disconnect()
-        }
+        } finally { connection.disconnect() }
     }
 
     private fun open(urlString: String): HttpURLConnection =
@@ -92,9 +83,7 @@ class Esp32CameraClient(
     private fun responseError(connection: HttpURLConnection): String {
         val code = connection.responseCode
         val body = runCatching {
-            connection.errorStream?.let { stream ->
-                BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader -> reader.readText().take(512) }
-            }
+            connection.errorStream?.let { stream -> BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText().take(512) } }
         }.getOrNull().orEmpty()
         return if (body.isBlank()) "HTTP $code" else "HTTP $code: $body"
     }
