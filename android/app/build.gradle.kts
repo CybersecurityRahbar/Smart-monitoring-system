@@ -56,7 +56,7 @@ android {
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }
 
-tasks.named("preBuild").configure { dependsOn(verifyYolo26n) }
+tasks.named("preBuild").configure { dependsOn(verifyYolo26nModel) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
