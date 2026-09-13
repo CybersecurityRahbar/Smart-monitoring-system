@@ -67,7 +67,6 @@ import com.smarttraffic.app.core.ui.VideoViewport
 import com.smarttraffic.app.features.analysis.AnalysisRadarPreview
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -193,11 +192,7 @@ fun LiveCameraScreen(
                     streamMessage = liveText("Captured from ESP32-S3", "تم التقاط الصورة من ESP32-S3")
                     if (MediaStorageSettings.savePhotos) {
                         val saved = MediaStorageSettings.savePhoto(context, captured)
-                        streamMessage = if (saved != null) {
-                            liveText("Photo captured and saved", "تم التقاط الصورة وحفظها")
-                        } else {
-                            liveText("Photo captured, but saving failed", "تم التقاط الصورة لكن فشل الحفظ")
-                        }
+                        streamMessage = if (saved != null) liveText("Photo captured and saved", "تم التقاط الصورة وحفظها") else liveText("Photo captured, but saving failed", "تم التقاط الصورة لكن فشل الحفظ")
                     }
                 }
                 .onFailure { error ->
@@ -216,13 +211,8 @@ fun LiveCameraScreen(
             pauseRawStream()
             var success = false
             runCatching { action() }
-                .onSuccess { response ->
-                    success = true
-                    controlMessage = successText(response.ifBlank { "OK" })
-                }
-                .onFailure { error ->
-                    controlMessage = "${liveText("Control error", "خطأ في التحكم")}: ${error.message ?: "network error"}"
-                }
+                .onSuccess { response -> success = true; controlMessage = successText(response.ifBlank { "OK" }) }
+                .onFailure { error -> controlMessage = "${liveText("Control error", "خطأ في التحكم")}: ${error.message ?: "network error"}" }
             controlBusy = false
             if (shouldReconnect && success) startRawStream()
         }
@@ -261,17 +251,11 @@ fun LiveCameraScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(liveText("Changes pause the live MJPEG connection and reconnect automatically.", "تتوقف التغييرات لحظيًا ثم يعاد الاتصال بالبث تلقائيًا."), style = MaterialTheme.typography.bodySmall)
                     Text(liveText("Camera flash is not available on this S3 carrier.", "فلاش الكاميرا غير متاح مباشرة على هذه اللوحة."), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    OutlinedButton(onClick = { applyControl({ esp32.status() }) { response -> liveText("Status: $response", "الحالة: $response") } }, enabled = !controlBusy, modifier = Modifier.fillMaxWidth()) {
-                        Text(liveText("Read camera status", "قراءة حالة الكاميرا"))
-                    }
+                    OutlinedButton(onClick = { applyControl({ esp32.status() }) { response -> liveText("Status: $response", "الحالة: $response") } }, enabled = !controlBusy, modifier = Modifier.fillMaxWidth()) { Text(liveText("Read camera status", "قراءة حالة الكاميرا")) }
                     Text(liveText("Resolution: $frameSize", "الدقة: $frameSize"), style = MaterialTheme.typography.bodyMedium)
-                    ResolutionRow(listOf("VGA", "SVGA", "XGA", "HD"), frameSize, !controlBusy) { value ->
-                        applyControl({ esp32.setFrameSize(value) }, { response -> frameSize = value; liveText("Resolution $value: $response", "الدقة $value: $response") })
-                    }
-                    ResolutionRow(listOf("SXGA", "UXGA", "FHD", "QHD"), frameSize, !controlBusy) { value ->
-                        applyControl({ esp32.setFrameSize(value) }, { response -> frameSize = value; liveText("Resolution $value: $response", "الدقة $value: $response") })
-                    }
-                    Text(liveText("QHD is the highest resolution exposed by the current bundled camera driver; 5MP requires a newer driver.", "QHD هي أعلى دقة نوفرها مع تعريف الكاميرا الحالي؛ 5MP تحتاج تعريفًا أحدث."), style = MaterialTheme.typography.bodySmall)
+                    ResolutionRow(listOf("VGA", "SVGA", "XGA", "HD"), frameSize, !controlBusy) { value -> applyControl({ esp32.setFrameSize(value) }) { response -> frameSize = value; liveText("Resolution $value: $response", "الدقة $value: $response") } }
+                    ResolutionRow(listOf("SXGA", "UXGA", "FHD", "QHD"), frameSize, !controlBusy) { value -> applyControl({ esp32.setFrameSize(value) }) { response -> frameSize = value; liveText("Resolution $value: $response", "الدقة $value: $response") } }
+                    Text(liveText("QHD is the highest resolution exposed by the current bundled camera driver; the sensor can support higher modes with a newer driver.", "QHD هي أعلى دقة يتيحها تعريف الكاميرا المضمّن حاليًا؛ والمستشعر نفسه يدعم أوضاعًا أعلى مع تعريف أحدث."), style = MaterialTheme.typography.bodySmall)
                     Text(liveText("JPEG quality: $jpegQuality (5 = higher quality / larger frames)", "جودة JPEG: $jpegQuality (5 = جودة أعلى / إطارات أكبر)"), style = MaterialTheme.typography.bodyMedium)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(5, 10, 20, 30).forEach { value ->
@@ -290,7 +274,19 @@ fun LiveCameraScreen(
             Text(tr("live"), style = MaterialTheme.typography.headlineSmall)
             Text(liveText("ESP32-S3 camera • local Wi-Fi • live MJPEG", "كاميرا ESP32-S3 • Wi-Fi محلي • بث MJPEG مباشر"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if (analysisPreview != null) AnalysisRadarPreview(analysisPreview, Modifier.fillMaxWidth()) else VideoViewport(tr("primaryCamera"), videoMode, { videoMode = it }, { fullscreen = true }, frame, streamMessage ?: tr("streamNotConnected"), Modifier.fillMaxWidth())
+        if (analysisPreview != null) {
+            AnalysisRadarPreview(analysisPreview, Modifier.fillMaxWidth())
+        } else {
+            VideoViewport(
+                title = tr("primaryCamera"),
+                mode = videoMode,
+                onModeChange = { videoMode = it },
+                modifier = Modifier.fillMaxWidth(),
+                frame = frame,
+                statusText = streamMessage ?: tr("streamNotConnected"),
+                onFullscreenRequested = { fullscreen = true },
+            )
+        }
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = { if (analyzing) analysisViewModel.stop() else startAnalysis() }, modifier = Modifier.weight(1f), enabled = analysisState.phase != LiveAnalysisPhase.STARTING) {
@@ -309,11 +305,8 @@ fun LiveCameraScreen(
                 Icon(if (recording) Icons.Filled.Stop else Icons.Filled.Circle, null, Modifier.size(18.dp)); Spacer(Modifier.size(6.dp)); Text(if (recording) liveText("Stop recording", "إيقاف التسجيل") else liveText("Record live", "تسجيل البث"))
             }
         }
-
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(onClick = { controlsOpen = true }, enabled = !analyzing, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.SettingsRemote, null, Modifier.size(18.dp)); Spacer(Modifier.size(6.dp)); Text(tr("cameraControl"))
-            }
+        OutlinedButton(onClick = { controlsOpen = true }, enabled = !analyzing, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.SettingsRemote, null, Modifier.size(18.dp)); Spacer(Modifier.size(6.dp)); Text(tr("cameraControl"))
         }
         recordingMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (analysisState.message != null) Text(analysisState.message!! + (analysisState.droppedFrames.takeIf { it > 0L }?.let { " • dropped $it live frame(s)" } ?: ""), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -323,9 +316,7 @@ fun LiveCameraScreen(
 @Composable
 private fun ResolutionRow(values: List<String>, selected: String, enabled: Boolean, onSelect: (String) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-        values.forEach { value ->
-            TextButton(onClick = { onSelect(value) }, enabled = enabled && value != selected, modifier = Modifier.weight(1f)) { Text(value) }
-        }
+        values.forEach { value -> TextButton(onClick = { onSelect(value) }, enabled = enabled && value != selected, modifier = Modifier.weight(1f)) { Text(value) } }
     }
 }
 
