@@ -13,9 +13,7 @@
 #endif
 
 namespace {
-
 constexpr uint16_t kHttpPort = 80;
-
 WebServer server(kHttpPort);
 volatile bool apMode = false;
 uint32_t lastFrameMs = 0;
@@ -69,7 +67,6 @@ const char* frameSizeName(framesize_t value) {
     case FRAMESIZE_HD: return "HD";
     case FRAMESIZE_FHD: return "FHD";
     case FRAMESIZE_QHD: return "QHD";
-    case FRAMESIZE_5MP: return "5MP";
     case FRAMESIZE_SXGA: return "SXGA";
     case FRAMESIZE_UXGA: return "UXGA";
     default: return "CUSTOM";
@@ -77,21 +74,22 @@ const char* frameSizeName(framesize_t value) {
 }
 
 bool parseFrameSize(const String& value, framesize_t* result) {
-  if (result == nullptr) return false;
-  String normalized = value;
-  normalized.toLowerCase();
-  if (normalized == "vga") { *result = FRAMESIZE_VGA; return true; }
-  if (normalized == "svga") { *result = FRAMESIZE_SVGA; return true; }
-  if (normalized == "xga") { *result = FRAMESIZE_XGA; return true; }
-  if (normalized == "hd") { *result = FRAMESIZE_HD; return true; }
-  if (normalized == "fhd") { *result = FRAMESIZE_FHD; return true; }
-  if (normalized == "qhd") { *result = FRAMESIZE_QHD; return true; }
-  if (normalized == "5mp") { *result = FRAMESIZE_5MP; return true; }
+  if (!result) return false;
+  String v = value;
+  v.toLowerCase();
+  if (v == "vga") { *result = FRAMESIZE_VGA; return true; }
+  if (v == "svga") { *result = FRAMESIZE_SVGA; return true; }
+  if (v == "xga") { *result = FRAMESIZE_XGA; return true; }
+  if (v == "hd") { *result = FRAMESIZE_HD; return true; }
+  if (v == "fhd") { *result = FRAMESIZE_FHD; return true; }
+  if (v == "qhd") { *result = FRAMESIZE_QHD; return true; }
+  if (v == "sxga") { *result = FRAMESIZE_SXGA; return true; }
+  if (v == "uxga") { *result = FRAMESIZE_UXGA; return true; }
   return false;
 }
 
 void frameDimensions(framesize_t value, uint16_t* width, uint16_t* height) {
-  if (width == nullptr || height == nullptr) return;
+  if (!width || !height) return;
   switch (value) {
     case FRAMESIZE_VGA: *width = 640; *height = 480; return;
     case FRAMESIZE_SVGA: *width = 800; *height = 600; return;
@@ -99,7 +97,6 @@ void frameDimensions(framesize_t value, uint16_t* width, uint16_t* height) {
     case FRAMESIZE_HD: *width = 1280; *height = 720; return;
     case FRAMESIZE_FHD: *width = 1920; *height = 1080; return;
     case FRAMESIZE_QHD: *width = 2560; *height = 1440; return;
-    case FRAMESIZE_5MP: *width = 2592; *height = 1944; return;
     case FRAMESIZE_SXGA: *width = 1280; *height = 1024; return;
     case FRAMESIZE_UXGA: *width = 1600; *height = 1200; return;
     default: *width = 0; *height = 0; return;
@@ -108,29 +105,25 @@ void frameDimensions(framesize_t value, uint16_t* width, uint16_t* height) {
 
 uint32_t streamIntervalMs() {
   switch (currentFrameSize) {
-    case FRAMESIZE_5MP: return 200;
-    case FRAMESIZE_QHD: return 110;
-    case FRAMESIZE_FHD: return 80;
+    case FRAMESIZE_QHD: return 140;
+    case FRAMESIZE_FHD: return 95;
+    case FRAMESIZE_UXGA: return 120;
     default: return 66;
   }
 }
 
 String jsonStatus() {
-  uint16_t width = 0;
-  uint16_t height = 0;
+  uint16_t width = 0, height = 0;
   frameDimensions(currentFrameSize, &width, &height);
   String json = "{";
   json += "\"service\":\"smart-traffic-camera\",";
-  json += "\"stream\":\"/stream\",";
-  json += "\"capture\":\"/capture\",";
-  json += "\"control\":\"/control\",";
+  json += "\"stream\":\"/stream\",\"capture\":\"/capture\",\"control\":\"/control\",";
   json += "\"uptime_ms\":" + String(millis()) + ",";
   json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
   json += "\"free_psram\":" + String(ESP.getFreePsram()) + ",";
   json += "\"frames_served\":" + String(framesServed) + ",";
   json += "\"framesize\":\"" + String(frameSizeName(currentFrameSize)) + "\",";
-  json += "\"width\":" + String(width) + ",";
-  json += "\"height\":" + String(height) + ",";
+  json += "\"width\":" + String(width) + ",\"height\":" + String(height) + ",";
   json += "\"jpeg_quality\":" + String(currentJpegQuality) + ",";
 #if defined(SMARTTRAFFIC_CAMERA_AI_THINKER)
   json += "\"flash_supported\":true,";
@@ -175,13 +168,16 @@ bool initializeCamera() {
     return false;
   }
   sensor_t* sensor = esp_camera_sensor_get();
-  if (sensor == nullptr) {
+  if (!sensor) {
     Serial.println("Camera sensor handle unavailable");
     esp_camera_deinit();
     return false;
   }
-  sensor->set_framesize(sensor, currentFrameSize);
-  sensor->set_quality(sensor, currentJpegQuality);
+  if (sensor->set_framesize(sensor, currentFrameSize) != 0 || sensor->set_quality(sensor, currentJpegQuality) != 0) {
+    Serial.println("Camera rejected initial settings");
+    esp_camera_deinit();
+    return false;
+  }
   return true;
 }
 
@@ -197,21 +193,17 @@ bool writeFully(WiFiClient& client, const uint8_t* data, size_t length) {
 
 void sendJpegFrame() {
   camera_fb_t* frame = esp_camera_fb_get();
-  if (frame == nullptr || frame->format != PIXFORMAT_JPEG) {
-    if (frame != nullptr) esp_camera_fb_return(frame);
+  if (!frame || frame->format != PIXFORMAT_JPEG) {
+    if (frame) esp_camera_fb_return(frame);
     server.send(503, "text/plain", "camera frame unavailable");
     return;
   }
-  const size_t length = frame->len;
   server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   server.sendHeader("Pragma", "no-cache");
-  server.send_P(200, "image/jpeg", reinterpret_cast<const char*>(frame->buf), length);
+  server.send_P(200, "image/jpeg", reinterpret_cast<const char*>(frame->buf), frame->len);
   esp_camera_fb_return(frame);
   framesServed++;
 }
-
-void handleCapture() { sendJpegFrame(); }
-void handleStatus() { server.send(200, "application/json; charset=utf-8", jsonStatus()); }
 
 void handleControl() {
   if (!server.hasArg("action")) {
@@ -236,7 +228,7 @@ void handleControl() {
     const int quality = server.arg("value").toInt();
     if (quality < 5 || quality > 63) { server.send(400, "application/json", "{\"error\":\"quality must be 5..63\"}"); return; }
     sensor_t* sensor = esp_camera_sensor_get();
-    if (sensor == nullptr) { server.send(503, "application/json", "{\"error\":\"camera sensor unavailable\"}"); return; }
+    if (!sensor) { server.send(503, "application/json", "{\"error\":\"camera sensor unavailable\"}"); return; }
     if (sensor->set_quality(sensor, quality) != 0) { server.send(500, "application/json", "{\"error\":\"camera rejected quality\"}"); return; }
     currentJpegQuality = quality;
     server.send(200, "application/json", String("{\"ok\":true,\"jpeg_quality\":") + String(currentJpegQuality) + "}");
@@ -246,18 +238,16 @@ void handleControl() {
     if (!server.hasArg("value")) { server.send(400, "application/json", "{\"error\":\"missing value\"}"); return; }
     framesize_t nextSize = currentFrameSize;
     if (!parseFrameSize(server.arg("value"), &nextSize)) {
-      server.send(400, "application/json", "{\"error\":\"framesize must be VGA, SVGA, XGA, HD, FHD, QHD, or 5MP\"}");
+      server.send(400, "application/json", "{\"error\":\"framesize must be VGA, SVGA, XGA, HD, FHD, QHD, SXGA, or UXGA\"}");
       return;
     }
     sensor_t* sensor = esp_camera_sensor_get();
-    if (sensor == nullptr) { server.send(503, "application/json", "{\"error\":\"camera sensor unavailable\"}"); return; }
+    if (!sensor) { server.send(503, "application/json", "{\"error\":\"camera sensor unavailable\"}"); return; }
     if (sensor->set_framesize(sensor, nextSize) != 0) { server.send(500, "application/json", "{\"error\":\"camera rejected framesize\"}"); return; }
     currentFrameSize = nextSize;
-    uint16_t width = 0;
-    uint16_t height = 0;
+    uint16_t width = 0, height = 0;
     frameDimensions(currentFrameSize, &width, &height);
-    String response = "{\"ok\":true,\"framesize\":\"" + String(frameSizeName(currentFrameSize)) + "\",\"width\":" + String(width) + ",\"height\":" + String(height) + "}";
-    server.send(200, "application/json", response);
+    server.send(200, "application/json", String("{\"ok\":true,\"framesize\":\"") + frameSizeName(currentFrameSize) + "\",\"width\":" + String(width) + ",\"height\":" + String(height) + "}");
     return;
   }
   server.send(400, "application/json", "{\"error\":\"unsupported action\"}");
@@ -266,19 +256,14 @@ void handleControl() {
 void handleStream() {
   WiFiClient client = server.client();
   client.setNoDelay(true);
-  client.print("HTTP/1.1 200 OK\r\n");
-  client.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n");
-  client.print("Cache-Control: no-cache, no-store, must-revalidate\r\n");
-  client.print("Pragma: no-cache\r\n");
-  client.print("Connection: keep-alive\r\n\r\n");
+  client.print("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nConnection: keep-alive\r\n\r\n");
   while (client.connected()) {
-    const uint32_t intervalMs = streamIntervalMs();
     const uint32_t now = millis();
-    if (now - lastFrameMs < intervalMs) { delay(2); continue; }
+    if (now - lastFrameMs < streamIntervalMs()) { delay(2); continue; }
     lastFrameMs = now;
     camera_fb_t* frame = esp_camera_fb_get();
-    if (frame == nullptr || frame->format != PIXFORMAT_JPEG) {
-      if (frame != nullptr) esp_camera_fb_return(frame);
+    if (!frame || frame->format != PIXFORMAT_JPEG) {
+      if (frame) esp_camera_fb_return(frame);
       break;
     }
     const size_t length = frame->len;
@@ -300,8 +285,7 @@ void connectNetwork() {
     Serial.println();
     if (WiFi.status() == WL_CONNECTED) {
       apMode = false;
-      Serial.print("STA IP: ");
-      Serial.println(WiFi.localIP());
+      Serial.print("STA IP: "); Serial.println(WiFi.localIP());
       return;
     }
   }
@@ -310,11 +294,10 @@ void connectNetwork() {
   WiFi.mode(WIFI_AP);
   const bool started = WiFi.softAP(SMARTTRAFFIC_AP_SSID, SMARTTRAFFIC_AP_PASSWORD);
   apMode = started;
-  Serial.print("AP mode: ");
-  Serial.println(started ? WiFi.softAPIP() : IPAddress(0, 0, 0, 0));
+  Serial.print("AP mode: "); Serial.println(started ? WiFi.softAPIP() : IPAddress(0,0,0,0));
 }
 
-}  // namespace
+} // namespace
 
 void setup() {
   Serial.begin(115200);
@@ -322,17 +305,14 @@ void setup() {
   if (!initializeCamera()) { delay(1000); ESP.restart(); }
   connectNetwork();
   server.on("/", HTTP_GET, []() {
-    server.send(200, "text/plain; charset=utf-8", "Smart Traffic Camera\n/stream\n/capture\n/status\n/control?action=flash&on=1\n/control?action=quality&value=10\n/control?action=framesize&value=HD\n");
+    server.send(200, "text/plain; charset=utf-8", "Smart Traffic Camera\n/stream\n/capture\n/status\n/control?action=quality&value=10\n/control?action=framesize&value=HD\n");
   });
-  server.on("/status", HTTP_GET, handleStatus);
-  server.on("/capture", HTTP_GET, handleCapture);
+  server.on("/status", HTTP_GET, []() { server.send(200, "application/json; charset=utf-8", jsonStatus()); });
+  server.on("/capture", HTTP_GET, sendJpegFrame);
   server.on("/control", HTTP_GET, handleControl);
   server.on("/stream", HTTP_GET, handleStream);
   server.begin();
   Serial.println("HTTP server started");
 }
 
-void loop() {
-  server.handleClient();
-  delay(1);
-}
+void loop() { server.handleClient(); delay(1); }
