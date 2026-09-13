@@ -80,7 +80,7 @@ fun LiveCameraScreen(
     var controlBusy by remember { mutableStateOf(false) }
     var controlMessage by remember { mutableStateOf<String?>(null) }
     var jpegQuality by remember { mutableIntStateOf(10) }
-    var flashOn by remember { mutableStateOf(false) }
+    var frameSize by remember { mutableStateOf("HD") }
     val scope = rememberCoroutineScope()
     val streamClient = remember { MjpegStreamClient() }
     val esp32 = remember { Esp32CameraClient() }
@@ -94,14 +94,9 @@ fun LiveCameraScreen(
     DisposableEffect(fullscreen) {
         val activity = context as? ComponentActivity
         val controller = activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView) }
-        if (fullscreen) {
-            controller?.hide(WindowInsetsCompat.Type.systemBars())
-        } else {
-            controller?.show(WindowInsetsCompat.Type.systemBars())
-        }
-        onDispose {
-            controller?.show(WindowInsetsCompat.Type.systemBars())
-        }
+        if (fullscreen) controller?.hide(WindowInsetsCompat.Type.systemBars())
+        else controller?.show(WindowInsetsCompat.Type.systemBars())
+        onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
     }
 
     BackHandler(enabled = fullscreen) { fullscreen = false }
@@ -131,21 +126,23 @@ fun LiveCameraScreen(
     }
 
     suspend fun pauseRawStream() {
-        streamJob?.cancel()
+        val active = streamJob
+        active?.cancel()
+        active?.join()
         streamJob = null
         if (streamState == StreamState.LIVE || streamState == StreamState.CONNECTING) {
             streamState = StreamState.CONNECTING
-            streamMessage = liveText("Pausing stream for camera command…", "جارٍ إيقاف البث مؤقتًا لتنفيذ أمر الكاميرا…")
-            kotlinx.coroutines.delay(80L)
+            streamMessage = liveText("Stream paused for camera command…", "تم إيقاف البث مؤقتًا لتنفيذ أمر الكاميرا…")
         }
     }
 
     fun startAnalysis() {
         fullscreen = false
-        streamJob?.cancel()
-        streamJob = null
-        frame = null
-        analysisViewModel.start()
+        scope.launch {
+            pauseRawStream()
+            frame = null
+            analysisViewModel.start()
+        }
     }
 
     fun captureFrame() {
@@ -222,36 +219,57 @@ fun LiveCameraScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        liveText("Commands use the firmware /control contract. The live MJPEG stream pauses for each command.", "الأوامر تستخدم عقد /control الخاص بالـFirmware، ويتوقف بث MJPEG لحظيًا لكل أمر."),
+                        liveText("Camera controls pause the live MJPEG connection before each command.", "توقف أوامر الكاميرا اتصال MJPEG مؤقتًا قبل تنفيذ كل أمر."),
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = {
-                                val target = !flashOn
-                                applyControl(
-                                    action = { esp32.setFlash(target) },
-                                    successText = { response ->
-                                        flashOn = target
-                                        liveText("Flash updated: $response", "تم تحديث الفلاش: $response")
-                                    },
-                                )
-                            },
-                            enabled = !controlBusy,
-                            modifier = Modifier.weight(1f),
-                        ) { Text(if (flashOn) liveText("Flash OFF", "إيقاف الفلاش") else liveText("Flash ON", "تشغيل الفلاش")) }
-                        OutlinedButton(
-                            onClick = {
-                                applyControl(
-                                    action = { esp32.status() },
-                                    successText = { response -> liveText("Status: $response", "الحالة: $response") },
-                                )
-                            },
-                            enabled = !controlBusy,
-                            modifier = Modifier.weight(1f),
-                        ) { Text(liveText("Read status", "قراءة الحالة")) }
+
+                    Text(
+                        liveText("Flash: not available on this ESP32-S3 camera carrier", "الفلاش: غير متاح على لوحة كاميرا ESP32-S3 الحالية"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    OutlinedButton(
+                        onClick = {
+                            applyControl(
+                                action = { esp32.status() },
+                                successText = { response -> liveText("Status: $response", "الحالة: $response") },
+                            )
+                        },
+                        enabled = !controlBusy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(liveText("Read camera status", "قراءة حالة الكاميرا")) }
+
+                    Text(
+                        liveText("Resolution: $frameSize", "الدقة: $frameSize"),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("HD", "FHD", "QHD", "5MP").forEach { value ->
+                            TextButton(
+                                onClick = {
+                                    applyControl(
+                                        action = { esp32.setFrameSize(value) },
+                                        successText = { response ->
+                                            frameSize = value
+                                            liveText("Resolution $value: $response", "الدقة $value: $response")
+                                        },
+                                    )
+                                },
+                                enabled = !controlBusy,
+                                modifier = Modifier.weight(1f),
+                            ) { Text(value) }
+                        }
                     }
-                    Text(liveText("JPEG quality: $jpegQuality (5 = higher quality / larger frames)", "جودة JPEG: $jpegQuality (5 = جودة أعلى / إطارات أكبر)"))
+                    Text(
+                        liveText("5MP is for maximum still-image detail; HD/FHD is recommended for live analysis.", "5MP لأقصى تفاصيل للصورة؛ وHD/FHD موصى بهما للبث والتحليل المباشر."),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+
+                    Text(
+                        liveText("JPEG quality: $jpegQuality (5 = higher quality / larger frames)", "جودة JPEG: $jpegQuality (5 = جودة أعلى / إطارات أكبر)"),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(5, 10, 20, 30).forEach { value ->
                             TextButton(
