@@ -12,7 +12,7 @@ import kotlin.coroutines.coroutineContext
 class MjpegStreamClient(
     private val connectTimeoutMs: Int = 3000,
     private val readTimeoutMs: Int = 7000,
-    private val maxJpegBytes: Int = 2_000_000,
+    private val maxJpegBytes: Int = 8_000_000,
 ) {
     suspend fun collect(
         urlString: String,
@@ -28,7 +28,6 @@ class MjpegStreamClient(
         val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
             connection.disconnect()
         }
-
         try {
             if (connection.responseCode !in 200..299) {
                 throw MjpegStreamException("HTTP ${connection.responseCode}")
@@ -36,7 +35,6 @@ class MjpegStreamClient(
             val contentType = connection.contentType.orEmpty()
             val boundary = parseBoundary(contentType)
                 ?: throw MjpegStreamException("MJPEG boundary not found in Content-Type: $contentType")
-
             BufferedInputStream(connection.inputStream, 64 * 1024).use { input ->
                 val boundaryBytes = ("--$boundary").toByteArray(Charsets.ISO_8859_1)
                 while (true) {
@@ -50,7 +48,6 @@ class MjpegStreamClient(
                                 parts[1].trim().toIntOrNull()
                             } else null
                         }
-
                     val jpeg = when {
                         contentLength != null && contentLength in 2..maxJpegBytes -> input.readExactly(contentLength)
                         else -> readJpegByMarkers(input, maxJpegBytes)
