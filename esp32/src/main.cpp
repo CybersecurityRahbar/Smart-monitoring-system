@@ -16,14 +16,13 @@ namespace {
 
 constexpr uint16_t kHttpPort = 80;
 constexpr uint32_t kFrameIntervalMs = 66;  // ~15 FPS request ceiling.
-constexpr uint16_t kConfiguredWidth = 640;
-constexpr uint16_t kConfiguredHeight = 480;
 
 WebServer server(kHttpPort);
 volatile bool apMode = false;
 uint32_t lastFrameMs = 0;
 uint32_t framesServed = 0;
-framesize_t currentFrameSize = FRAMESIZE_VGA;
+framesize_t currentFrameSize = FRAMESIZE_HD;
+int currentJpegQuality = 10;
 
 #if defined(SMARTTRAFFIC_CAMERA_AI_THINKER)
 // AI-Thinker ESP32-CAM / OV2640 pin map.
@@ -44,8 +43,8 @@ framesize_t currentFrameSize = FRAMESIZE_VGA;
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
 #elif defined(SMARTTRAFFIC_CAMERA_S3_N16R8)
-// Common ESP32-S3-CAM N16R8 / OV5640-style pin map.
-// Verify the exact PCB revision before wiring hardware; third-party S3-CAM boards are not universal.
+// Pin map for the ESP32-S3-N16R8 camera variant currently validated with this project.
+// Verify the exact carrier PCB before using this mapping on another third-party board.
 #define PWDN_GPIO_NUM -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM 15
@@ -66,7 +65,59 @@ framesize_t currentFrameSize = FRAMESIZE_VGA;
 #error "Select SMARTTRAFFIC_CAMERA_AI_THINKER or SMARTTRAFFIC_CAMERA_S3_N16R8"
 #endif
 
+const char* frameSizeName(framesize_t value) {
+  switch (value) {
+    case FRAMESIZE_VGA: return "VGA";
+    case FRAMESIZE_SVGA: return "SVGA";
+    case FRAMESIZE_XGA: return "XGA";
+    case FRAMESIZE_HD: return "HD";
+    case FRAMESIZE_SXGA: return "SXGA";
+    case FRAMESIZE_UXGA: return "UXGA";
+    default: return "CUSTOM";
+  }
+}
+
+bool parseFrameSize(const String& value, framesize_t* result) {
+  if (result == nullptr) return false;
+  String normalized = value;
+  normalized.toLowerCase();
+  if (normalized == "vga") {
+    *result = FRAMESIZE_VGA;
+    return true;
+  }
+  if (normalized == "svga") {
+    *result = FRAMESIZE_SVGA;
+    return true;
+  }
+  if (normalized == "xga") {
+    *result = FRAMESIZE_XGA;
+    return true;
+  }
+  if (normalized == "hd") {
+    *result = FRAMESIZE_HD;
+    return true;
+  }
+  return false;
+}
+
+void frameDimensions(framesize_t value, uint16_t* width, uint16_t* height) {
+  if (width == nullptr || height == nullptr) return;
+  switch (value) {
+    case FRAMESIZE_VGA: *width = 640; *height = 480; return;
+    case FRAMESIZE_SVGA: *width = 800; *height = 600; return;
+    case FRAMESIZE_XGA: *width = 1024; *height = 768; return;
+    case FRAMESIZE_HD: *width = 1280; *height = 720; return;
+    case FRAMESIZE_SXGA: *width = 1280; *height = 1024; return;
+    case FRAMESIZE_UXGA: *width = 1600; *height = 1200; return;
+    default: *width = 0; *height = 0; return;
+  }
+}
+
 String jsonStatus() {
+  uint16_t width = 0;
+  uint16_t height = 0;
+  frameDimensions(currentFrameSize, &width, &height);
+
   String json = "{";
   json += "\"service\":\"smart-traffic-camera\",";
   json += "\"stream\":\"/stream\",";
@@ -76,9 +127,17 @@ String jsonStatus() {
   json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
   json += "\"free_psram\":" + String(ESP.getFreePsram()) + ",";
   json += "\"frames_served\":" + String(framesServed) + ",";
-  json += "\"framesize\":" + String(static_cast<int>(currentFrameSize)) + ",";
-  json += "\"width\":" + String(kConfiguredWidth) + ",";
-  json += "\"height\":" + String(kConfiguredHeight) + ",";
+  json += "\"framesize\":\"" + String(frameSizeName(currentFrameSize)) + "\",";
+  json += "\"width\":" + String(width) + ",";
+  json += "\"height\":" + String(height) + ",";
+  json += "\"jpeg_quality\":" + String(currentJpegQuality) + ",";
+#if defined(SMARTTRAFFIC_CAMERA_AI_THINKER)
+  json += "\"flash_supported\":true,";
+#else
+  // The Waveshare-style S3 carrier exposes a user indicator through its I/O expander,
+  // not a direct camera flash GPIO. Do not pretend it is a camera flash.
+  json += "\"flash_supported\":false,";
+#endif
   json += "\"ap_mode\":" + String(apMode ? "true" : "false");
   json += "}";
   return json;
@@ -107,9 +166,12 @@ bool initializeCamera() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size = currentFrameSize;
-  config.jpeg_quality = 10;
+  config.jpeg_quality = currentJpegQuality;
   config.fb_count = psramFound() ? 2 : 1;
   config.grab_mode = CAMERA_GRAB_LATEST;
+  if (psramFound()) {
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+  }
 
   const esp_err_t error = esp_camera_init(&config);
   if (error != ESP_OK) {
@@ -123,9 +185,8 @@ bool initializeCamera() {
     esp_camera_deinit();
     return false;
   }
-  sensor->set_framesize(sensor, FRAMESIZE_VGA);
-  sensor->set_quality(sensor, 10);
-  currentFrameSize = FRAMESIZE_VGA;
+  sensor->set_framesize(sensor, currentFrameSize);
+  sensor->set_quality(sensor, currentJpegQuality);
   return true;
 }
 
@@ -169,7 +230,9 @@ void handleControl() {
     server.send(400, "application/json", "{\"error\":\"missing action\"}");
     return;
   }
+
   const String action = server.arg("action");
+
   if (action == "flash") {
 #if defined(SMARTTRAFFIC_CAMERA_AI_THINKER)
     constexpr int flashPin = 4;
@@ -178,10 +241,11 @@ void handleControl() {
     digitalWrite(flashPin, on ? HIGH : LOW);
     server.send(200, "application/json", String("{\"ok\":true,\"flash\":") + (on ? "true}" : "false}"));
 #else
-    server.send(501, "application/json", "{\"ok\":false,\"error\":\"flash pin is not defined for this board\"}");
+    server.send(501, "application/json", "{\"ok\":false,\"flash_supported\":false,\"error\":\"This ESP32-S3 carrier has no direct camera flash GPIO\"}");
 #endif
     return;
   }
+
   if (action == "quality") {
     if (!server.hasArg("value")) {
       server.send(400, "application/json", "{\"error\":\"missing value\"}");
@@ -198,19 +262,50 @@ void handleControl() {
       return;
     }
     sensor->set_quality(sensor, quality);
-    server.send(200, "application/json", "{\"ok\":true}");
+    currentJpegQuality = quality;
+    server.send(200, "application/json", String("{\"ok\":true,\"jpeg_quality\":") + String(currentJpegQuality) + "}");
     return;
   }
+
+  if (action == "framesize") {
+    if (!server.hasArg("value")) {
+      server.send(400, "application/json", "{\"error\":\"missing value\"}");
+      return;
+    }
+    framesize_t nextSize = currentFrameSize;
+    if (!parseFrameSize(server.arg("value"), &nextSize)) {
+      server.send(400, "application/json", "{\"error\":\"framesize must be VGA, SVGA, XGA, or HD\"}");
+      return;
+    }
+    sensor_t* sensor = esp_camera_sensor_get();
+    if (sensor == nullptr) {
+      server.send(503, "application/json", "{\"error\":\"camera sensor unavailable\"}");
+      return;
+    }
+    if (sensor->set_framesize(sensor, nextSize) != 0) {
+      server.send(500, "application/json", "{\"error\":\"camera rejected framesize\"}");
+      return;
+    }
+    currentFrameSize = nextSize;
+    uint16_t width = 0;
+    uint16_t height = 0;
+    frameDimensions(currentFrameSize, &width, &height);
+    String response = "{\"ok\":true,\"framesize\":\"" + String(frameSizeName(currentFrameSize)) + "\",\"width\":" + String(width) + ",\"height\":" + String(height) + "}";
+    server.send(200, "application/json", response);
+    return;
+  }
+
   server.send(400, "application/json", "{\"error\":\"unsupported action\"}");
 }
 
 void handleStream() {
   WiFiClient client = server.client();
+  client.setNoDelay(true);
   client.print("HTTP/1.1 200 OK\r\n");
   client.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n");
   client.print("Cache-Control: no-cache, no-store, must-revalidate\r\n");
   client.print("Pragma: no-cache\r\n");
-  client.print("Connection: close\r\n\r\n");
+  client.print("Connection: keep-alive\r\n\r\n");
 
   while (client.connected()) {
     const uint32_t now = millis();
@@ -278,7 +373,7 @@ void setup() {
   connectNetwork();
 
   server.on("/", HTTP_GET, []() {
-    server.send(200, "text/plain; charset=utf-8", "Smart Traffic Camera\n/stream\n/capture\n/status\n/control?action=flash&on=1\n/control?action=quality&value=10\n");
+    server.send(200, "text/plain; charset=utf-8", "Smart Traffic Camera\n/stream\n/capture\n/status\n/control?action=flash&on=1\n/control?action=quality&value=10\n/control?action=framesize&value=HD\n");
   });
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/capture", HTTP_GET, handleCapture);
