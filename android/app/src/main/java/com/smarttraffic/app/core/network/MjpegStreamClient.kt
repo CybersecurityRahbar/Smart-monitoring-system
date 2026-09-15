@@ -40,21 +40,20 @@ class MjpegStreamClient(
             socket.soTimeout = readTimeoutMs
             socket.connect(InetSocketAddress(host, port), connectTimeoutMs)
 
-            BufferedOutputStream(socket.getOutputStream(), 8 * 1024).use { output ->
-                val request = buildString {
-                    append("GET ").append(requestTarget).append(" HTTP/1.1\r\n")
-                    append("Host: ").append(host)
-                    if (port != 80) append(':').append(port)
-                    append("\r\n")
-                    append("Accept: multipart/x-mixed-replace, image/jpeg, */*\r\n")
-                    append("Cache-Control: no-cache\r\n")
-                    append("Pragma: no-cache\r\n")
-                    append("Connection: keep-alive\r\n")
-                    append("\r\n")
-                }
-                output.write(request.toByteArray(Charsets.ISO_8859_1))
-                output.flush()
+            val output = BufferedOutputStream(socket.getOutputStream(), 8 * 1024)
+            val request = buildString {
+                append("GET ").append(requestTarget).append(" HTTP/1.1\r\n")
+                append("Host: ").append(host)
+                if (port != 80) append(':').append(port)
+                append("\r\n")
+                append("Accept: multipart/x-mixed-replace, image/jpeg, */*\r\n")
+                append("Cache-Control: no-cache\r\n")
+                append("Pragma: no-cache\r\n")
+                append("Connection: keep-alive\r\n")
+                append("\r\n")
             }
+            output.write(request.toByteArray(Charsets.ISO_8859_1))
+            output.flush()
 
             BufferedInputStream(socket.getInputStream(), 64 * 1024).use { input ->
                 val response = readHttpResponse(input)
