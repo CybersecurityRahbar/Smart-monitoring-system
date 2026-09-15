@@ -1,35 +1,72 @@
-# Project Context Session — 2026-09-15 — ESP32-S3 Live Transport Repair
+# Project Context Session — 2026-09-15 — ESP32-S3 Live Transport and Resolution Repair
 
 ## Physical test findings
-After flashing the ESP32-S3-N16R8, the board entered AP mode at `192.168.4.1`. The Android app could capture a still image, proving local Wi-Fi/IP/HTTP connectivity and camera initialization. Live MJPEG failed, live analysis therefore failed, and camera controls were unreliable when the original stream was active. Serial output included `Connection reset by peer` during stream writes.
+After flashing the ESP32-S3-N16R8, the board entered AP mode at `192.168.4.1`. The Android app could capture a still image and save it successfully, proving local Wi-Fi/IP/HTTP connectivity and camera initialization. Live analysis also started successfully. The remaining failures were specifically the manual **Connect stream** action and several high-resolution camera modes.
 
-## Root cause
-The original Firmware served `/stream` from the same port-80 Arduino `WebServer` using a blocking `while (client.connected())` loop. That monopolized the request handler and prevented timely processing of `/status`, `/capture`, and `/control`.
+## Issue A — Connect stream
+The repaired architecture keeps the camera HTTP API on port 80 and MJPEG on port 81. The Android client was still using `HttpURLConnection` to consume a long-lived multipart response. Although that API can handle ordinary HTTP, it adds another transport layer for this very small local TCP server and made the failure surface only as a generic stream/network error.
 
-## Repair
-Commit `0d8572a407bd65b4677a34d39913299e191e3a90` changes the transport architecture:
-- Port 80 remains the HTTP API for status, capture, and camera controls.
-- Port 81 is a dedicated `WiFiServer` for MJPEG `/stream`.
-- The stream server runs in a dedicated FreeRTOS task, so it no longer blocks the port-80 HTTP loop.
-- A FreeRTOS camera mutex serializes framebuffer acquisition and sensor setting changes.
+### Repair
+Android `MjpegStreamClient` now uses a direct TCP `Socket` for the local MJPEG endpoint:
+- Parses the configured `http://host:81/stream` URL.
+- Connects directly to the ESP32 TCP port with an explicit timeout.
+- Sends an HTTP GET request over the socket.
+- Reads and validates the HTTP status and `Content-Type` boundary.
+- Parses multipart frame headers and `Content-Length` directly from the same stream.
+- Keeps the socket open for continuous JPEG frames.
+- Closes the socket when the coroutine is cancelled, so reconnect/stop is deterministic.
+- Reports transport-level errors such as socket timeout/reset instead of collapsing everything into a generic HTTP exception.
+
+## Issue B — FHD / QHD / UXGA / SXGA resolution changes
+The previous firmware called `sensor->set_framesize()` while the camera driver had already allocated its frame/DMA buffers for the startup configuration. The UI therefore offered the high modes, but a successful sensor-register update did not guarantee that subsequent frame acquisition was correctly reconfigured.
+
+Espressif's camera driver allocates and configures framebuffer/DMA resources as part of `esp_camera_init()`, and the official examples initialize the driver with the intended JPEG frame size. The OV5640 driver also exposes high-resolution modes, so the requested FHD/QHD/UXGA/SXGA modes are not rejected merely because their enum names exist. citeturn816156search1turn816156search0
+
+### Repair
+Firmware frame-size changes now perform a controlled full camera reconfiguration:
+1. Request the current MJPEG client to stop.
+2. Wait until the stream task has released its active client.
+3. Acquire the camera mutex.
+4. Call `esp_camera_deinit()`.
+5. Reinitialize the driver with the requested `frame_size`, current JPEG quality, PSRAM framebuffer location, and current pin map.
+6. Verify the sensor handle and requested frame size.
+7. If initialization fails, restore the previous resolution automatically.
+8. Return a structured HTTP error explaining whether the requested mode was rejected and whether the old mode was restored.
+
+JPEG quality changes also stop the stream first, change the sensor setting under the same camera mutex, and then allow the stream to reconnect.
+
+## Current transport contract
+- Port 80: `/status`, `/capture`, `/control`
+- Port 81: `/stream`
+- Android `DeviceSettings.streamUrl()` targets port 81.
+- Android capture/status/control continue to use port 80.
 - Only one MJPEG client is accepted at a time.
-- `/status` now exposes the stream port and stream-client activity.
-- The stream URL reported by firmware uses the active STA/AP address.
+- Stream and camera-control operations are serialized through the firmware camera mutex.
 
-Android `DeviceSettings.streamUrl()` was updated to use port 81 while `/capture`, `/status`, and `/control` continue using the configured HTTP port (default 80). The existing MJPEG parser and bounded newest-frame `MjpegFrameSource` remain in place.
+## Current camera defaults and exposed modes
+Startup remains HD `1280×720` with JPEG quality `10`. The firmware exposes:
+- VGA `640×480`
+- SVGA `800×600`
+- XGA `1024×768`
+- HD `1280×720`
+- SXGA `1280×1024`
+- UXGA `1600×1200`
+- FHD `1920×1080`
+- QHD `2560×1440`
 
-## Camera quality
-The firmware still starts at HD 1280×720 and JPEG quality 10. Project firmware continues to expose VGA, SVGA, XGA, HD, FHD, QHD, SXGA, and UXGA; QHD remains the highest mode exposed by the bundled driver. Higher sensor capability must not be claimed without a corresponding verified driver build.
+The project must continue to distinguish the currently bundled driver capabilities from the physical OV5640 sensor's broader theoretical capabilities.
 
-## Required physical validation
-1. Connect phone to the `SmartTraffic-CAM` AP or configured STA network.
-2. Test `/status` on port 80.
-3. Test `/capture` on port 80.
-4. Open `http://192.168.4.1:81/stream` from a direct MJPEG-capable client.
-5. Use the app's Connect stream and confirm continuous live frames.
-6. While streaming, change JPEG quality and frame size and verify successful responses plus visible frame changes.
-7. Start live analysis and verify LiteRT/ByteTrack receives continuous frames.
-8. Measure frame rate, JPEG byte size, dropped frames, and end-to-end latency.
+## Required physical validation after this repair
+1. Flash the updated S3 firmware.
+2. Rebuild/install the updated Android APK containing the raw-TCP MJPEG client.
+3. Connect the phone to `SmartTraffic-CAM`.
+4. Verify `/status` at `http://192.168.4.1/status`.
+5. Verify `/capture` at `http://192.168.4.1/capture`.
+6. Press **Connect stream** in Live and confirm continuous visible frames.
+7. Confirm Serial Monitor shows `STREAM client connected` and repeated frame activity without immediate disconnect.
+8. Test VGA → SVGA → XGA → HD, then SXGA → UXGA → FHD → QHD individually. After every change, verify that capture still works and the returned image dimensions match the requested mode.
+9. Start live analysis after confirming the stream.
+10. Record any exact Serial Monitor error (`Camera init failed`, `Setting framesize ... failed`, `STREAM client write failed`, or socket disconnect details) if a particular high-resolution mode still fails.
 
 ## Known limitation
-This transport repair does not itself guarantee sharp license-plate imagery. Focus, exposure, lighting, mounting distance, sensor tuning, JPEG quality, and frame size still require physical tuning.
+A successful high-resolution capture does not by itself guarantee useful license-plate imagery. Focus, exposure, lighting, mounting distance, sensor tuning, JPEG quality, and physical vibration still need tuning for ANPR quality.
