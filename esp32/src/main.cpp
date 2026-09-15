@@ -22,6 +22,7 @@ WiFiServer streamServer(kStreamPort);
 SemaphoreHandle_t cameraMutex = nullptr;
 volatile bool apMode = false;
 volatile bool streamClientActive = false;
+volatile bool streamStopRequested = false;
 uint32_t framesServed = 0;
 framesize_t currentFrameSize = FRAMESIZE_HD;
 int currentJpegQuality = 10;
@@ -114,9 +115,10 @@ void frameDimensions(framesize_t value, uint16_t* width, uint16_t* height) {
 
 uint32_t streamIntervalMs() {
   switch (currentFrameSize) {
-    case FRAMESIZE_QHD: return 140;
-    case FRAMESIZE_FHD: return 95;
-    case FRAMESIZE_UXGA: return 120;
+    case FRAMESIZE_QHD: return 160;
+    case FRAMESIZE_FHD: return 120;
+    case FRAMESIZE_UXGA: return 140;
+    case FRAMESIZE_SXGA: return 110;
     default: return 66;
   }
 }
@@ -142,12 +144,13 @@ String jsonStatus() {
   json += "\"flash_supported\":false,";
 #endif
   json += "\"stream_client_active\":" + String(streamClientActive ? "true" : "false") + ",";
+  json += "\"stream_stop_requested\":" + String(streamStopRequested ? "true" : "false") + ",";
   json += "\"ap_mode\":" + String(apMode ? "true" : "false");
   json += "}";
   return json;
 }
 
-bool lockCamera(TickType_t timeout = pdMS_TO_TICKS(1500)) {
+bool lockCamera(TickType_t timeout = pdMS_TO_TICKS(2000)) {
   return cameraMutex != nullptr && xSemaphoreTake(cameraMutex, timeout) == pdTRUE;
 }
 
@@ -182,23 +185,37 @@ bool initializeCamera() {
   config.fb_count = psramFound() ? 2 : 1;
   config.grab_mode = CAMERA_GRAB_LATEST;
   if (psramFound()) config.fb_location = CAMERA_FB_IN_PSRAM;
+
   const esp_err_t error = esp_camera_init(&config);
   if (error != ESP_OK) {
     Serial.printf("Camera init failed: 0x%08x\n", error);
     return false;
   }
+
   sensor_t* sensor = esp_camera_sensor_get();
   if (!sensor) {
     Serial.println("Camera sensor handle unavailable");
     esp_camera_deinit();
     return false;
   }
+
+  Serial.printf("Camera sensor PID: 0x%04x, requested %s\n", sensor->id.PID, frameSizeName(currentFrameSize));
+
   if (sensor->set_framesize(sensor, currentFrameSize) != 0 || sensor->set_quality(sensor, currentJpegQuality) != 0) {
     Serial.println("Camera rejected initial settings");
     esp_camera_deinit();
     return false;
   }
   return true;
+}
+
+bool waitForStreamStop(uint32_t timeoutMs = 4000) {
+  streamStopRequested = true;
+  const uint32_t deadline = millis() + timeoutMs;
+  while (streamClientActive && static_cast<int32_t>(millis() - deadline) < 0) {
+    delay(5);
+  }
+  return !streamClientActive;
 }
 
 bool writeFully(WiFiClient& client, const uint8_t* data, size_t length) {
@@ -231,12 +248,54 @@ void sendJpegFrame() {
   framesServed++;
 }
 
+bool reconfigureCamera(framesize_t nextSize, String* errorMessage) {
+  const framesize_t previousSize = currentFrameSize;
+
+  if (nextSize == previousSize) return true;
+  if (!waitForStreamStop()) {
+    if (errorMessage) *errorMessage = "stream did not stop before camera reconfiguration";
+    streamStopRequested = false;
+    return false;
+  }
+
+  if (!lockCamera()) {
+    if (errorMessage) *errorMessage = "camera mutex timeout";
+    streamStopRequested = false;
+    return false;
+  }
+
+  Serial.printf("Reconfiguring camera: %s -> %s\n", frameSizeName(previousSize), frameSizeName(nextSize));
+  esp_camera_deinit();
+  currentFrameSize = nextSize;
+  const bool initialized = initializeCamera();
+  if (initialized) {
+    unlockCamera();
+    streamStopRequested = false;
+    Serial.printf("Camera resolution active: %s\n", frameSizeName(currentFrameSize));
+    return true;
+  }
+
+  Serial.printf("Camera reconfiguration failed for %s; restoring %s\n", frameSizeName(nextSize), frameSizeName(previousSize));
+  currentFrameSize = previousSize;
+  const bool restored = initializeCamera();
+  unlockCamera();
+  streamStopRequested = false;
+
+  if (errorMessage) {
+    *errorMessage = restored
+        ? String("camera rejected ") + frameSizeName(nextSize) + "; previous resolution restored"
+        : String("camera rejected ") + frameSizeName(nextSize) + "; previous camera state could not be restored";
+  }
+  return false;
+}
+
 void handleControl() {
   if (!server.hasArg("action")) {
     server.send(400, "application/json", "{\"error\":\"missing action\"}");
     return;
   }
   const String action = server.arg("action");
+
   if (action == "flash") {
 #if defined(SMARTTRAFFIC_CAMERA_AI_THINKER)
     constexpr int flashPin = 4;
@@ -249,19 +308,31 @@ void handleControl() {
 #endif
     return;
   }
+
   if (action == "quality") {
     if (!server.hasArg("value")) { server.send(400, "application/json", "{\"error\":\"missing value\"}"); return; }
     const int quality = server.arg("value").toInt();
     if (quality < 5 || quality > 63) { server.send(400, "application/json", "{\"error\":\"quality must be 5..63\"}"); return; }
-    if (!lockCamera()) { server.send(503, "application/json", "{\"error\":\"camera busy\"}"); return; }
+    if (!waitForStreamStop()) {
+      server.send(503, "application/json", "{\"error\":\"stream did not stop before quality change\"}");
+      streamStopRequested = false;
+      return;
+    }
+    if (!lockCamera()) {
+      server.send(503, "application/json", "{\"error\":\"camera busy\"}");
+      streamStopRequested = false;
+      return;
+    }
     sensor_t* sensor = esp_camera_sensor_get();
     const int result = sensor ? sensor->set_quality(sensor, quality) : -1;
     unlockCamera();
+    streamStopRequested = false;
     if (result != 0) { server.send(500, "application/json", "{\"error\":\"camera rejected quality\"}"); return; }
     currentJpegQuality = quality;
     server.send(200, "application/json", String("{\"ok\":true,\"jpeg_quality\":") + String(currentJpegQuality) + "}");
     return;
   }
+
   if (action == "framesize") {
     if (!server.hasArg("value")) { server.send(400, "application/json", "{\"error\":\"missing value\"}"); return; }
     framesize_t nextSize = currentFrameSize;
@@ -269,17 +340,22 @@ void handleControl() {
       server.send(400, "application/json", "{\"error\":\"framesize must be VGA, SVGA, XGA, HD, FHD, QHD, SXGA, or UXGA\"}");
       return;
     }
-    if (!lockCamera()) { server.send(503, "application/json", "{\"error\":\"camera busy\"}"); return; }
-    sensor_t* sensor = esp_camera_sensor_get();
-    const int result = sensor ? sensor->set_framesize(sensor, nextSize) : -1;
-    unlockCamera();
-    if (result != 0) { server.send(500, "application/json", "{\"error\":\"camera rejected framesize\"}"); return; }
-    currentFrameSize = nextSize;
+
+    String errorMessage;
+    const bool changed = reconfigureCamera(nextSize, &errorMessage);
+    if (!changed) {
+      String body = "{\"ok\":false,\"framesize\":\"" + String(frameSizeName(currentFrameSize)) + "\",\"error\":\"" + errorMessage + "\"}";
+      server.send(500, "application/json", body);
+      return;
+    }
+
     uint16_t width = 0, height = 0;
     frameDimensions(currentFrameSize, &width, &height);
-    server.send(200, "application/json", String("{\"ok\":true,\"framesize\":\"") + frameSizeName(currentFrameSize) + "\",\"width\":" + String(width) + ",\"height\":" + String(height) + "}");
+    String body = "{\"ok\":true,\"framesize\":\"" + String(frameSizeName(currentFrameSize)) + "\",\"width\":" + String(width) + ",\"height\":" + String(height) + "}";
+    server.send(200, "application/json", body);
     return;
   }
+
   server.send(400, "application/json", "{\"error\":\"unsupported action\"}");
 }
 
@@ -301,13 +377,25 @@ void streamClientTask(void*) {
       continue;
     }
 
+    if (streamStopRequested) {
+      client.stop();
+      vTaskDelay(pdMS_TO_TICKS(2));
+      continue;
+    }
+
     streamClientActive = true;
     client.setNoDelay(true);
     Serial.printf("STREAM client connected from %s\n", client.remoteIP().toString().c_str());
-    client.print("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nConnection: keep-alive\r\n\r\n");
+    const size_t headerWritten = client.print("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache, no-store, must-revalidate, max-age=0\r\nPragma: no-cache\r\nConnection: keep-alive\r\n\r\n");
+    if (headerWritten == 0) {
+      client.stop();
+      streamClientActive = false;
+      Serial.println("STREAM failed to write HTTP headers");
+      continue;
+    }
 
     uint32_t localLastFrameMs = 0;
-    while (client.connected()) {
+    while (client.connected() && !streamStopRequested) {
       const uint32_t now = millis();
       if (now - localLastFrameMs < streamIntervalMs()) {
         vTaskDelay(pdMS_TO_TICKS(2));
@@ -333,7 +421,10 @@ void streamClientTask(void*) {
       if (bodyWritten) client.print("\r\n");
       esp_camera_fb_return(frame);
       unlockCamera();
-      if (!bodyWritten) break;
+      if (!bodyWritten) {
+        Serial.println("STREAM client write failed");
+        break;
+      }
       framesServed++;
     }
 
