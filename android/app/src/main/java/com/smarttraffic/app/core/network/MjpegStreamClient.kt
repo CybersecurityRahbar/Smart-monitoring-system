@@ -4,11 +4,14 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import kotlinx.coroutines.Job
 import java.io.BufferedInputStream
-import java.net.HttpURLConnection
+import java.io.BufferedOutputStream
+import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URL
 import kotlin.coroutines.coroutineContext
 
-/** Lightweight dependency-free MJPEG client for local ESP32-CAM streams. */
+/** Dependency-free raw TCP MJPEG client for the local ESP32 camera stream. */
 class MjpegStreamClient(
     private val connectTimeoutMs: Int = 3000,
     private val readTimeoutMs: Int = 7000,
@@ -18,29 +21,55 @@ class MjpegStreamClient(
         urlString: String,
         onFrame: suspend (Bitmap) -> Unit,
     ) {
-        val connection = (URL(urlString).openConnection() as HttpURLConnection).apply {
-            connectTimeout = connectTimeoutMs
-            readTimeout = readTimeoutMs
-            requestMethod = "GET"
-            useCaches = false
-            doInput = true
+        val url = URL(urlString)
+        require(url.protocol.equals("http", ignoreCase = true)) {
+            "MJPEG stream requires http://, got ${url.protocol}://"
         }
+        val host = url.host.trim()
+        require(host.isNotBlank()) { "MJPEG stream host is empty" }
+        val port = if (url.port > 0) url.port else 80
+        val requestTarget = url.file.ifBlank { "/" }
+
+        val socket = Socket()
         val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
-            connection.disconnect()
+            runCatching { socket.close() }
         }
         try {
-            if (connection.responseCode !in 200..299) {
-                throw MjpegStreamException("HTTP ${connection.responseCode}")
+            socket.tcpNoDelay = true
+            socket.keepAlive = true
+            socket.soTimeout = readTimeoutMs
+            socket.connect(InetSocketAddress(host, port), connectTimeoutMs)
+
+            BufferedOutputStream(socket.getOutputStream(), 8 * 1024).use { output ->
+                val request = buildString {
+                    append("GET ").append(requestTarget).append(" HTTP/1.1\r\n")
+                    append("Host: ").append(host)
+                    if (port != 80) append(':').append(port)
+                    append("\r\n")
+                    append("Accept: multipart/x-mixed-replace, image/jpeg, */*\r\n")
+                    append("Cache-Control: no-cache\r\n")
+                    append("Pragma: no-cache\r\n")
+                    append("Connection: keep-alive\r\n")
+                    append("\r\n")
+                }
+                output.write(request.toByteArray(Charsets.ISO_8859_1))
+                output.flush()
             }
-            val contentType = connection.contentType.orEmpty()
-            val boundary = parseBoundary(contentType)
-                ?: throw MjpegStreamException("MJPEG boundary not found in Content-Type: $contentType")
-            BufferedInputStream(connection.inputStream, 64 * 1024).use { input ->
+
+            BufferedInputStream(socket.getInputStream(), 64 * 1024).use { input ->
+                val response = readHttpResponse(input)
+                if (response.statusCode !in 200..299) {
+                    throw MjpegStreamException("HTTP ${response.statusCode}: ${response.statusText}".trim())
+                }
+                val contentType = response.headers["content-type"].orEmpty()
+                val boundary = parseBoundary(contentType)
+                    ?: throw MjpegStreamException("MJPEG boundary not found in Content-Type: $contentType")
                 val boundaryBytes = ("--$boundary").toByteArray(Charsets.ISO_8859_1)
+
                 while (true) {
                     if (!readUntil(input, boundaryBytes)) break
-                    val headerBytes = readHeaders(input) ?: break
-                    val contentLength = headerBytes
+                    val headerBlock = readPartHeaders(input) ?: break
+                    val contentLength = headerBlock
                         .lineSequence()
                         .firstNotNullOfOrNull { line ->
                             val parts = line.split(":", limit = 2)
@@ -57,10 +86,36 @@ class MjpegStreamClient(
                     onFrame(bitmap)
                 }
             }
+        } catch (e: MjpegStreamException) {
+            throw e
+        } catch (e: IOException) {
+            throw MjpegStreamException("TCP ${e::class.java.simpleName}: ${e.message ?: "I/O error"}")
         } finally {
             cancellationHandle?.dispose()
-            connection.disconnect()
+            runCatching { socket.close() }
         }
+    }
+
+    private data class HttpResponse(
+        val statusCode: Int,
+        val statusText: String,
+        val headers: Map<String, String>,
+    )
+
+    private fun readHttpResponse(input: BufferedInputStream): HttpResponse {
+        val block = readHeaderBlock(input) ?: throw MjpegStreamException("Empty HTTP response from MJPEG server")
+        val lines = block.lineSequence().toList()
+        val statusParts = lines.firstOrNull()?.trim()?.split(' ', limit = 3).orEmpty()
+        val statusCode = statusParts.getOrNull(1)?.toIntOrNull()
+            ?: throw MjpegStreamException("Invalid HTTP status from MJPEG server")
+        val statusText = statusParts.getOrNull(2).orEmpty()
+        val headers = buildMap {
+            lines.drop(1).forEach { line ->
+                val parts = line.split(":", limit = 2)
+                if (parts.size == 2) put(parts[0].trim().lowercase(), parts[1].trim())
+            }
+        }
+        return HttpResponse(statusCode, statusText, headers)
     }
 
     private fun parseBoundary(contentType: String): String? {
@@ -71,19 +126,32 @@ class MjpegStreamClient(
         return token.substringAfter('=').trim().trim('"').removePrefix("--").takeIf { it.isNotBlank() }
     }
 
-    private fun readHeaders(input: BufferedInputStream): String? {
-        val bytes = mutableListOf<Byte>()
+    private fun readHeaderBlock(input: BufferedInputStream): String? {
+        val bytes = java.io.ByteArrayOutputStream()
         var previous = -1
-        while (true) {
+        while (bytes.size() <= 32 * 1024) {
             val current = input.read()
             if (current == -1) return null
-            bytes += current.toByte()
-            if (previous == '\r'.code && current == '\n'.code && bytes.takeLast(4).toByteArray().contentEquals("\r\n\r\n".toByteArray())) {
-                return bytes.dropLast(4).toByteArray().toString(Charsets.ISO_8859_1)
+            bytes.write(current)
+            if (previous == '\r'.code && current == '\n'.code && endsWithCrlfCrlf(bytes)) {
+                val all = bytes.toByteArray()
+                return all.dropLast(4).toByteArray().toString(Charsets.ISO_8859_1)
             }
             previous = current
-            if (bytes.size > 16 * 1024) throw MjpegStreamException("MJPEG headers are too large")
         }
+        throw MjpegStreamException("HTTP/MJPEG headers are too large")
+    }
+
+    private fun readPartHeaders(input: BufferedInputStream): String? = readHeaderBlock(input)
+
+    private fun endsWithCrlfCrlf(bytes: java.io.ByteArrayOutputStream): Boolean {
+        if (bytes.size() < 4) return false
+        val data = bytes.toByteArray()
+        val n = data.size
+        return data[n - 4] == '\r'.code.toByte() &&
+            data[n - 3] == '\n'.code.toByte() &&
+            data[n - 2] == '\r'.code.toByte() &&
+            data[n - 1] == '\n'.code.toByte()
     }
 
     private fun readUntil(input: BufferedInputStream, target: ByteArray): Boolean {
