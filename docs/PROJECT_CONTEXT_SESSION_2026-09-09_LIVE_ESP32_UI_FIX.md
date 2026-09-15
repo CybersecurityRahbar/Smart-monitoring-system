@@ -1,65 +1,51 @@
 # Project Context Session — 2026-09-09 — ESP32 Control + Live UI
 
 ## Scope
-This session completed an Android-side integration pass for the ESP32-S3-N16R8 camera workflow and repaired the Live Camera screen behavior in portrait/landscape/fullscreen modes.
+This session completed an Android-side integration pass for the ESP32-S3-N16R8 camera workflow and repaired the Live Camera screen behavior in portrait/landscape/fullscreen modes. Physical testing on 2026-09-15 then exposed a firmware transport/concurrency defect in the original MJPEG design.
 
 ## Verified ESP32 contract in repository
-`esp32/src/main.cpp` currently defines these HTTP endpoints:
-- `GET /stream` — multipart MJPEG live stream.
-- `GET /capture` — single JPEG frame.
-- `GET /status` — JSON status.
-- `GET /control?action=quality&value=5..63` — JPEG quality control.
-- `GET /control?action=flash&on=0|1` — flash control only for the AI-Thinker build; the S3 target deliberately returns HTTP 501 because its flash GPIO has not been verified.
+The repaired `esp32/src/main.cpp` now defines two transport planes:
+- HTTP control plane on port `80`: `GET /`, `/status`, `/capture`, `/control?action=...`.
+- MJPEG data plane on port `81`: `GET /stream`.
 
-The S3 target is `SMARTTRAFFIC_CAMERA_S3_N16R8` in `esp32/platformio.ini` and uses the repository's current OV5640-style pin map. The source comments explicitly require verification against the exact PCB revision before physical wiring.
+The S3 target is `SMARTTRAFFIC_CAMERA_S3_N16R8` in `esp32/platformio.ini` and uses the repository's current OV5640-style pin map. The source comments/architecture still require verification against the exact PCB revision before treating the pin map as final.
 
-## Android device/control changes
-`DeviceSettings` now persists a `controlPath` with default `/control` and exposes `controlUrl()`.
+## Physical test findings — 2026-09-15
+After flashing the ESP32-S3-N16R8, the serial monitor showed `AP mode: 192.168.4.1`, `HTTP server started`, and later `write(): ... errno: 104, "Connection reset by peer"`. From the real Android phone, `/capture` succeeded, proving local Wi-Fi/IP/HTTP connectivity and camera initialization. `/stream` did not establish usable live video, live analysis consequently did not run, and camera control requests were unreliable when the original stream path was involved. Captured image quality was visibly poor and had not yet been tested at the intended high-resolution/high-quality setting.
 
-New `Esp32CameraClient` provides:
-- `capture()` for still-image requests;
-- `status()` for status requests;
-- `setJpegQuality()` for quality control;
-- `setFlash()` for boards whose firmware exposes a working flash GPIO.
+## Root cause of the original stream failure
+The original firmware implemented `/stream` as a blocking `while (client.connected())` loop inside the single Arduino `WebServer` instance used for port 80. While that handler was active, `server.handleClient()` could not service `/capture`, `/status`, or `/control`. This made the HTTP API and MJPEG stream contend for one request-processing loop.
 
-`DevicesScreen` now lets the operator configure the control endpoint and includes it in the default profile.
+The Android client already contained a pause-before-capture/control workaround, but that only mitigated the blocking firmware behavior; it did not make the transport architecture concurrent.
 
-## Important firmware concurrency constraint
-The current ESP32 firmware implements `/stream` in a blocking `while (client.connected())` handler. With the Arduino `WebServer` design used here, another request may not be serviced while `/stream` is occupying the handler.
+## Firmware transport repair — commit 0d8572a407bd65b4677a34d39913299e191e3a90
+The firmware was changed so that:
+1. Port 80 remains the HTTP control/capture plane.
+2. Port 81 is a separate `WiFiServer` used exclusively for MJPEG.
+3. The MJPEG server runs in a dedicated FreeRTOS task, so a stream no longer blocks the port-80 `WebServer` loop.
+4. A FreeRTOS mutex serializes camera framebuffer acquisition and sensor setting changes, preventing stream/capture/control from concurrently touching camera state.
+5. Only one MJPEG client is accepted at a time.
+6. Firmware logs stream connect/disconnect and exposes `stream_port` and `stream_client_active` in `/status`.
+7. `/status` reports the active STA or AP IP when constructing the stream URL.
 
-Because the board is not yet programmed and this session is Android-focused, the Android live screen now cancels the MJPEG connection before `/capture` or `/control` and reconnects after successful control. Still capture deliberately leaves the stream stopped so the captured frame remains visible until the operator presses Connect stream.
+## Android transport change
+`DeviceSettings.streamUrl()` now targets the fixed firmware MJPEG port `81`, while `httpPort` remains the configurable port for `/capture`, `/status`, and `/control`. The existing `MjpegStreamClient` and `MjpegFrameSource` remain protocol-compatible with the multipart response and continue to use bounded newest-frame buffering for live analysis.
 
-A later firmware session can redesign the stream handler for true concurrent control without this pause/reconnect workaround.
-
-## Live UI changes
-`VideoViewport` no longer uses a fixed 460dp height for FULLSCREEN or STANDARD. Both use a responsive 16:9 aspect ratio; COMPACT retains a compact fixed height.
-
-`LiveCameraScreen` now supports a real app-level fullscreen mode:
-- opens a full-window dialog;
-- hides Android system bars while fullscreen;
-- preserves the current live frame using `ContentScale.Fit`;
-- supports Back to exit fullscreen;
-- includes small floating Close, Capture, and Control actions;
-- avoids a large opaque HUD covering the video.
-
-The normal live screen is vertically scrollable so the portrait-oriented control stack does not disappear or get clipped on landscape-height screens.
-
-## Capture behavior
-Pressing Capture sends `GET /capture` to the configured ESP32 endpoint. The returned JPEG is decoded on Android and shown immediately. When capture was initiated from a live stream, the stream is paused first because of the current blocking firmware handler; it is intentionally not auto-restarted so the captured image remains visible.
+## Camera quality state
+Current firmware defaults remain frame size `HD` (1280×720) and JPEG quality `10`. Supported project driver modes remain VGA, SVGA, XGA, HD, FHD, QHD, SXGA, UXGA. `QHD` is still the highest mode exposed by the bundled camera driver; do not claim 5MP availability in this firmware snapshot. JPEG quality uses the existing camera-driver scale where smaller numbers request higher quality/larger JPEGs.
 
 ## Live analysis path
-The existing analysis path remains unchanged:
-`LiveCameraScreen -> MjpegFrameSource -> LiteRT -> ByteTrack -> geometry/speed -> preview`
+The intended live path remains `LiveCameraScreen -> MjpegFrameSource -> LiteRT -> ByteTrack -> geometry/speed -> preview`. Live analysis now consumes frames from `http://<camera-host>:81/stream`, while camera controls continue to use port 80. The analysis architecture itself was not modified by this transport repair.
 
-`MjpegFrameSource` still uses a single newest-frame slot and local monotonic arrival timestamps. This preserves low latency and bounded memory behavior.
+## Validation required after flashing the repaired firmware
+1. Connect phone to `SmartTraffic-CAM` AP (or verify configured STA network).
+2. Confirm `http://192.168.4.1/status` responds.
+3. Confirm `http://192.168.4.1/capture` returns a JPEG.
+4. Confirm a direct stream client can open `http://192.168.4.1:81/stream`.
+5. From the app, connect live stream and verify continuous frames.
+6. While stream is active, change JPEG quality and frame size and verify successful responses plus visible frame changes.
+7. Start live analysis and verify LiteRT/ByteTrack receives continuous frames.
+8. Measure frame rate, JPEG byte size, dropped frames, and end-to-end latency.
 
-## Validation status
-The repository CI had already confirmed both ESP32 firmware targets build successfully on an earlier run. A new CI run is triggered by the latest Android/live integration commits and must finish before this session is considered build-verified.
-
-No physical ESP32-S3-N16R8 test has been performed yet. The board remains unprogrammed. Physical verification still needs:
-1. exact PCB/camera pin mapping confirmation;
-2. firmware flash;
-3. AP/local Wi-Fi connection test;
-4. `/status`, `/capture`, `/stream`, and `/control` tests from the real phone;
-5. live-rotation/fullscreen behavior on the physical handset;
-6. actual frame rate and latency measurement.
+## Known limitation
+This transport repair does not itself guarantee sharp long-distance license-plate imagery. Optical focus, lighting, mounting distance, sensor configuration, JPEG quality, and frame size still require physical tuning.
