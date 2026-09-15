@@ -2,6 +2,8 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <esp_camera.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -14,9 +16,12 @@
 
 namespace {
 constexpr uint16_t kHttpPort = 80;
+constexpr uint16_t kStreamPort = 81;
 WebServer server(kHttpPort);
+WiFiServer streamServer(kStreamPort);
+SemaphoreHandle_t cameraMutex = nullptr;
 volatile bool apMode = false;
-uint32_t lastFrameMs = 0;
+volatile bool streamClientActive = false;
 uint32_t framesServed = 0;
 framesize_t currentFrameSize = FRAMESIZE_HD;
 int currentJpegQuality = 10;
@@ -58,6 +63,10 @@ int currentJpegQuality = 10;
 #else
 #error "Select SMARTTRAFFIC_CAMERA_AI_THINKER or SMARTTRAFFIC_CAMERA_S3_N16R8"
 #endif
+
+String activeIp() {
+  return (WiFi.getMode() == WIFI_MODE_STA) ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
+}
 
 const char* frameSizeName(framesize_t value) {
   switch (value) {
@@ -117,7 +126,9 @@ String jsonStatus() {
   frameDimensions(currentFrameSize, &width, &height);
   String json = "{";
   json += "\"service\":\"smart-traffic-camera\",";
-  json += "\"stream\":\"/stream\",\"capture\":\"/capture\",\"control\":\"/control\",";
+  json += "\"stream\":\"http://" + activeIp() + ":" + String(kStreamPort) + "/stream\",";
+  json += "\"capture\":\"/capture\",\"status\":\"/status\",\"control\":\"/control\",";
+  json += "\"stream_port\":" + String(kStreamPort) + ",";
   json += "\"uptime_ms\":" + String(millis()) + ",";
   json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
   json += "\"free_psram\":" + String(ESP.getFreePsram()) + ",";
@@ -130,9 +141,18 @@ String jsonStatus() {
 #else
   json += "\"flash_supported\":false,";
 #endif
+  json += "\"stream_client_active\":" + String(streamClientActive ? "true" : "false") + ",";
   json += "\"ap_mode\":" + String(apMode ? "true" : "false");
   json += "}";
   return json;
+}
+
+bool lockCamera(TickType_t timeout = pdMS_TO_TICKS(1500)) {
+  return cameraMutex != nullptr && xSemaphoreTake(cameraMutex, timeout) == pdTRUE;
+}
+
+void unlockCamera() {
+  if (cameraMutex) xSemaphoreGive(cameraMutex);
 }
 
 bool initializeCamera() {
@@ -192,9 +212,14 @@ bool writeFully(WiFiClient& client, const uint8_t* data, size_t length) {
 }
 
 void sendJpegFrame() {
+  if (!lockCamera()) {
+    server.send(503, "text/plain", "camera busy");
+    return;
+  }
   camera_fb_t* frame = esp_camera_fb_get();
   if (!frame || frame->format != PIXFORMAT_JPEG) {
     if (frame) esp_camera_fb_return(frame);
+    unlockCamera();
     server.send(503, "text/plain", "camera frame unavailable");
     return;
   }
@@ -202,6 +227,7 @@ void sendJpegFrame() {
   server.sendHeader("Pragma", "no-cache");
   server.send_P(200, "image/jpeg", reinterpret_cast<const char*>(frame->buf), frame->len);
   esp_camera_fb_return(frame);
+  unlockCamera();
   framesServed++;
 }
 
@@ -227,9 +253,11 @@ void handleControl() {
     if (!server.hasArg("value")) { server.send(400, "application/json", "{\"error\":\"missing value\"}"); return; }
     const int quality = server.arg("value").toInt();
     if (quality < 5 || quality > 63) { server.send(400, "application/json", "{\"error\":\"quality must be 5..63\"}"); return; }
+    if (!lockCamera()) { server.send(503, "application/json", "{\"error\":\"camera busy\"}"); return; }
     sensor_t* sensor = esp_camera_sensor_get();
-    if (!sensor) { server.send(503, "application/json", "{\"error\":\"camera sensor unavailable\"}"); return; }
-    if (sensor->set_quality(sensor, quality) != 0) { server.send(500, "application/json", "{\"error\":\"camera rejected quality\"}"); return; }
+    const int result = sensor ? sensor->set_quality(sensor, quality) : -1;
+    unlockCamera();
+    if (result != 0) { server.send(500, "application/json", "{\"error\":\"camera rejected quality\"}"); return; }
     currentJpegQuality = quality;
     server.send(200, "application/json", String("{\"ok\":true,\"jpeg_quality\":") + String(currentJpegQuality) + "}");
     return;
@@ -241,9 +269,11 @@ void handleControl() {
       server.send(400, "application/json", "{\"error\":\"framesize must be VGA, SVGA, XGA, HD, FHD, QHD, SXGA, or UXGA\"}");
       return;
     }
+    if (!lockCamera()) { server.send(503, "application/json", "{\"error\":\"camera busy\"}"); return; }
     sensor_t* sensor = esp_camera_sensor_get();
-    if (!sensor) { server.send(503, "application/json", "{\"error\":\"camera sensor unavailable\"}"); return; }
-    if (sensor->set_framesize(sensor, nextSize) != 0) { server.send(500, "application/json", "{\"error\":\"camera rejected framesize\"}"); return; }
+    const int result = sensor ? sensor->set_framesize(sensor, nextSize) : -1;
+    unlockCamera();
+    if (result != 0) { server.send(500, "application/json", "{\"error\":\"camera rejected framesize\"}"); return; }
     currentFrameSize = nextSize;
     uint16_t width = 0, height = 0;
     frameDimensions(currentFrameSize, &width, &height);
@@ -253,26 +283,63 @@ void handleControl() {
   server.send(400, "application/json", "{\"error\":\"unsupported action\"}");
 }
 
-void handleStream() {
-  WiFiClient client = server.client();
-  client.setNoDelay(true);
-  client.print("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nConnection: keep-alive\r\n\r\n");
-  while (client.connected()) {
-    const uint32_t now = millis();
-    if (now - lastFrameMs < streamIntervalMs()) { delay(2); continue; }
-    lastFrameMs = now;
-    camera_fb_t* frame = esp_camera_fb_get();
-    if (!frame || frame->format != PIXFORMAT_JPEG) {
-      if (frame) esp_camera_fb_return(frame);
-      break;
+void streamClientTask(void*) {
+  streamServer.begin();
+  streamServer.setNoDelay(true);
+  Serial.printf("MJPEG stream server started on port %u\n", kStreamPort);
+
+  for (;;) {
+    WiFiClient client = streamServer.available();
+    if (!client) {
+      vTaskDelay(pdMS_TO_TICKS(5));
+      continue;
     }
-    const size_t length = frame->len;
-    client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", static_cast<unsigned>(length));
-    const bool bodyWritten = writeFully(client, frame->buf, length);
-    if (bodyWritten) client.print("\r\n");
-    esp_camera_fb_return(frame);
-    framesServed++;
-    if (!bodyWritten) break;
+
+    if (streamClientActive) {
+      client.stop();
+      vTaskDelay(pdMS_TO_TICKS(2));
+      continue;
+    }
+
+    streamClientActive = true;
+    client.setNoDelay(true);
+    Serial.printf("STREAM client connected from %s\n", client.remoteIP().toString().c_str());
+    client.print("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nConnection: keep-alive\r\n\r\n");
+
+    uint32_t localLastFrameMs = 0;
+    while (client.connected()) {
+      const uint32_t now = millis();
+      if (now - localLastFrameMs < streamIntervalMs()) {
+        vTaskDelay(pdMS_TO_TICKS(2));
+        continue;
+      }
+      localLastFrameMs = now;
+
+      if (!lockCamera()) {
+        vTaskDelay(pdMS_TO_TICKS(2));
+        continue;
+      }
+      camera_fb_t* frame = esp_camera_fb_get();
+      if (!frame || frame->format != PIXFORMAT_JPEG) {
+        if (frame) esp_camera_fb_return(frame);
+        unlockCamera();
+        Serial.println("STREAM camera frame unavailable");
+        break;
+      }
+
+      const size_t length = frame->len;
+      const int headerResult = client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", static_cast<unsigned>(length));
+      const bool bodyWritten = headerResult > 0 && writeFully(client, frame->buf, length);
+      if (bodyWritten) client.print("\r\n");
+      esp_camera_fb_return(frame);
+      unlockCamera();
+      if (!bodyWritten) break;
+      framesServed++;
+    }
+
+    client.stop();
+    streamClientActive = false;
+    Serial.println("STREAM client disconnected");
   }
 }
 
@@ -302,17 +369,33 @@ void connectNetwork() {
 void setup() {
   Serial.begin(115200);
   delay(200);
+  cameraMutex = xSemaphoreCreateMutex();
+  if (!cameraMutex) {
+    Serial.println("Camera mutex creation failed");
+    ESP.restart();
+  }
   if (!initializeCamera()) { delay(1000); ESP.restart(); }
   connectNetwork();
   server.on("/", HTTP_GET, []() {
-    server.send(200, "text/plain; charset=utf-8", "Smart Traffic Camera\n/stream\n/capture\n/status\n/control?action=quality&value=10\n/control?action=framesize&value=HD\n");
+    server.send(200, "text/plain; charset=utf-8", "Smart Traffic Camera\nHTTP :80 -> /status /capture /control\nMJPEG :81 -> /stream\n");
   });
   server.on("/status", HTTP_GET, []() { server.send(200, "application/json; charset=utf-8", jsonStatus()); });
   server.on("/capture", HTTP_GET, sendJpegFrame);
   server.on("/control", HTTP_GET, handleControl);
-  server.on("/stream", HTTP_GET, handleStream);
   server.begin();
-  Serial.println("HTTP server started");
+  Serial.println("HTTP control server started on port 80");
+
+  xTaskCreatePinnedToCore(
+      streamClientTask,
+      "smarttraffic_stream",
+      8192,
+      nullptr,
+      1,
+      nullptr,
+      0);
 }
 
-void loop() { server.handleClient(); delay(1); }
+void loop() {
+  server.handleClient();
+  delay(1);
+}

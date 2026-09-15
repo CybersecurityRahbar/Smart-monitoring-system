@@ -14,6 +14,7 @@ object DeviceSettings {
     private const val CAPTURE_PATH = "capture_path"
     private const val STATUS_PATH = "status_path"
     private const val CONTROL_PATH = "control_path"
+    private const val STREAM_PORT = 81
 
     var host by mutableStateOf("192.168.4.1")
         private set
@@ -72,7 +73,7 @@ object DeviceSettings {
     }
 
     fun baseUrl(): String = "http://$host:$httpPort"
-    fun streamUrl(): String = baseUrl() + streamPath
+    fun streamUrl(): String = "http://$host:$STREAM_PORT" + streamPath
     fun captureUrl(): String = baseUrl() + capturePath
     fun statusUrl(): String = baseUrl() + statusPath
     fun controlUrl(): String = baseUrl() + controlPath
